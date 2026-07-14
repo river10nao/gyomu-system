@@ -359,7 +359,7 @@ const NAVS = ()=>[
   ['salonpay','💴 '+NM.spay+'支払'], ['quota','📐 仕入枠'], ['masters','⚙️ マスタ管理'],
   ['opslog','📝 操作ログ']
 ];
-const ADMIN_ONLY_NAVS = ['masters','opslog','allocation'];
+const ADMIN_ONLY_NAVS = ['opslog'];   // 2026-07-15 ユーザー指定: 一旦全員フルアクセス・操作ログ閲覧だけ管理者限定
 // 左ナビのバッジ: 各画面の「動いている案件」数（終端ステータス以外・削除除く・ID単位）
 function navCounts(){
   const uniq = (rws, idCol, pred)=>{ const st_ = new Set(); rws.forEach(r=>{ const id=String(r[idCol]||'').trim(); if(!id) return; const st=String(r['ステータス']||'').trim(); if(st && pred(st)) st_.add(id); }); return st_.size; };
@@ -898,18 +898,18 @@ function vOrders(){
 
   return '<h1>受注管理</h1><div class="sub">案件は「商談中」（見積送付）で始まり、請求書①の発行で自動的に「半金入金待ち」へ進みます</div>' +
   '<div class="row" style="margin-bottom:12px">' +
-    (role==='admin' ? '<button class="btn pri" onclick="viewState.newOrder=!viewState.newOrder;render()">＋ 案件作成（JAN貼り付け）</button>' : '') +
-    (role==='admin' ? '<button class="btn" onclick="commitOrdersUI()">📥 転記実行分を取込（'+staging+'明細）</button>' : '') +
+    '<button class="btn pri" onclick="viewState.newOrder=!viewState.newOrder;render()">＋ 案件作成（JAN貼り付け）</button>' +
+    '<button class="btn" onclick="commitOrdersUI()">📥 転記実行分を取込（'+staging+'明細）</button>' +
     '<input class="search" placeholder="検索（卸先・商品・ID）" value="'+esc(q)+'"'+searchAttrs()+'>' +
     '<button class="btn right" onclick="exportTable(\'受注台帳\',\'orderLedger\')">CSV出力</button></div>' +
-  (role==='admin' && viewState.newOrder ? newOrderForm() : '') +
+  (viewState.newOrder ? newOrderForm() : '') +
   tabsHtml('order', tab, counts) +
   '<div class="row" style="margin-bottom:10px">'+bulkBar('order', list.map(g=>g.id))+'</div>' +
   (list.map(g=>{
     const total = g.rows.reduce((a,r)=>a+num(r['小計（税抜）']),0);
     const ship = shipsByOrder[g.id];
     // 出荷作成は回収・在庫が進んだ段階（最終入金待ち以降）のみ（サーバー側でも同条件でガード）
-    const canShip = role==='admin' && !ship && ['最終入金待ち','最終入金完了'].includes(g.st);
+    const canShip = !ship && ['最終入金待ち','最終入金完了'].includes(g.st);
     // 開閉状態は viewState.open に記憶（帳票発行などの再描画で閉じてしまわないように）
     const isOpen = viewState.open && viewState.open[g.id];
     return '<details class="ordcard" '+(isOpen?'open':'')+' ontoggle="(viewState.open=viewState.open||{})[\''+g.id+'\']=this.open"><summary>' + selBox(g.id) +
@@ -923,7 +923,7 @@ function vOrders(){
       (canShip && !busy('order', g.id) ? '<button class="btn sm" onclick="act(\'createShipment\',{受注ID:\''+g.id+'\'},\'出荷を作成しました\',[\'shipments\'])">🚚 出荷を作成</button>' : '') +
       (ship ? '<span class="small muted">出荷: '+ship['出荷ID']+' '+pill(ship['ステータス'])+'</span>' : '') +
       '<button class="btn sm" onclick="viewState.docFor=(viewState.docFor===\''+g.id+'\'?null:\''+g.id+'\');render()">📄 帳票発行</button>' +
-      (role==='admin' ? rollbackBtn('order', g.id, g.st) : '') +
+      rollbackBtn('order', g.id, g.st) +
       deleteBtn('order', g.id) +
       '</div>' +
       docFormHtml(g.id) +
@@ -1048,7 +1048,7 @@ async function bulkDelete(entity){
 
 // ===== 削除（ゴミ箱方式・管理者のみ） =====
 function deleteBtn(entity, id){
-  if(role!=='admin' || busy(entity, id)) return '';
+  if(busy(entity, id)) return '';
   return '<button class="btn sm" style="color:var(--crit)" onclick="deleteUI(\''+entity+'\',\''+id+'\')">🗑 削除</button>';
 }
 async function deleteUI(entity, id){
@@ -1059,7 +1059,6 @@ async function deleteUI(entity, id){
 }
 // ゴミ箱（削除済み一覧＋復元）。sheetName の削除済み行を idCol でまとめて表示
 function trashSection(entity, sheetName, idCol, labelFn){
-  if(role!=='admin') return '';
   const deleted = {};
   rowsAll(sheetName).forEach(r=>{
     if(!String(r['削除']||'').trim()) return;
@@ -1088,7 +1087,7 @@ function docListHtml(orderId){
     '<tr><th>管理番号</th><th>種類</th><th>名義</th><th>発行日</th><th class="num">金額(税込)</th><th></th><th></th></tr>' +
     docs.map(d=>'<tr><td class="mono">'+esc(d['管理番号'])+'</td><td>'+esc(d['種類'])+'</td><td>'+esc(d['名義'])+'</td><td>'+esc(d['発行日'])+'</td><td class="num">'+yen(num(d['金額（税込）']))+'</td>' +
       '<td><a href="'+esc(d['PDF URL'])+'" target="_blank" rel="noopener">PDFを開く</a></td>' +
-      '<td>'+(role==='admin' ? '<button class="btn sm" style="color:var(--crit)" onclick="deleteDocUI(\''+esc(d['管理番号'])+'\',\''+esc(d['PDF URL'])+'\')">🗑</button>' : '')+'</td></tr>').join('') + '</table></div>';
+      '<td>'+'<button class="btn sm" style="color:var(--crit)" onclick="deleteDocUI(\''+esc(d['管理番号'])+'\',\''+esc(d['PDF URL'])+'\')">🗑</button>'+'</td></tr>').join('') + '</table></div>';
 }
 // 発行済み帳票の削除（admin）。台帳=ゴミ箱方式・PDF=Driveのゴミ箱（30日は復元可）
 async function deleteDocUI(docNo, url){
@@ -1337,13 +1336,13 @@ function vCollection(){
   // 一括バーの追加ボタン。終端ステータス（ロット処理済み/なし）のタブでは
   // 「次へ進める」「ロット処理なしで入庫」を出さない（一括削除だけ残す）
   const terminalTab = (tab==='ロット処理済み' || tab==='ロット処理なし');
-  const delBulk = role==='admin' ? '<button class="btn sm" style="color:var(--crit)" onclick="bulkDelete(\'collection\')">🗑 選択をまとめて削除</button>' : '';
+  const delBulk = '<button class="btn sm" style="color:var(--crit)" onclick="bulkDelete(\'collection\')">🗑 選択をまとめて削除</button>';
   // ロット処理なしの一括は「ロット処理待ち」タブでだけ出す（検品前の箱に誤って使わないように）
   const noLotBulk = (tab==='ロット処理待ち' ? '<button class="btn sm" onclick="bulkAdvance(\'collection\',\'ロット処理なし\')">✔ 選択をロット処理なしで入庫</button>' : '') + delBulk;
 
   return '<h1>サロン回収・検品</h1><div class="sub">検品→「ロット処理済み」または「ロット処理なし」で在庫台帳へ自動入庫されます（1回収 = 1サロン = 1箱）</div>' +
   '<div class="row" style="margin-bottom:12px">' +
-    (role==='admin' ? '<button class="btn pri" onclick="if(confirm(\'サロン回収管理（サロン振り分けの結果）を回収台帳へ取り込みますか？\'))act(\'commitCollection\',{},\'回収を取り込みました\',[\'collectionLedger\'])">📥 サロン振り分け分を取込（'+staging+'明細）</button>' : '') +
+    '<button class="btn pri" onclick="if(confirm(\'サロン回収管理（サロン振り分けの結果）を回収台帳へ取り込みますか？\'))act(\'commitCollection\',{},\'回収を取り込みました\',[\'collectionLedger\'])">📥 サロン振り分け分を取込（'+staging+'明細）</button>' +
     '<button class="btn right" onclick="exportTable(\'回収台帳\',\'collectionLedger\')">CSV出力</button></div>' +
   tabsHtml('collection', tab, counts, ['ロット処理なし']) +
   '<div class="row" style="margin-bottom:10px">'+bulkBar('collection', list.map(g=>g.id), noLotBulk, terminalTab)+'</div>' +
@@ -1363,7 +1362,7 @@ function vCollection(){
       g.rows.map(r=>'<tr><td>'+esc(r['商品名'])+'</td><td>'+esc(r['容量'])+'</td><td class="num">'+r['個数']+'</td><td class="mono small">'+esc(r['在庫ID']||'—')+'</td></tr>').join('') +
       '</table></div>' +
       '<div class="row" style="margin-top:10px">' + advanceBtn('collection', g.id, g.st) + noLotBtn +
-      (role==='admin' ? rollbackBtn('collection', g.id, g.st) : '') +
+      rollbackBtn('collection', g.id, g.st) +
       deleteBtn('collection', g.id) + '</div></details>';
   }).join('') || '<p class="muted">該当する回収がありません</p>') +
   trashSection('collection', 'collectionLedger', '回収ID', r=>String(r['サロン名']||'')+' '+String(r['発注日']||''));
@@ -1447,7 +1446,7 @@ function vShipments(){
   (list.map(r=>{
     const id=r['出荷ID'], st=r['ステータス'];
     return '<tr><td>'+selBox(id)+'</td><td class="mono">'+id+'</td><td class="mono small">'+esc(r['受注ID'])+'</td><td>'+esc(r['卸先名']||r['サロン名']||r['注文者氏名'])+'</td><td>'+pill(st)+'</td><td class="small">'+esc(r['作成日'])+'</td><td class="small">'+esc(r['出荷日']||'—')+'</td>' +
-    '<td><div class="row">'+advanceBtn('shipment', id, st)+(role==='admin'?rollbackBtn('shipment', id, st):'')+deleteBtn('shipment', id)+'</div></td></tr>';
+    '<td><div class="row">'+advanceBtn('shipment', id, st)+rollbackBtn('shipment', id, st)+deleteBtn('shipment', id)+'</div></td></tr>';
   }).join('') || '<tr><td colspan="8" class="muted">出荷はまだありません</td></tr>') + '</table></div>' +
   trashSection('shipment', 'shipments', '出荷ID', r=>String(r['卸先名']||r['サロン名']||'')+' 受注:'+String(r['受注ID']||''));
 }
@@ -1475,13 +1474,12 @@ function vHanbai(){
   const prodOpts = rows('products').filter(p=>String(p['商品ID']||'').trim()).map(p=>'<option value="'+esc(p['商品ID'])+'">'+esc(p['商品名'])+(p['容量']?' / '+esc(p['容量']):'')+'</option>').join('');
 
   return '<h1>店販注文/EC</h1><div class="sub">店販=回収時に同梱→仕分け→次回訪問時にお渡し。EC=入庫してEC出品中で完了（売れたら在庫の出庫ログへ記帳）</div>' +
-  (role==='admin' ?
   '<div class="card"><b class="small">新規注文の受付</b><div class="row" style="margin-top:8px">' +
     '<select id="hbKubun" style="width:100px"><option value="店販">店販</option><option value="EC">EC</option></select>' +
     '<select id="hbSalon" style="max-width:220px"><option value="">サロンを選択</option>'+salonOpts+'</select>' +
     '<select id="hbProd" style="max-width:300px"><option value="">商品を選択</option>'+prodOpts+'</select>' +
     '<input id="hbQty" type="number" min="1" value="1" style="width:80px">' +
-    '<button class="btn pri" onclick="addHanbaiUI()">受付</button></div></div>' : '') +
+    '<button class="btn pri" onclick="addHanbaiUI()">受付</button></div></div>' +
   '<div class="row" style="margin-bottom:12px"><button class="btn right" onclick="exportTable(\'店販EC注文\',\'hanbaiOrders\')">CSV出力</button></div>' +
   tabsHtml('hanbai', tab, counts, ['EC出品中','完売'], ['EC出品中']) +
   '<div class="row" style="margin-bottom:10px">'+bulkBar('hanbai', list.map(r=>r['注文ID']))+'</div>' +
@@ -1496,7 +1494,7 @@ function vHanbai(){
     const rbFlow = ec ? FLOW.hanbaiEC.concat(['完売']) : FLOW.hanbai;
     return '<tr><td>'+selBox(id)+'</td><td class="mono">'+id+'</td><td>'+(ec?'<span class="pill" style="background:color-mix(in srgb,var(--s2) 15%, transparent);color:var(--s2)">EC</span>':'<span class="muted small">店販</span>')+'</td><td class="small">'+esc(r['注文日'])+'</td><td>'+esc(r['サロン名'])+'</td><td>'+esc(r['商品名'])+'</td><td class="num">'+r['個数']+'</td><td>'+pill(st)+'</td>' +
     '<td class="small">'+(ec ? (st==='EC出品中'&&zan!=null ? '残 '+zan+'点' : '') : esc(r['お渡し日']||'')+' '+esc(r['お渡し担当']||''))+'</td>' +
-    '<td><div class="row">'+sellBtn+advanceBtn('hanbai', id, st, hbFlowOf(r))+(role==='admin'?rollbackBtn('hanbai', id, st, rbFlow):'')+deleteBtn('hanbai', id)+'</div></td></tr>';
+    '<td><div class="row">'+sellBtn+advanceBtn('hanbai', id, st, hbFlowOf(r))+rollbackBtn('hanbai', id, st, rbFlow)+deleteBtn('hanbai', id)+'</div></td></tr>';
   }).join('') || '<tr><td colspan="10" class="muted">注文はまだありません</td></tr>') + '</table></div>' +
   trashSection('hanbai', 'hanbaiOrders', '注文ID', r=>String(r['サロン名']||'')+' '+String(r['商品名']||'')) +
   '<div class="card"><div class="row"><b class="small">サロン別 月間注文集計</b> '+monthPicker()+'<span class="muted small">サロンをクリックすると注文明細が出ます</span></div>' +
@@ -1712,7 +1710,6 @@ function allocCell(pid, sid, v){
   render();
 }
 function vAllocation(){
-  if(role!=='admin') return '<p>権限がありません</p>';
   const needSetup = !((DB.products&&DB.products.headers)||[]).includes('入数（箱）');
   const selIds = Object.keys(ALLOC.sel).filter(k=>ALLOC.sel[k]);
   const brands = [...new Set(rows('orderLedger').filter(r=>ALLOC.sel[String(r['受注ID']||'').trim()]).map(r=>brandOf(r['商品ID'])||'（メーカー不明）'))].sort();
@@ -1899,7 +1896,6 @@ const MASTER_CONF_ = ()=>({
              searchCols:['サロン名(ディーラー含む)','担当者名','サロンID'], searchHint:'サロン名・担当者で検索'}
 });
 function vMasters(){
-  if(role!=='admin') return '<p>権限がありません</p>';
   const tab = viewState.tab || '商品';
   const MASTER_CONF = MASTER_CONF_();
   const c = MASTER_CONF[tab];
