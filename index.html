@@ -591,9 +591,9 @@ function vDashboard(){
     if(st==='最終入金完了') return ['全額入金済み','var(--good)'];
     if(i<=0) return ['未請求','var(--muted)'];
     if(NM.credit && String(pay||'').indexOf(NM.credit)===0) return ['全額請求済み・入金待ち','var(--s3)'];
-    if(i===1) return ['半金 請求中','var(--s3)'];
-    if(i>=2 && i<=4) return ['半金 入金済み','var(--s1)'];
-    return ['最終 請求中','var(--s3)'];
+    if(i===1) return ['前金 請求中','var(--s3)'];
+    if(i>=2 && i<=4) return ['前金 入金済み','var(--s1)'];
+    return ['残金 請求中','var(--s3)'];
   };
   const goods2 = (st, ship)=>{
     if(ship) return [ship['ステータス'], STATUS_COLOR[ship['ステータス']]||'var(--s1)'];
@@ -1089,14 +1089,14 @@ function journeyHtml(g, ship){
     [NM.credit+'入金（翌月末）', g.st==='最終入金完了']
   ] : [
     ['受注', true],
-    ['請求①'+mf+(g.via?'（'+NM.via+'）':''), oi>=1],
-    ['入金①', !!g.in1 || oi>=2],
+    ['前金請求'+mf+(g.via?'（'+NM.via+'）':''), oi>=1],
+    ['前金入金', !!g.in1 || oi>=2],
     ['振分/発注', oi>=3]      // 回収中に入った = 振り分け・発注済み
   ].concat(g.via ? [[NM.via+'→'+NM.co+' 発注・請求・入金（振分と同時進行）', viaMoneyDone]] : []).concat([
     ['回収', oi>=4],          // 検品/ロット処理中に入った = 回収済み
     ['検品/ロット処理', oi>=5],   // 最終入金待ちに入った = 検品・ロット処理済み
-    ['請求②'+mf+(g.via?'（'+NM.via+'）':''), inv2Done],
-    ['入金②', g.st==='最終入金完了'],
+    ['残金請求'+mf+(g.via?'（'+NM.via+'）':''), inv2Done],
+    ['残金入金', g.st==='最終入金完了'],
     ['引去', shipPicked],
     ['出荷', shipDone]
   ]);
