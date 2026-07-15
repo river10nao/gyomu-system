@@ -1071,14 +1071,14 @@ function journeyHtml(g, ship){
   // 経由案件は請求＝マネフォ申請→承認→押印請求書送付→入金。さらに振分/発注と同時進行で
   // 経由先→自社のお金処理（発注書→請求書→マネフォ申請→入金。モノは動かない）が走るため専用ステップを出す
   const oi = FLOW.order.indexOf(g.st);
-  const isPaid = NM.credit && String(g.pay||'').indexOf(NM.credit)===0;
+  const isCredit = NM.credit && String(g.pay||'').indexOf(NM.credit)===0;
   const shipPicked = !!(ship && FLOW.shipment.indexOf(ship['ステータス'])>=1);
   const shipDone = !!(ship && ship['ステータス']==='出荷完了');
   const docs = rows('docLog').filter(d=>String(d['受注ID']||'').trim()===String(g.id||'').trim()).map(d=>String(d['種類']||''));
   const inv2Done = docs.some(k=>k.indexOf('請求書②')>=0) || g.st==='最終入金完了';   // 請求②発行済み（完了案件は発行済み扱い）
   const viaMoneyDone = docs.some(k=>k.indexOf('発注書（'+NM.via)===0);   // 経由先→自社の帳票処理は発注書の発行が起点
   const mf = g.via ? '・マネフォ' : '';   // 経由案件の請求はマネフォ申請→承認→押印請求書→入金
-  const steps = isPaid ? [
+  const steps = isCredit ? [
     ['受注', true],
     ['全額請求（'+NM.credit+(g.via?'・'+NM.via:'')+'）', oi>=1],   // 発行と同時にステータス前進。入金は待たない
     ['振分/発注', oi>=3],
@@ -1100,7 +1100,7 @@ function journeyHtml(g, ship){
     ['引去', shipPicked],
     ['出荷', shipDone]
   ]);
-  const flowName = (isPaid ? NM.credit : '半金×2') + (g.via ? '・'+NM.via+'経由' : '・直');
+  const flowName = (isCredit ? NM.credit : '半金×2') + (g.via ? '・'+NM.via+'経由' : '・直');
   let nowMarked = false;
   return '<div class="steps"><span class="small muted" style="margin-right:6px">'+esc(flowName)+'：</span>' + steps.map(s=>{
     let cls = 'done';
