@@ -1463,7 +1463,7 @@ function vCollection(){
     const isOpenC = viewState.open && (g.id in viewState.open) ? viewState.open[g.id] : !done;
     return '<details class="ordcard" '+(isOpenC?'open':'')+' ontoggle="(viewState.open=viewState.open||{})[\''+g.id+'\']=this.open"><summary>' + selBox(g.id) +
       '<b>'+g.id+'</b> '+pill(g.st)+' <span>'+esc(g.salon)+'</span><span class="muted small">'+esc(g.date)+' / '+esc(g.kubun||'卸')+'</span>' +
-      (String(g.rows[0]['対象受注']||'').trim() ? '<span class="muted small">📋 '+esc(g.rows[0]['対象受注'])+' 分</span>' : '') +
+      (String(g.rows[0]['対象受注']||'').trim() ? '<span class="muted small">📋 '+esc(g.rows[0]['対象受注'])+'</span>' : '') +
       '<span class="right mono">'+qty+'点</span></summary>' +
       '<div class="tblwrap" style="margin-top:8px"><table><tr><th>商品</th><th>容量</th><th class="num">個数</th><th>在庫ID</th></tr>' +
       g.rows.map(r=>'<tr><td>'+esc(r['商品名'])+'</td><td>'+esc(r['容量'])+'</td><td class="num">'+r['個数']+'</td><td class="mono small">'+esc(r['在庫ID']||'—')+'</td></tr>').join('') +
