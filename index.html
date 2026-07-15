@@ -676,7 +676,7 @@ function vDashboard(){
   const oBrands = {};   // 受注ID → ブランドの集合（入金セグメントの「卸先名/ブランド」表記用）
   rows('orderLedger').forEach(r=>{ const id=String(r['受注ID']||'').trim(); if(!id) return;
     const b=brandOf(r['商品ID']); if(b) (oBrands[id]=oBrands[id]||new Set()).add(b); });
-  const brandsLbl = oid=>{ const a=[...(oBrands[String(oid||'').trim()]||[])]; return a.length? a[0]+(a.length>1?'他'+(a.length-1):'') : ''; };
+  const brandsLbl = oid=>[...(oBrands[String(oid||'').trim()]||[])].join('・');   // 全ブランド列挙（2026-07-15 ユーザー指定。まとめない）
   const docSegs = (docs, color, striped, tipPrefix)=>docs.filter(d=>num(d['金額（税込）'])>0)
     .sort((a,b)=>num(b['金額（税込）'])-num(a['金額（税込）']))
     .map((d,i)=>{ const bl=brandsLbl(d['受注ID']);
