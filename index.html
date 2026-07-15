@@ -1066,12 +1066,18 @@ function tabsHtml(entity, cur, counts, extraTabs, activeExtras){
   }).join('') + '</div>';
 }
 function journeyHtml(g, ship){
-  // 一気通貫ビュー: 支払方式（半金×2/掛け払い）× 経由の有無 で4パターンのフローを出し分ける（2026-07-15 ユーザー指定）。
-  // 裏のステータスは1本のまま。掛け払いは「全額請求→入金を待たずに進行→納品→翌月末入金」で入金が最後に来る
+  // 一気通貫ビュー: 支払方式（半金×2/掛け払い）× 経由の有無 でフローを出し分ける（2026-07-15 ユーザー指定）。
+  // 裏のステータスは1本のまま。掛け払いは「全額請求→入金を待たずに進行→納品→翌月末入金」で入金が最後に来る。
+  // 経由案件は請求＝マネフォ申請→承認→押印請求書送付→入金。さらに振分/発注と同時進行で
+  // 経由先→自社のお金処理（発注書→請求書→マネフォ申請→入金。モノは動かない）が走るため専用ステップを出す
   const oi = FLOW.order.indexOf(g.st);
   const isPaid = NM.credit && String(g.pay||'').indexOf(NM.credit)===0;
   const shipPicked = !!(ship && FLOW.shipment.indexOf(ship['ステータス'])>=1);
   const shipDone = !!(ship && ship['ステータス']==='出荷完了');
+  const docs = rows('docLog').filter(d=>String(d['受注ID']||'').trim()===String(g.id||'').trim()).map(d=>String(d['種類']||''));
+  const inv2Done = docs.some(k=>k.indexOf('請求書②')>=0) || g.st==='最終入金完了';   // 請求②発行済み（完了案件は発行済み扱い）
+  const viaMoneyDone = docs.some(k=>k.indexOf('発注書（'+NM.via)===0);   // 経由先→自社の帳票処理は発注書の発行が起点
+  const mf = g.via ? '・マネフォ' : '';   // 経由案件の請求はマネフォ申請→承認→押印請求書→入金
   const steps = isPaid ? [
     ['受注', true],
     ['全額請求（'+NM.credit+(g.via?'・'+NM.via:'')+'）', oi>=1],   // 発行と同時にステータス前進。入金は待たない
@@ -1083,15 +1089,17 @@ function journeyHtml(g, ship){
     [NM.credit+'入金（翌月末）', g.st==='最終入金完了']
   ] : [
     ['受注', true],
-    ['請求①'+(g.via?'（'+NM.via+'）':''), oi>=1],
+    ['請求①'+mf+(g.via?'（'+NM.via+'）':''), oi>=1],
     ['入金①', !!g.in1 || oi>=2],
-    ['振分/発注', oi>=3],     // 回収中に入った = 振り分け・発注済み
+    ['振分/発注', oi>=3]      // 回収中に入った = 振り分け・発注済み
+  ].concat(g.via ? [[NM.via+'→'+NM.co+' 発注・請求・入金（振分と同時進行）', viaMoneyDone]] : []).concat([
     ['回収', oi>=4],          // 検品/ロット処理中に入った = 回収済み
     ['検品/ロット処理', oi>=5],   // 最終入金待ちに入った = 検品・ロット処理済み
-    ['入金②'+(g.via?'（'+NM.via+'）':''), g.st==='最終入金完了'],
+    ['請求②'+mf+(g.via?'（'+NM.via+'）':''), inv2Done],
+    ['入金②', g.st==='最終入金完了'],
     ['引去', shipPicked],
     ['出荷', shipDone]
-  ];
+  ]);
   const flowName = (isPaid ? NM.credit : '半金×2') + (g.via ? '・'+NM.via+'経由' : '・直');
   let nowMarked = false;
   return '<div class="steps"><span class="small muted" style="margin-right:6px">'+esc(flowName)+'：</span>' + steps.map(s=>{
