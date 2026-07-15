@@ -1092,7 +1092,7 @@ function journeyHtml(g, ship){
     ['前金請求'+mf+(g.via?'（'+NM.via+'）':''), oi>=1],
     ['前金入金', !!g.in1 || oi>=2],
     ['振分/発注', oi>=3]      // 回収中に入った = 振り分け・発注済み
-  ].concat(g.via ? [[NM.via+'→'+NM.co+' 発注・請求・入金（振分と同時進行）', viaMoneyDone]] : []).concat([
+  ].concat(g.via ? [[NM.via+'→'+NM.co+'処理', viaMoneyDone]] : []).concat([
     ['回収', oi>=4],          // 検品/ロット処理中に入った = 回収済み
     ['検品/ロット処理', oi>=5],   // 最終入金待ちに入った = 検品・ロット処理済み
     ['残金請求'+mf+(g.via?'（'+NM.via+'）':''), inv2Done],
