@@ -116,6 +116,24 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
   #mnav button{flex:1;border:0;background:none;color:var(--ink2);padding:9px 4px;font-size:10.5px;min-width:62px}
   #mnav button.on{color:var(--accent);font-weight:700}
   .kpi .v{font-size:19px}
+  /* KPIカード: 170px基準だと375px幅で1列に落ちて縦に間延びするため、モバイルはやや狭い基準で2列を確保 */
+  .kpis{grid-template-columns:repeat(auto-fill,minmax(136px,1fr));gap:8px}
+  .kpi{padding:11px 12px}
+  /* 受注カードの一気通貫ビュー（journey）: ステップ数が多く折り返すと矢印の対応関係が崩れるため、
+     モバイルは折り返しをやめて横スクロールに切り替える（内容は変えずスクロールで全部見られるようにする） */
+  .journey{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:6px;margin:-2px -2px 0}
+  .journey .step{flex:0 0 auto}
+  .journey span[style*="color:var(--grid)"]{flex:0 0 auto}
+  /* 資金繰りバーのセグメント内ラベル（卸先名/ブランド ¥金額）は幅が狭くなるほど読めなくなるため、
+     モバイルはバーを少し高くしてラベル文字を小さくし、はみ出しはタップ/長押しのtitleで確認する運用にする */
+  .cashbar{height:26px}
+  .cashbar > div{font-size:9.5px!important;line-height:26px!important}
+  /* テーブル全般: フォントを一段階詰めて横スクロール量を減らす */
+  table{font-size:12px}
+  th{font-size:11px;padding:5px 6px}
+  td{padding:6px 6px}
+  .ordcard summary{gap:6px}
+  .ordcard summary .right{flex-basis:100%;text-align:right}
 }
 </style>
 </head>
@@ -690,7 +708,7 @@ function vDashboard(){
     return '<div title="'+esc((s.tip||s.label)+' '+yen(s.v))+'" style="flex:0 0 '+pct.toFixed(2)+'%;min-width:0;'+segBg(s)+(s.alt?'filter:brightness(1.22);':'')+(i<segs.length-1?'margin-right:2px;':'')+'overflow:hidden;white-space:nowrap;color:#fff;font-size:10.5px;font-weight:700;line-height:20px;padding:0 6px;text-shadow:0 1px 1px rgba(0,0,0,.35)">'+(pct>=8?esc(s.label)+' '+yen(s.v):'')+'</div>';
   }).join('');
   const cashRow = (label, v, note, inner)=>'<div style="margin-top:10px"><div class="row small" style="justify-content:space-between"><span>'+label+(note?' <span class="muted">'+note+'</span>':'')+'</span><b>'+yen(v)+'</b></div>' +
-    '<div style="display:flex;height:20px;border-radius:10px;background:var(--wash);overflow:hidden;margin-top:4px">'+inner+'</div></div>';
+    '<div class="cashbar" style="display:flex;height:20px;border-radius:10px;background:var(--wash);overflow:hidden;margin-top:4px">'+inner+'</div></div>';
   const cashHtml =
     cashRow('💰 入金', cashIn, 'ベタ塗り=確定 '+yen(cashInDone)+'（入金済み）／斜線=予定 '+yen(cashInPend)+'（未入金の請求書 '+pendDocs.length+'枚・税込）',
       segsHtml(docSegs(settledDocs, 'var(--s2)', false, '入金済み').concat(
@@ -1112,7 +1130,7 @@ function journeyHtml(g, ship){
   ]);
   const flowName = (isCredit ? NM.credit : '半金×2') + (g.via ? '・'+NM.via+'経由' : '・直');
   let nowMarked = false;
-  return '<div class="steps"><span class="small muted" style="margin-right:6px">'+esc(flowName)+'：</span>' + steps.map(s=>{
+  return '<div class="steps journey"><span class="small muted" style="margin-right:6px">'+esc(flowName)+'：</span>' + steps.map(s=>{
     let cls = 'done';
     if(!s[1]){ cls = nowMarked ? '' : 'now'; nowMarked = true; }
     return '<span class="step"><span class="dot '+cls+'"></span>'+s[0]+'</span>';
