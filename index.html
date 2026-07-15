@@ -854,15 +854,44 @@ function printAnbetsu(){
 }
 function kpi(l,v,d){ return '<div class="kpi"><div class="l">'+l+'</div><div class="v">'+v+'</div>'+(d?'<div class="d">'+d+'</div>':'')+'</div>'; }
 // ⚠ 要対応ウィジェット: 止まっている案件（アラート設定シートのしきい値超え）と入金期限切れ
+// ===== 振り分けの入れ込み済み判定（2026-07-15 ユーザー指定: 済みはグレーアウト・未完了は案件単位でアラート） =====
+// 回収管理へ入れ込み済みの「受注×ブランド」。振り分け確定=回収台帳に「対象受注」つきの行がある（ゴミ箱行は除く）
+function allocDoneMap(){
+  const done = {};   // 受注ID → Set(ブランド)
+  rows('collectionLedger').forEach(r=>{
+    const b = brandOf(r['商品ID']); if(!b) return;
+    String(r['対象受注']||'').split(',').map(x=>x.trim()).filter(x=>x && !x.startsWith('回収:'))
+      .forEach(oid=>(done[oid]=done[oid]||new Set()).add(b));
+  });
+  return done;
+}
+// 振り分け未完了の案件（ステータス=振分/発注 で、まだ回収管理に入っていないブランドが残っているもの）
+function allocPending(){
+  const done = allocDoneMap();
+  const g = {};
+  rows('orderLedger').forEach(r=>{ if(String(r['ステータス']||'').trim()!=='振分/発注') return;
+    const id=String(r['受注ID']||'').trim(); if(!id) return;
+    (g[id]=g[id]||{id, w:r['卸先名'], brands:new Set()});
+    const b=brandOf(r['商品ID']); if(b) g[id].brands.add(b);
+  });
+  return Object.values(g)
+    .map(o=>({id:o.id, w:o.w, rest:[...o.brands].filter(b=>!(done[o.id]&&done[o.id].has(b)))}))
+    .filter(o=>o.rest.length);
+}
+
 function alertsHtml(){
   const al = DB.alerts || {stalled:[], overdue:[]};
-  const n = (al.stalled||[]).length + (al.overdue||[]).length;
+  const pa = allocPending();   // 振り分け未完了（案件単位）
+  const n = (al.stalled||[]).length + (al.overdue||[]).length + pa.length;
   if(!n) return '<div class="card"><span class="small" style="color:var(--good)"><b>✅ 要対応はありません</b></span>' +
     '<span class="muted small">　停滞案件・入金期限切れなし（しきい値はスプシ「アラート設定」シートで変更できます）</span></div>';
   return '<div class="card" style="border:1.5px solid var(--crit)"><b class="small" style="color:var(--crit)">⚠ 要対応 '+n+'件</b>' +
   (al.overdue.length ? '<div class="tblwrap" style="margin-top:8px"><table><tr><th>入金期限切れ</th><th>卸先</th><th>種類</th><th>期限</th><th class="num">超過</th><th class="num">金額(税込)</th><th>今の状態</th></tr>' +
     al.overdue.map(o=>'<tr><td class="mono">'+esc(o.docNo)+'</td><td>'+esc(o.name)+'</td><td class="small">'+esc(o.kind)+'</td><td class="small">'+esc(o.due)+'</td>' +
       '<td class="num" style="color:var(--crit)"><b>'+o.days+'日</b></td><td class="num">'+yen(o.amount)+'</td><td>'+pill(o.status)+'</td></tr>').join('')+'</table></div>' : '') +
+  (pa.length ? '<div class="tblwrap" style="margin-top:8px"><table><tr><th>振り分け未完了</th><th>卸先</th><th>残りブランド</th><th></th></tr>' +
+    pa.map(o=>'<tr><td class="mono">受注 '+esc(o.id)+'</td><td>'+esc(o.w)+'</td><td class="small">'+esc(o.rest.join('・'))+'</td>' +
+      '<td><button class="btn sm" onclick="go(\'allocation\');render()">🧮 振り分けへ</button></td></tr>').join('')+'</table></div>' : '') +
   (al.stalled.length ? '<div class="tblwrap" style="margin-top:8px"><table><tr><th>止まっている案件</th><th>相手</th><th>状態</th><th class="num">経過</th></tr>' +
     al.stalled.map(s=>'<tr><td class="mono">'+esc(s.label)+' '+esc(s.id)+'</td><td>'+esc(s.name)+'</td><td>'+pill(s.status)+'</td>' +
       '<td class="num" style="color:var(--warn)"><b>'+s.days+'日</b><span class="muted small">（目安'+s.threshold+'日）</span></td></tr>').join('')+'</table></div>' : '') +
@@ -1738,6 +1767,7 @@ function allocCell(pid, sid, v){
 }
 function vAllocation(){
   const needSetup = !((DB.products&&DB.products.headers)||[]).includes('入数（箱）');
+  const done = allocDoneMap();   // 入れ込み済みの受注×ブランド（済み=グレーアウト表示。消さない）
   const selIds = Object.keys(ALLOC.sel).filter(k=>ALLOC.sel[k]);
   const brands = [...new Set(rows('orderLedger').filter(r=>ALLOC.sel[String(r['受注ID']||'').trim()]).map(r=>brandOf(r['商品ID'])||'（メーカー不明）'))].sort();
   if(brands.length && !brands.includes(ALLOC.brand)) ALLOC.brand = brands[0];
@@ -1765,10 +1795,12 @@ function vAllocation(){
     '<tr><th></th><th>受注ID</th><th>状態</th><th>卸先</th><th>ブランド</th><th>受注日</th><th class="num">明細数</th></tr>' +
     (olist.map(g=>{
       const open = (ALLOC.open||{})[g.id];
-      let h = '<tr style="cursor:pointer" onclick="allocOpenToggle(\''+g.id+'\')">' +
-        '<td onclick="event.stopPropagation()"><input type="checkbox" '+(ALLOC.sel[g.id]?'checked':'')+' onclick="allocToggleOrder(\''+g.id+'\',this.checked)" style="width:16px;height:16px"></td>' +
-        '<td class="mono">'+(open?'▾':'▸')+' '+g.id+'</td><td>'+pill(g.st)+'</td><td class="small">'+esc(g.w)+'</td>' +
-        '<td class="small">'+esc([...g.brands].join('・'))+'</td>' +
+      const doneSet = done[g.id]||new Set();
+      const isDone = g.brands.size>0 && [...g.brands].every(b=>doneSet.has(b));   // 全ブランド入れ込み済み=振分完了
+      let h = '<tr style="cursor:pointer'+(isDone?';opacity:.55':'')+'" onclick="allocOpenToggle(\''+g.id+'\')">' +
+        '<td onclick="event.stopPropagation()"><input type="checkbox" '+(ALLOC.sel[g.id]?'checked':'')+(isDone?' disabled':'')+' onclick="allocToggleOrder(\''+g.id+'\',this.checked)" style="width:16px;height:16px"></td>' +
+        '<td class="mono">'+(open?'▾':'▸')+' '+g.id+'</td><td>'+pill(g.st)+(isDone?' <span class="small" style="color:var(--good);font-weight:700">✅振分済み</span>':'')+'</td><td class="small">'+esc(g.w)+'</td>' +
+        '<td class="small">'+[...g.brands].map(b=>(doneSet.has(b)?'✅':'')+esc(b)).join('・')+'</td>' +
         '<td class="small muted">'+esc(g.date)+'</td><td class="num">'+g.n+'</td></tr>';
       if(open){
         const lines = rows('orderLedger').filter(r=>String(r['受注ID']||'').trim()===g.id);
@@ -1782,8 +1814,17 @@ function vAllocation(){
   if(!selIds.length) return html;
 
   // ② ブランドと条件
-  html += '<div class="tabs">'+brands.map(b=>'<button class="'+(b===ALLOC.brand?'on':'')+'" onclick="ALLOC.brand=\''+esc(b)+'\';render()">'+esc(b)+'</button>').join('')+'</div>';
+  // 済み判定: 選択中の受注のうちブランドbを含む全受注が回収管理に入っていれば✅（グレーアウトで残す・2026-07-15 ユーザー指定）
+  const selOrders = rows('orderLedger').filter(r=>ALLOC.sel[String(r['受注ID']||'').trim()]);
+  const brandDone = b=>{ const t=selOrders.filter(r=>(brandOf(r['商品ID'])||'（メーカー不明）')===b);
+    return t.length>0 && t.every(r=>{ const ds=done[String(r['受注ID']).trim()]; return ds && ds.has(b); }); };
+  html += '<div class="tabs">'+brands.map(b=>'<button class="'+(b===ALLOC.brand?'on':'')+'"'+(brandDone(b)?' style="opacity:.55"':'')+' onclick="ALLOC.brand=\''+esc(b)+'\';render()">'+(brandDone(b)?'✅':'')+esc(b)+'</button>').join('')+'</div>';
   const brand = ALLOC.brand;
+  if(brandDone(brand)){
+    html += '<div class="card" style="opacity:.8"><b class="small">✅ '+esc(brand)+' は回収・検品へ入れ込み済みです</b>' +
+      '<p class="muted small" style="margin:6px 0 0">振り分けた内容は回収・検品画面の該当回収（メモ「'+esc(brand)+' 振り分け」）で確認できます。やり直す場合は回収・検品側で該当の回収を削除するとここが再び操作できるようになります</p></div>';
+    return html;
+  }
   const conf = ALLOC.conf[brand]||{};
   const items = allocItems(brand);
   const needTotal = items.reduce((a,i)=>a+i.need,0);
