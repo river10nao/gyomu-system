@@ -1077,7 +1077,7 @@ function journeyHtml(g, ship){
   const docs = rows('docLog').filter(d=>String(d['受注ID']||'').trim()===String(g.id||'').trim()).map(d=>String(d['種類']||''));
   const inv2Done = docs.some(k=>k.indexOf('請求書②')>=0) || g.st==='最終入金完了';   // 請求②発行済み（完了案件は発行済み扱い）
   const viaMoneyDone = docs.some(k=>k.indexOf('発注書（'+NM.via)===0);   // 経由先→自社の帳票処理は発注書の発行が起点
-  const mf = g.via ? '・マネフォ' : '';   // 経由案件の請求はマネフォ申請→承認→押印請求書→入金
+  const mf = g.via ? '/マネフォ' : '';   // 経由案件の請求はマネフォ申請→承認→押印請求書→入金
   const steps = isCredit ? [
     ['受注', true],
     ['全額請求（'+NM.credit+(g.via?'・'+NM.via:'')+'）', oi>=1],   // 発行と同時にステータス前進。入金は待たない
