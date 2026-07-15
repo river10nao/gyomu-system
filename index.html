@@ -1803,7 +1803,7 @@ function vAllocation(){
       const open = (ALLOC.open||{})[g.id];
       const doneSet = done[g.id]||new Set();
       const isDone = g.brands.size>0 && [...g.brands].every(b=>doneSet.has(b));   // 全ブランド入れ込み済み=振分完了
-      let h = '<tr style="cursor:pointer'+(isDone?';opacity:.55':'')+'" onclick="allocOpenToggle(\''+g.id+'\')">' +
+      let h = '<tr style="cursor:pointer'+(isDone?';background:color-mix(in srgb,var(--muted) 18%,transparent);opacity:.62':'')+'" onclick="allocOpenToggle(\''+g.id+'\')">' +
         '<td onclick="event.stopPropagation()"><input type="checkbox" '+(ALLOC.sel[g.id]?'checked':'')+(isDone?' disabled':'')+' onclick="allocToggleOrder(\''+g.id+'\',this.checked)" style="width:16px;height:16px"></td>' +
         '<td class="mono">'+(open?'▾':'▸')+' '+g.id+'</td><td>'+pill(g.st)+(isDone?' <span class="small" style="color:var(--good);font-weight:700">✅振分済み</span>':'')+'</td><td class="small">'+esc(g.w)+'</td>' +
         '<td class="small">'+[...g.brands].map(b=>(doneSet.has(b)?'✅':'')+esc(b)).join('・')+'</td>' +
@@ -1824,7 +1824,7 @@ function vAllocation(){
   const selOrders = rows('orderLedger').filter(r=>ALLOC.sel[String(r['受注ID']||'').trim()]);
   const brandDone = b=>{ const t=selOrders.filter(r=>(brandOf(r['商品ID'])||'（メーカー不明）')===b);
     return t.length>0 && t.every(r=>{ const ds=done[String(r['受注ID']).trim()]; return ds && ds.has(b); }); };
-  html += '<div class="tabs">'+brands.map(b=>'<button class="'+(b===ALLOC.brand?'on':'')+'"'+(brandDone(b)?' style="opacity:.55"':'')+' onclick="ALLOC.brand=\''+esc(b)+'\';render()">'+(brandDone(b)?'✅':'')+esc(b)+'</button>').join('')+'</div>';
+  html += '<div class="tabs">'+brands.map(b=>'<button class="'+(b===ALLOC.brand?'on':'')+'"'+(brandDone(b)?' style="background:color-mix(in srgb,var(--muted) 18%,transparent);opacity:.62"':'')+' onclick="ALLOC.brand=\''+esc(b)+'\';render()">'+(brandDone(b)?'✅':'')+esc(b)+'</button>').join('')+'</div>';
   const brand = ALLOC.brand;
   if(brandDone(brand)){
     html += '<div class="card" style="opacity:.8"><b class="small">✅ '+esc(brand)+' は回収・検品へ入れ込み済みです</b>' +
