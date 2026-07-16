@@ -396,8 +396,8 @@ function busy(entity, id){ return inflight.has(entity + ':' + id); }
 // 操作が影響するシートの推定（entityベース）。now=応答に同梱して即反映（1往復）／later=裏で更新（在庫系は次の画面遷移までに届けば足りる）
 const ENTITY_SHEETS = {
   order:      {now:['orderLedger'], later:[]},
-  collection: {now:['collectionLedger','orderLedger'], later:['stock','stockLog']},   // 回収の前進は受注の自動前進＋入庫を伴いうる
-  shipment:   {now:['shipments','orderLedger'], later:['stock','stockLog']},
+  collection: {now:['collectionLedger'], later:['orderLedger','stock','stockLog']},   // 受注の自動前進・入庫の反映は裏読み（回収画面の反映を最優先）
+  shipment:   {now:['shipments'], later:['orderLedger','stock','stockLog']},
   hanbai:     {now:['hanbaiOrders'], later:['stock','stockLog']}
 };
 function sheetsFor(action, payload){
@@ -2200,7 +2200,8 @@ async function allocDeleteDraft(id){
 const MASTER_CONF_ = ()=>({
   '商品':   {sheet:'products',    id:'商品ID',  cols:['商品ID','商品名','容量','カテゴリー','JANコード','定価（税抜）','サロン価掛け率','サロン仕入価格（税抜）',NM.co+'掛け率',NM.co+'仕入価格（税抜）'], add:'addProduct', upd:'updateProduct',
              searchCols:['商品名','JANコード','商品ID'], searchHint:'商品名・JANで検索'},
-  '卸先':   {sheet:'wholesalers', id:'卸先ID',  cols:['卸先ID','卸先名','担当者名','メーカー','郵便番号','住所','電話番号','メールアドレス','略称'], add:'addWholesaler', upd:'updateWholesaler',
+  // 略称はシート運用専用（発注書シート名の元）なのでシステム画面には出さない（2026-07-16 ユーザー指定。スプシ側には残す）
+  '卸先':   {sheet:'wholesalers', id:'卸先ID',  cols:['卸先ID','卸先名','担当者名','メーカー','郵便番号','住所','電話番号','メールアドレス','納品先名','納品先住所','納品先TEL'], add:'addWholesaler', upd:'updateWholesaler',
              searchCols:['卸先名','担当者名','卸先ID'], searchHint:'卸先名・担当者で検索'},
   'サロン': {sheet:'salons',      id:'サロンID', cols:['サロンID','種別','サロン名(ディーラー含む)','担当者名','住所','電話番号','メールアドレス','締め日','支払日','ストップ'], add:'addSalon', upd:'updateSalon',
              searchCols:['サロン名(ディーラー含む)','担当者名','サロンID'], searchHint:'サロン名・担当者で検索'}
