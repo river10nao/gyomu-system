@@ -199,12 +199,16 @@ async function apiGet(action, params){
   if(!j.ok) throw new Error(j.error);
   return j.data;
 }
-async function apiPost(action, payload){
+async function apiPost(action, payload, refresh){
+  // 起動直後の裏読み込み中（スナップショット表示中）は書き込みさせない（古いデータを見たまま操作する事故防止）
+  if(!dbFresh) throw new Error('最新データを読み込み中です。数秒待ってからもう一度お試しください');
   // Content-Type を text/plain にして CORS プリフライトを回避（GAS は OPTIONS を扱えない）
+  // refresh: 指定したシートの最新データを応答に同梱してもらう（書き込み→読み直しを1往復にする高速化）
   const res = await fetch(GAS_URL, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
-    body: JSON.stringify({token, action, payload: payload||{}})});
+    body: JSON.stringify({token, action, payload: payload||{}, refresh: (refresh&&refresh.length)?refresh:undefined})});
   const j = await res.json();
   if(!j.ok) throw new Error(j.error);
+  if(j.sheets){ Object.assign(DB, j.sheets); saveSnap(); }
   return j.data;
 }
 
@@ -229,7 +233,7 @@ async function doLogin(){
   msg.textContent = '';
   boot();
 }
-function logout(){ localStorage.removeItem('gyomu_biz_token'); location.reload(); }
+function logout(){ localStorage.removeItem('gyomu_biz_token'); localStorage.removeItem('gyomu_biz_snap'); location.reload(); }
 
 // ===== 表示モード（自動=OS設定 / ライト / ダーク。端末ごとに記憶） =====
 function applyTheme(){
@@ -268,9 +272,19 @@ async function boot(){
   document.getElementById('login').style.display='none';
   document.getElementById('loadbox').style.display='flex';
   try{
-    await loadAll();
-    document.getElementById('app').style.display='block';
-    renderNav(); render();
+    const snap = loadSnap();
+    if(snap){
+      // 前回のデータで即表示し、裏で最新化（最新化が終わるまで書き込み操作はガード＝dbFresh）
+      Object.assign(DB, snap.db);
+      document.getElementById('app').style.display='block';
+      renderNav(); render();
+      loadAll().then(()=>{ renderNav(); render(); })
+        .catch(()=>toast('最新データの取得に失敗しました。「🔄 データ更新」を押してください', true));
+    }else{
+      await loadAll();
+      document.getElementById('app').style.display='block';
+      renderNav(); render();
+    }
   }catch(e){
     document.getElementById('loadbox').innerHTML = '<div>読み込みに失敗しました: '+esc(e.message)+'</div><button class="btn" onclick="location.reload()">再読み込み</button>';
     return;
@@ -280,14 +294,59 @@ async function boot(){
 
 // 起動時に全データを並列ロード → 以後の検索・絞込みはブラウザ内で即時
 const SHEETS = ['products','wholesalers','salons','orderLedger','collectionLedger','shipments','hanbaiOrders','stock','stockLog','monthlyGoals','quotaMaster','orders','collection','docLog','alerts','allocDrafts'];
+// alerts はGAS側で6シート読む一番重い項目（単体約4秒）なので、起動・全読み直しの完了を待たせず後から差し込む
+const CORE_SHEETS = SHEETS.filter(n => n !== 'alerts');
+let dbFresh = false;   // 保存スナップショットで先に画面を出している間は false（書き込み操作をガード）
+
 async function loadAll(){
-  const msg = document.getElementById('loadmsg');
-  const jobs = SHEETS.map(async name => { DB[name] = await apiGet(name); if(msg) msg.textContent = name + ' 読込完了'; });
-  await Promise.all(jobs);
+  await Promise.all(CORE_SHEETS.map(async name => { DB[name] = await apiGet(name); }));
+  dbFresh = true;
+  refreshAlerts();
+  saveSnap();
 }
 async function reload(names){
-  await Promise.all((names||SHEETS).map(async n => { DB[n] = await apiGet(n); }));
-  render();
+  await Promise.all((names||CORE_SHEETS).map(async n => { DB[n] = await apiGet(n); }));
+  if(!names) refreshAlerts();
+  saveSnap(); render();
+}
+// 要対応（alerts）は待たずに裏で更新して、届いたら画面に反映
+let alertsBusy = false;
+function refreshAlerts(){
+  if(alertsBusy) return;
+  alertsBusy = true;
+  apiGet('alerts').then(d=>{ DB.alerts = d; saveSnap(); render(); }).catch(()=>{}).finally(()=>{ alertsBusy = false; });
+}
+
+// ===== 前回データのスナップショット（開いた瞬間に前回の画面を出す高速化） =====
+// 保存するのは表示用データだけ。書き込み操作は最新データ取得完了（dbFresh）までガードする
+const SNAP_KEY = 'gyomu_biz_snap';
+function saveSnap(){
+  try{ localStorage.setItem(SNAP_KEY, JSON.stringify({t: Date.now(), db: DB})); }catch(e){}
+}
+function loadSnap(){
+  try{
+    const s = JSON.parse(localStorage.getItem(SNAP_KEY)||'null');
+    return (s && s.db) ? s : null;
+  }catch(e){ return null; }
+}
+
+// 📖 操作マニュアル: Driveの「業務マニュアル」フォルダの最新ファイルをGAS経由で取得してダウンロード
+// （リンク共有は使わない=ログインした人だけが取得できる。更新はフォルダにファイルを入れ替えるだけ）
+let manualBusy = false;
+async function downloadManual(){
+  if(manualBusy) return;
+  manualBusy = true;
+  toast('マニュアルを取得しています…（数秒かかります）');
+  try{
+    const d = await apiGet('manualFile');
+    const bytes = Uint8Array.from(atob(d.base64), c=>c.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], {type: d.mime||'application/pdf'}));
+    const a = document.createElement('a');
+    a.href = url; a.download = d.name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 60000);
+    toast('マニュアル（'+d.updated+' 更新）をダウンロードしました');
+  }catch(e){ toast(e.message, true); }
+  finally{ manualBusy = false; }
 }
 
 // ===== 共通ヘルパ =====
@@ -334,15 +393,35 @@ function actKey(action, payload){
   return action;
 }
 function busy(entity, id){ return inflight.has(entity + ':' + id); }
+// 操作が影響するシートの推定（entityベース）。特定できる操作は応答同梱=1往復で済ませる
+const ENTITY_SHEETS = {
+  order:      ['orderLedger'],
+  collection: ['collectionLedger','orderLedger','stock','stockLog'],   // 回収の前進は受注の自動前進＋入庫を伴いうる
+  shipment:   ['shipments','stock','stockLog','orderLedger'],
+  hanbai:     ['hanbaiOrders','stock','stockLog']
+};
+function sheetsFor(action, payload){
+  const ent = payload && payload.entity;
+  return (ent && ENTITY_SHEETS[ent]) ? ENTITY_SHEETS[ent] : null;
+}
 function busyPill(){ return '<span class="pill" style="background:color-mix(in srgb,var(--muted) 15%, transparent);color:var(--muted)">⏳ 処理中…</span>'; }
 async function act(action, payload, okMsg, reloadNames){
   const key = actKey(action, payload);
   if(inflight.has(key)){ toast('この対象は処理中です。完了までお待ちください', true); return; }
   inflight.add(key); render();   // 対象カードだけ「処理中…」表示になる
   try{
+    const names = reloadNames || sheetsFor(action, payload);
+    if(names){
+      // 影響シートが分かる操作は応答に最新シートを同梱してもらい往復1回で完結。要対応（重い）は裏で更新
+      const r = await apiPost(action, payload, names);
+      toast(okMsg || '完了しました');
+      refreshAlerts();
+      return r;
+    }
+    // 影響範囲を特定できない操作は従来通り全読み直し
     const r = await apiPost(action, payload);
     toast(okMsg || '完了しました');
-    await reload(reloadNames);   // 読み直しが終わるまでロックを保持（完了前の古いデータを操作させない）
+    await reload();
     return r;
   }catch(e){ toast(e.message, true); }
   finally{ inflight.delete(key); render(); }
@@ -745,7 +824,8 @@ function vDashboard(){
     }).join('') || '<tr><td colspan="7" class="muted">入金待ちの請求書はありません</td></tr>') +
   '</table></div></div>';
 
-  return '<h1>ダッシュボード</h1><div class="sub">対象月: '+monthPicker()+'</div>' +
+  return '<h1>ダッシュボード <button class="btn sm" style="vertical-align:middle;font-weight:normal" onclick="downloadManual()">📖 マニュアル</button></h1>' +
+    '<div class="sub">対象月: '+monthPicker()+'</div>' +
   alertsHtml() +
   boardHtml +
   '<div class="kpis">' +
@@ -967,10 +1047,12 @@ async function allocRedo(brand){
 }
 
 function alertsHtml(){
+  const loading = !DB.alerts;   // alerts は重いので裏で読み込む。届くまでは「確認中」表示（✅と誤認させない）
   const al = DB.alerts || {stalled:[], overdue:[]};
   // 振り分け未完了は通常業務の残件なので要対応には出さない（残件ボード側でカウント表示。2026-07-16 ユーザー指定）
   const pb = allocBroken();    // 振り分けの一部削除による数量不足（事故検知・ステータス不問）は要対応に残す
   const n = (al.stalled||[]).length + (al.overdue||[]).length + pb.length;
+  if(!n && loading) return '<div class="card"><span class="muted small">⏳ 要対応（停滞・期限切れ）を確認中…</span></div>';
   if(!n) return '<div class="card"><span class="small" style="color:var(--good)"><b>✅ 要対応はありません</b></span>' +
     '<span class="muted small">　停滞案件・入金期限切れなし（しきい値はスプシ「アラート設定」シートで変更できます）</span></div>';
   return '<div class="card" style="border:1.5px solid var(--crit)"><b class="small" style="color:var(--crit)">⚠ 要対応 '+n+'件</b>' +
@@ -1319,23 +1401,22 @@ async function issueDocUI(orderId){
   if(inflight.has(key)){ toast('この案件は処理中です。完了までお待ちください', true); return; }
   inflight.add(key); render();   // フォームが「発行中…」表示になる。他の画面・案件はそのまま使える
   try{
+    // docLog=発行済み一覧の更新・orderLedger=請求書①/全額の発行で受注ステータスが自動前進するため（応答に同梱・往復1回）
     if(kind==='invoiceSet'){
       // 請求書①＋② 一括発行（従来の「半金×2まとめて発行」パターン）
-      const r = await apiPost('issueInvoiceSet', {'受注ID':orderId, issuer, dateStr, dueStr1:due1, dueStr2:due2, items});
-      DB.docLog = await apiGet('docLog');
+      const r = await apiPost('issueInvoiceSet', {'受注ID':orderId, issuer, dateStr, dueStr1:due1, dueStr2:due2, items}, ['docLog','orderLedger']);
       viewState.docFor = null;
       toast('請求書①（'+r.docs[0].docNo+'）と②（'+r.docs[1].docNo+'）を発行しました');
       window.open(r.docs[0].url, '_blank');
       window.open(r.docs[1].url, '_blank');   // ポップアップブロック時は発行済み一覧から開けます
     }else{
       const dueStr = (kind==='invoice2'||kind==='viaInvoice2') ? due2 : due1;   // ②は期限②、①/全額/その他は期限①欄を使う
-      const r = await apiPost('issueDocument', {'受注ID':orderId, kind, issuer, dateStr, dueStr, items});
-      DB.docLog = await apiGet('docLog');
+      const r = await apiPost('issueDocument', {'受注ID':orderId, kind, issuer, dateStr, dueStr, items}, ['docLog','orderLedger']);
       viewState.docFor = null;
       toast(r.kindLabel+' '+r.docNo+' を発行しました');
       window.open(r.url, '_blank');
     }
-    await reload(['orderLedger']);   // 請求書①/全額の発行で受注ステータスが自動前進するため読み直す
+    refreshAlerts();   // 請求書①/全額の発行はステータス自動前進を伴うので要対応も裏で更新
   }catch(e){
     toast(e.message, true);
   }finally{ inflight.delete(key); render(); }
@@ -1484,10 +1565,10 @@ async function noSubmit(){
       '仕入れ形態': document.getElementById('noForm').value,
       [NM.via+'経由']: document.getElementById('noVia').checked,
       items
-    });
+    }, ['orderLedger']);   // 新しい案件行を応答に同梱してもらう（往復1回）
     viewState.newOrder = false; viewState.noRows = []; viewState.noJansTxt=''; viewState.noQtyTxt=''; viewState.noVia=false;
     toast('案件 '+r.orderId+' を作成しました（商談中・'+r.lines+'明細）');
-    await reload(['orderLedger']);
+    render();
   }catch(e){
     toast(e.message, true);
     btn.disabled = false; btn.textContent = '📝 この内容で案件を作成（商談中）';
@@ -2083,7 +2164,7 @@ async function allocCommit(){
   const res = await act('commitAllocation', {brand, orderIds:selIds, lines}, brand+' の回収データを作成しました', ['collectionLedger']);
   if(res){
     delete ALLOC.result[brand];
-    apiPost('deleteAllocDraft', {brand}).then(()=>reload(['allocDrafts'])).catch(()=>{});   // 確定したブランドの下書きは自動削除（無ければ何もしない）
+    apiPost('deleteAllocDraft', {brand}, ['allocDrafts']).then(()=>render()).catch(()=>{});   // 確定したブランドの下書きは自動削除（無ければ何もしない）
     toast('回収ID: '+res.collectionIds.join(', ')+' を作成しました'); render();
   }
 }
