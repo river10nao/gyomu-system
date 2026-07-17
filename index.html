@@ -1499,9 +1499,9 @@ function newOrderForm(){
     '<label class="small">受注日<br><input type="date" id="noDate" value="'+(viewState.noDate||t)+'" onchange="viewState.noDate=this.value"></label>' +
     '<label class="small">支払方式<br><select id="noPay" onchange="viewState.noPay=this.value"><option '+(viewState.noPay==='半金×2'?'selected':'')+'>半金×2</option><option '+(viewState.noPay===''+NM.credit+'翌月末'?'selected':'')+'>'+NM.credit+'翌月末</option></select></label>' +
     // 仕入れ形態はチェック式ピル（振り分けのサロン選択と同じ操作感の簡易版・2026-07-17 ユーザー案）。
-    // 選択肢=「自社サロン」＋種別ディーラーの実名（マスタ駆動。抽象的な「外注/業者直卸」はやめた）
+    // 選択肢=「自社サロン」＋種別=外注の実名だけ（マスタの種別はサロン/ディーラー/外注の3値。ディーラーは仕入れ形態に出さない）
     '<label class="small">仕入れ形態（あてはまるものすべてにチェック）<br><span style="display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap;margin-top:2px">' +
-      (()=>{ const opts = ['自社サロン'].concat(rows('salons').filter(s=>String(s['種別']||'').trim()==='ディーラー'&&String(s['ストップ']||'').trim()===''&&String(s['サロンID']||'').trim()).map(salonLabel));
+      (()=>{ const opts = ['自社サロン'].concat(rows('salons').filter(s=>String(s['種別']||'').trim()==='外注'&&String(s['ストップ']||'').trim()===''&&String(s['サロンID']||'').trim()).map(salonLabel));
       const sel = viewState.noForms||(viewState.noForms=['自社サロン']);
       return opts.map(o=>'<label class="pill" style="cursor:pointer;background:'+(sel.includes(o)?'color-mix(in srgb,var(--s1) 20%, transparent)':'var(--wash)')+'"><input type="checkbox" '+(sel.includes(o)?'checked':'')+' onclick="noFormToggle(\''+esc(o)+'\',this.checked)" style="width:14px;height:14px;vertical-align:-2px"> '+esc(o)+'</label>').join(''); })() +
       '</span></label>' +
@@ -2183,7 +2183,7 @@ function vAllocation(){
     const outQty = pid=>num((r.out.q||{})[pid]);
     const outTotal = r.items.reduce((a,i)=>a+outQty(i.pid),0);
     const shortTotal = r.items.reduce((a,i)=>a+Math.max(0, i.need-assignedOf(i.pid)-outQty(i.pid)),0);
-    const dealers = rows('salons').filter(s=>String(s['種別']||'').trim()==='ディーラー' && String(s['ストップ']||'').trim()==='' && String(s['サロンID']||'').trim());
+    const dealers = rows('salons').filter(s=>String(s['種別']||'').trim()==='外注' && String(s['ストップ']||'').trim()==='' && String(s['サロンID']||'').trim());   // 外注先=種別「外注」（2026-07-17 3値化）
     html += '<div class="card tblwrap"><div class="row"><b class="small">③ '+esc(brand)+' 割り振り結果（対象受注: '+selIds.join(', ')+'）</b>' +
       '<button class="btn sm" onclick="allocPrint()">🖨 印刷用を開く（PDF保存）</button>' +
       '<button class="btn sm" onclick="allocSaveDraft()">💾 確認待ちで保存</button>' +
