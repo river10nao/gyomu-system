@@ -132,6 +132,15 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
   table{font-size:12px}
   th{font-size:11px;padding:5px 6px}
   td{padding:6px 6px}
+  /* 各セルは折り返さず横書きのまま保つ（列幅に押されて商品名などが縦1文字ずつになるのを防ぐ）。
+     はみ出す分はページ全体ではなく、テーブルの入れ物の中で横スクロールさせる */
+  th, td{white-space:nowrap}
+  /* スクロール用の入れ物(.tblwrap)を持たない素のテーブルは、自身を横スクロール箱にして
+     はみ出しをテーブル内で吸収する（ページ全体が横スクロールになるのを避ける） */
+  table{display:block; overflow-x:auto; -webkit-overflow-scrolling:touch; max-width:100%}
+  /* .tblwrap の中のテーブルは入れ物側(overflow-x:auto)がスクロールを担うので通常のテーブル表示に戻す
+     （ヘッダー固定 .tblwrap.sticky や、長文セルの…省略もそのまま維持される） */
+  .tblwrap table{display:table; overflow:visible; max-width:none}
   .ordcard summary{gap:6px}
   .ordcard summary .right{flex-basis:100%;text-align:right}
 }
@@ -461,6 +470,7 @@ const NAVS = ()=>[
   ['dashboard','📊 ダッシュボード'], ['orders','📋 受注'], ['allocation','🧮 振り分け'],
   ['collection','📦 回収・検品'],
   ['stock','🏷 在庫'], ['shipments','🚚 出荷'], ['hanbai','🛍 店販/EC'],
+  ['payments','💰 支払い'],
   ['salonpay','💴 '+NM.spay+'支払'], ['quota','📐 仕入枠'], ['masters','⚙️ マスタ管理'],
   ['opslog','📝 操作ログ']
 ];
@@ -473,7 +483,9 @@ function navCounts(){
     collection: uniq(rows('collectionLedger'), '回収ID', st=>st!=='ロット処理済み' && st!=='ロット処理なし'),
     shipments:  uniq(rows('shipments'),        '出荷ID', st=>st!=='出荷完了'),
     hanbai:     uniq(rows('hanbaiOrders'),     '注文ID', st=>st!=='お渡し済み' && st!=='完売'),
-    allocation: rows('allocDrafts').filter(d=>String(d['下書きID']||'').trim()!=='').length
+    // 振り分けは下書き数ではなく「振分が終わっていない案件」数（2026-07-18 ユーザー指定）
+    allocation: (()=>{ const cov = allocCoverage();
+      return allocOrderGroups().filter(g=>!(g.brands.size>0 && [...g.brands].every(b=>{ const e=(cov[g.id]||{})[b]; return e&&e.done; }))).length; })()
   };
 }
 function renderNav(){
@@ -498,7 +510,7 @@ function aggToggle(k){ viewState.aggOpen=viewState.aggOpen||{}; viewState.aggOpe
 function render(){
   renderNav();   // 操作のたびに左ナビのバッジ数も更新
   const fn = {dashboard:vDashboard, orders:vOrders, collection:vCollection, stock:vStock,
-              shipments:vShipments, hanbai:vHanbai, salonpay:vSalonPay, quota:vQuota, masters:vMasters,
+              shipments:vShipments, hanbai:vHanbai, payments:vPayments, salonpay:vSalonPay, quota:vQuota, masters:vMasters,
               opslog:vOpsLog, allocation:vAllocation}[view];
   // 検索欄に入力中の再描画でカーソルが外れないように、描き直し後にフォーカスと位置を戻す
   const ae = document.activeElement;
@@ -510,6 +522,216 @@ function render(){
     if(el){ el.focus(); try{ el.setSelectionRange(caret, caret); }catch(e){} }
   }
   renderNav();
+}
+
+// ===== 画面: 💰支払い（支払先ごとの支払予定と根拠明細。Task#22 Phase②・2026-07-18） =====
+// 計上ルール: 仕入=回収台帳の生存行（振り分け・外注仕入）。計上日=対象受注の📦発注日（未入力は振分確定日で仮計上・「仮」表示）
+// 単価: 仕入先（サロンマスタのディーラー/外注行）の掛け率列×定価。率が無い商品は商品マスタの仕入価格で仮単価
+const PAYIDS = { pure:'S0014', broker:'S0021', maverick:'S0022' };   // 特殊計算する行（口座請求元/仲介2%先/店販請求元）
+const BROKER_RATE = 0.02;   // 仲介手数料: 口座請求（対象ブランド分）税抜×2%（マスタの41.9%=39.9%+2%の2%側）
+const TRANSFER_FEE_YEN = 3500;   // 精算代行の利益: サロンへの振込1回（1サロン）につき（翌月末払い）
+function payRateOf(supRow, brand){
+  if(!supRow || !brand) return null;
+  for(const k of Object.keys(supRow)){
+    const m = String(k).match(/^([^（(]+)[（(][^）)]*[%％][）)]\s*$/);
+    if(m && m[1].trim() && brand.indexOf(m[1].trim())===0 && String(supRow[k]).trim()!=='') return num(supRow[k]);
+  }
+  return null;
+}
+function payEom(y,m){ return new Date(y, m+1, 0); }   // m月（0始まり）の末日
+function payFmt(d){ return d.toLocaleDateString('sv-SE').replace(/-/g,'/'); }
+// 締め日テキスト（末締め/10日締/都度）から期間キーと支払予定日を出す
+function payPeriod(dateStr, closeTxt, payTxt){
+  const d = new Date(String(dateStr||'').replace(/\//g,'-'));
+  if(isNaN(d)) return {key:'zz（日付なし）', label:'（計上日なし）', payLabel:String(payTxt||'')};
+  const y=d.getFullYear(), mo=d.getMonth(), day=d.getDate();
+  const c = String(closeTxt||'').trim(), p = String(payTxt||'').trim();
+  const mm = n=>String(n+1).padStart(2,'0');
+  if(c.indexOf('都度')>=0 || p.indexOf('都度')>=0) return {key:payFmt(d), label:payFmt(d)+' 発注分', payLabel:'都度払い'};
+  const cm = c.match(/(\d+)\s*日締/);
+  if(cm){
+    const cut=+cm[1];
+    const ey = day<=cut ? y : (mo===11 ? y+1 : y), em = day<=cut ? mo : (mo+1)%12;   // 締め日を過ぎたら翌月締めに計上
+    let payLabel = p;
+    if(p.indexOf('当月末')>=0) payLabel = payFmt(payEom(ey,em))+'（当月末）';
+    else if(p.indexOf('翌月末')>=0) payLabel = payFmt(payEom(ey,em+1))+'（翌月末）';
+    return {key: ey+'/'+mm(em)+'/'+String(cut).padStart(2,'0'), label: ey+'/'+mm(em)+' '+cut+'日締め分', payLabel};
+  }
+  let payLabel = p || '（支払日 確認中）';
+  if(p.indexOf('翌月末')>=0) payLabel = payFmt(payEom(y,mo+1))+'（翌月末）';
+  else if(p.indexOf('当月末')>=0 || /^末払い/.test(p)) payLabel = payFmt(payEom(y,mo))+'（当月末）';
+  return {key: y+'/'+mm(mo), label: y+'/'+mm(mo)+' 末締め分', payLabel};
+}
+function vPayments(){
+  const sal = {}; rows('salons').forEach(s=>{ const sid=String(s['サロンID']||'').trim(); if(sid) sal[sid]=s; });
+  const ordDate = {};   // 受注ID → 📦発注日（受注カードで入れた実発注日）
+  rows('orderLedger').forEach(r=>{ const id=String(r['受注ID']||'').trim(); if(id && !ordDate[id] && String(r['発注日']||'').trim()) ordDate[id]=String(r['発注日']).trim(); });
+
+  // ---- 仕入明細を仕入先ごとに集める ----
+  const bySup = {};   // supId（''=未設定） → lines[]
+  rows('collectionLedger').filter(r=>String(r['削除']||'').trim()==='').forEach(r=>{
+    const qty = num(r['個数']); if(qty<=0) return;
+    const supId = String(r['仕入先ID']||'').trim();
+    const pid = String(r['商品ID']||'').trim();
+    const brand = brandOf(pid)||'（不明）';
+    const oids = String(r['対象受注']||'').split(',').map(x=>x.trim()).filter(Boolean);
+    const od = oids.map(o=>ordDate[o]).find(Boolean);
+    const date = od || String(r['発注日']||'').trim();   // 発注日未入力の間は振分確定日で仮計上
+    const rate = payRateOf(sal[supId], brand);
+    const list = num((product(pid)||{})['定価（税抜）']);
+    let unit, unitNote='';
+    if(rate!=null && supId===PAYIDS.pure && brand===NM.boxBrand){
+      unit = Math.floor(list*(Math.round((rate-BROKER_RATE)*1000)/1000));   // 39.9%は切捨・2%は仲介側へ
+    } else if(rate!=null){ unit = Math.round(list*rate); }
+    else { unit = ownCost(pid); unitNote='率未設定→仕入価格で仮'; }
+    (bySup[supId]=bySup[supId]||[]).push({date, prov:!od, kid:String(r['回収ID']||'').trim(), oids:oids.join(', '),
+      salon:String(r['サロン名']||''), brand, name:String(r['商品名']||''), size:String(r['容量']||''), qty, unit, unitNote,
+      amt:unit*qty, isOut:String(r['区分']||'').trim()==='外注'});
+  });
+
+  let html = '<h1>支払い</h1><div class="sub">仕入先・支払先ごとの支払予定。計上日は受注カードの📦発注日（未入力の分は振分確定日で「仮」計上）。行を開くと根拠明細が見られます</div>';
+
+  // ---- MTG前払いアラート（発注に合わせて先払い準備が必要） ----
+  const mtgPending = Object.keys(bySup).flatMap(k=>bySup[k]).filter(l=>l.brand==='MTG');
+  if(mtgPending.length){
+    html += '<div class="card" style="border-color:var(--s4)"><b>⚠ MTG案件あり</b> <span class="small">MTGはサロン着の代引きに合わせて '+esc(NM.spay)+' がサロンへ事前振込 → その原資を先に '+esc(NM.spay)+' へ支払います（下の💴カード参照）</span></div>';
+  }
+
+  // ---- 支払先カード（仕入先=ディーラー/外注） ----
+  const supIds = Object.keys(bySup).filter(k=>k!=='');
+  supIds.sort((a,b)=>{
+    const ka = String((sal[a]||{})['種別']||''), kb = String((sal[b]||{})['種別']||'');
+    return (ka===kb) ? a.localeCompare(b) : (ka==='ディーラー'?-1:1);   // ディーラー→外注の順
+  }).forEach(supId=>{
+    const s = sal[supId]||{}; const lines = bySup[supId];
+    const close = String(s['締め日']||'').trim(), pay = String(s['支払日']||'').trim();
+    const isPure = supId===PAYIDS.pure;
+    const kind = String(s['種別']||'').trim();
+    const per = {};
+    lines.forEach(l=>{ const pr = payPeriod(l.date, close, pay); (per[pr.key]=per[pr.key]||{pr, lines:[]}).lines.push(l); });
+    html += '<div class="card"><div class="row"><b>'+(kind==='外注'?'🤝':'🏭')+' '+esc(salonLabel(s)||supId)+'</b>' +
+      '<span class="small muted">締め: '+esc(close||'—')+' ／ 支払: '+esc(pay || 'カード引落（引落日 確認中）')+'</span></div>' +
+      Object.keys(per).sort().reverse().map(k=>{
+        const g = per[k]; const sub = g.lines.reduce((a,l)=>a+l.amt,0);
+        const tax = isPure ? Math.floor(sub*0.1) : Math.round(sub*0.1);   // 口座請求元は伝票単位で税切捨
+        const open = (viewState.aggOpen||{})['pay_'+supId+'_'+k];
+        const prov = g.lines.some(l=>l.prov);
+        return '<div style="margin-top:8px;border-top:1px solid var(--axis);padding-top:6px">' +
+          '<div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_'+supId+'_'+k+'\')">'+(open?'▾':'▸')+' <b class="small">'+esc(g.pr.label)+'</b>' +
+          '<span class="small">支払予定: <b>'+esc(g.pr.payLabel)+'</b></span>' +
+          '<span class="right"><b>'+yen(sub)+'</b> <span class="muted small">税抜（税込 '+yen(sub+tax)+'）</span>'+(prov?' <span class="small" style="color:var(--s4)">仮あり</span>':'')+'</span></div>' +
+          (open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>計上日</th><th>回収ID</th><th>受注</th><th>サロン</th><th>ブランド</th><th>商品</th><th class="num">個数</th><th class="num">単価</th><th class="num">金額</th></tr>' +
+            g.lines.map(l=>'<tr><td class="small">'+esc(l.date)+(l.prov?' <span style="color:var(--s4)">仮</span>':'')+'</td><td class="mono small">'+esc(l.kid)+'</td><td class="mono small">'+esc(l.oids)+'</td><td class="small">'+esc(l.salon)+'</td><td class="small">'+esc(l.brand)+'</td><td class="small">'+esc(l.name)+' '+esc(l.size)+'</td><td class="num">'+l.qty+'</td><td class="num">'+yen(l.unit)+(l.unitNote?'<br><span class="small" style="color:var(--s4)">'+esc(l.unitNote)+'</span>':'')+'</td><td class="num">'+yen(l.amt)+'</td></tr>').join('') +
+            '</table></div>' : '') + '</div>';
+      }).join('') +
+      (isPure ? '<p class="muted small" style="margin-top:6px">※ '+esc(NM.boxBrand)+'分は 定価×39.9%（切捨）で計算（マスタの41.9%との差2%は仲介手数料として下の🤝カードに計上）。サロン別口座請求・税は伝票単位切捨のため請求書と数円ズレることがあります。</p>' : '') +
+      '</div>';
+  });
+
+  // ---- 仕入先が未記録の旧データ ----
+  if(bySup['']){
+    const lines = bySup[''];
+    const sub = lines.reduce((a,l)=>a+l.amt,0);
+    const open = (viewState.aggOpen||{})['pay_unset'];
+    html += '<div class="card" style="border-color:var(--s4)"><div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_unset\')">'+(open?'▾':'▸')+' <b>⚠ 仕入先が未記録の仕入</b><span class="small muted">2026/07/18より前に振り分けた分。どのディーラーから仕入れたか分かれば一括で入れられます</span><span class="right"><b>'+yen(sub)+'</b> <span class="muted small">仕入価格ベース仮</span></span></div>' +
+      (open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>計上日</th><th>回収ID</th><th>受注</th><th>サロン</th><th>ブランド</th><th>商品</th><th class="num">個数</th><th class="num">金額仮</th></tr>' +
+        lines.map(l=>'<tr><td class="small">'+esc(l.date)+'</td><td class="mono small">'+esc(l.kid)+'</td><td class="mono small">'+esc(l.oids)+'</td><td class="small">'+esc(l.salon)+'</td><td class="small">'+esc(l.brand)+'</td><td class="small">'+esc(l.name)+'</td><td class="num">'+l.qty+'</td><td class="num">'+yen(l.amt)+'</td></tr>').join('')+'</table></div>' : '') + '</div>';
+  }
+
+  // ---- 🤝仲介手数料（口座請求元の対象ブランド分×2%。締め・支払は口座請求元と同サイクル） ----
+  const pureRow = sal[PAYIDS.pure]||{}, brokerRow = sal[PAYIDS.broker]||{};
+  const pureNapLines = (bySup[PAYIDS.pure]||[]).filter(l=>l.brand===NM.boxBrand);
+  if(pureNapLines.length){
+    const per = {};
+    pureNapLines.forEach(l=>{ const pr = payPeriod(l.date, String(pureRow['締め日']||''), String(pureRow['支払日']||'')); (per[pr.key]=per[pr.key]||{pr, sub:0}).sub+=l.amt; });
+    html += '<div class="card"><div class="row"><b>🤝 '+esc(salonLabel(brokerRow)||'仲介')+'（仲介手数料 2%）</b><span class="small muted">'+esc(salonLabel(pureRow))+'請求想定額（'+esc(NM.boxBrand)+'分・税抜）×2% ／ 締め支払は'+esc(salonLabel(pureRow))+'と同サイクル。端数は請求書で照合</span></div>' +
+      Object.keys(per).sort().reverse().map(k=>{ const g=per[k];
+        return '<div class="row small" style="margin-top:6px;border-top:1px solid var(--axis);padding-top:6px"><b>'+esc(g.pr.label)+'</b><span>支払予定: <b>'+esc(g.pr.payLabel)+'</b></span><span class="right"><b>'+yen(Math.round(g.sub*BROKER_RATE))+'</b> <span class="muted">（対象 '+yen(g.sub)+'×2%）</span></span></div>'; }).join('') +
+      '<p class="muted small" style="margin-top:6px">※ 連携サロン仕入の1%は掛け率確定待ちのため未計上（確定したら足します）。外注仕入（定価×50%・都度）は上の🤝カードに出ます。</p></div>';
+  }
+
+  // ---- 紹介報酬（卸先マスタの紹介者3列。最終入金完了した案件の売上/利益×率） ----
+  const refWs = rows('wholesalers').filter(w=>String(w['紹介者']||'').trim());
+  if(refWs.length){
+    const byRef = {};
+    refWs.forEach(w=>{
+      const wid = String(w['卸先ID']||'').trim(); const rid = String(w['紹介者']||'').trim();
+      const base = String(w['報酬基準']||'利益').trim(); const rateV = num(w['報酬率']); const rate = rateV>1 ? rateV/100 : rateV;
+      const byOrder = {};
+      rows('orderLedger').filter(r=>String(r['卸先ID']||'').trim()===wid).forEach(r=>{
+        const oid=String(r['受注ID']||'').trim(); if(!oid) return;
+        (byOrder[oid]=byOrder[oid]||{oid, st:String(r['ステータス']||'').trim(), pay2:String(r['入金②日']||'').trim(), sales:0, cost:0});
+        byOrder[oid].sales += num(r['小計（税抜）']);
+        byOrder[oid].cost += num(r['個数'])*ownCost(String(r['商品ID']||'').trim());
+      });
+      Object.values(byOrder).filter(o=>o.st==='最終入金完了').forEach(o=>{
+        const b = base==='売上' ? o.sales : (o.sales-o.cost);
+        const fee = Math.round(b*rate);
+        // 入金が15日まで→当月末、16日以降→翌10日
+        const d = new Date(o.pay2.replace(/\//g,'-'));
+        let due = '（入金日なし）';
+        if(!isNaN(d)) due = d.getDate()<=15 ? payFmt(payEom(d.getFullYear(), d.getMonth()))+'（当月末）'
+                                            : payFmt(new Date(d.getFullYear(), d.getMonth()+1, 10))+'（翌月10日）';
+        (byRef[rid]=byRef[rid]||[]).push({wname:String(w['卸先名']||''), oid:o.oid, base, rate, b, fee, pay2:o.pay2, due});
+      });
+    });
+    Object.keys(byRef).forEach(rid=>{
+      const list = byRef[rid]; const total = list.reduce((a,x)=>a+x.fee,0);
+      const open = (viewState.aggOpen||{})['pay_ref_'+rid];
+      html += '<div class="card"><div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_ref_'+rid+'\')">'+(open?'▾':'▸')+' <b>🤝 '+esc(salonLabel(sal[rid]||{})||rid)+'（紹介報酬）</b><span class="small muted">紹介卸先の最終入金完了案件 × 報酬率 ／ 入金15日まで→当月末・16日以降→翌10日</span><span class="right"><b>'+yen(total)+'</b></span></div>' +
+        (open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>卸先</th><th>受注</th><th>基準</th><th class="num">対象額</th><th class="num">率</th><th class="num">報酬</th><th>入金日</th><th>支払予定</th></tr>' +
+          list.map(x=>'<tr><td class="small">'+esc(x.wname)+'</td><td class="mono small">'+esc(x.oid)+'</td><td class="small">'+esc(x.base)+'</td><td class="num">'+yen(x.b)+'</td><td class="num">'+(x.rate*100).toFixed(0)+'%</td><td class="num"><b>'+yen(x.fee)+'</b></td><td class="small">'+esc(x.pay2)+'</td><td class="small">'+esc(x.due)+'</td></tr>').join('')+'</table></div>' : '') + '</div>';
+    });
+  } else {
+    html += '<div class="card"><b class="small muted">🤝 紹介報酬</b><p class="muted small">卸先マスタの「紹介者」列が入った卸先の最終入金完了案件から自動計算します（今は対象なし。マスタ管理で紹介者・報酬基準・報酬率を記入してください）</p></div>';
+  }
+
+  // ---- 店販請求元（請求書ベース・想定額の参考） ----
+  const mavLines = rows('hanbaiOrders').filter(r=>String(r['削除']||'').trim()==='' && String(r['請求元ID']||'').trim()===PAYIDS.maverick);
+  if(mavLines.length){
+    const mrow = sal[PAYIDS.maverick]||{};
+    const per = {};
+    mavLines.forEach(r=>{
+      const pr = payPeriod(String(r['注文日']||''), String(mrow['締め日']||'末締め'), String(mrow['支払日']||''));
+      const amt = ownCost(String(r['商品ID']||'').trim())*num(r['個数']);
+      (per[pr.key]=per[pr.key]||{pr, lines:[], sub:0});
+      per[pr.key].lines.push({date:String(r['注文日']||''), salon:String(r['サロン名']||''), name:String(r['商品名']||''), qty:num(r['個数']), amt});
+      per[pr.key].sub += amt;
+    });
+    const open = (viewState.aggOpen||{})['pay_mav'];
+    html += '<div class="card"><div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_mav\')">'+(open?'▾':'▸')+' <b>🏭 '+esc(salonLabel(mrow))+'（店販請求元）</b><span class="small muted">締め: '+esc(String(mrow['締め日']||''))+' ／ 支払: '+esc(String(mrow['支払日']||''))+' ／ 金額は請求書で確定（下は仕入価格×個数の想定）。「サロンが払う」の意味は先方確認中</span></div>' +
+      Object.keys(per).sort().reverse().map(k=>{ const g=per[k];
+        return '<div class="row small" style="margin-top:6px;border-top:1px solid var(--axis);padding-top:6px"><b>'+esc(g.pr.label)+'</b><span>支払予定: <b>'+esc(g.pr.payLabel)+'</b></span><span class="right"><b>'+yen(g.sub)+'</b> <span class="muted">想定</span></span></div>' +
+          (open ? '<div class="tblwrap" style="margin-top:4px"><table><tr><th>注文日</th><th>サロン</th><th>商品</th><th class="num">個数</th><th class="num">想定額</th></tr>' +
+            g.lines.map(l=>'<tr><td class="small">'+esc(l.date)+'</td><td class="small">'+esc(l.salon)+'</td><td class="small">'+esc(l.name)+'</td><td class="num">'+l.qty+'</td><td class="num">'+yen(l.amt)+'</td></tr>').join('')+'</table></div>' : '');
+      }).join('') + '</div>';
+  }
+
+  // ---- 精算代行（MTG前払い＋振込1サロン3,500円） ----
+  (()=>{
+    const months = {};   // 'yyyy/MM' → {mtg:{sid:{salon,amt}}, feeSalons:Set}
+    const em = m=>months[m]=months[m]||{mtg:{}, feeSalons:new Set()};
+    rows('collectionLedger').filter(r=>String(r['削除']||'').trim()==='' && String(r['区分']||'卸').trim()==='卸').forEach(r=>{
+      const m = String(r['発注日']||'').substring(0,7); if(!m) return;
+      const sid = String(r['サロンID']||'').trim(); if(!sid) return;
+      const g = em(m);
+      g.feeSalons.add(sid);   // 精算（協力費）の振込対象になり得るサロン
+      const pid = String(r['商品ID']||'').trim();
+      if(brandOf(pid)==='MTG'){
+        g.mtg[sid] = g.mtg[sid]||{salon:String(r['サロン名']||''), amt:0};
+        g.mtg[sid].amt += salonCost(pid)*num(r['個数']);
+      }
+    });
+    const keys = Object.keys(months).sort().reverse().slice(0,3);
+    if(!keys.length) return;
+    html += '<div class="card"><div class="row"><b>💴 '+esc(NM.spay)+'（前払い・振込手数料）</b><span class="small muted">MTG前払い=サロン仕入価格×個数（発注に合わせて都度） ／ 振込1サロンにつき'+TRANSFER_FEE_YEN.toLocaleString()+'円（翌月末・精算の詳細は「'+esc(NM.spay)+'支払」画面）</span></div>' +
+      keys.map(m=>{ const g=months[m]; const mtgIds=Object.keys(g.mtg); const mtgTotal=mtgIds.reduce((a,s)=>a+g.mtg[s].amt,0);
+        return '<div style="margin-top:6px;border-top:1px solid var(--axis);padding-top:6px" class="small"><b>'+esc(m)+'</b>' +
+          (mtgIds.length ? '<div style="margin-top:4px">⚠ MTG前払い（都度）: '+mtgIds.map(s=>esc(g.mtg[s].salon)+' '+yen(g.mtg[s].amt)).join(' ／ ')+' ＝ <b>'+yen(mtgTotal)+'</b></div>' : '') +
+          '<div style="margin-top:4px">振込手数料（翌月末・目安）: 対象サロン最大 '+g.feeSalons.size+'軒 × '+TRANSFER_FEE_YEN.toLocaleString()+'円 = <b>'+yen(g.feeSalons.size*TRANSFER_FEE_YEN)+'</b> <span class="muted">（実際に振込が発生したサロン数で確定）</span></div></div>'; }).join('') + '</div>';
+  })();
+
+  return html;
 }
 
 // ===== 画面: 操作ログ（admin のみ。誰が・いつ・何をしたか） =====
@@ -2041,6 +2263,7 @@ function allocCell(pid, sid, v){
 }
 // 🤝外注仕入枠の操作（外注先の選択・商品ごとの数量・不足分の一括充当）
 function allocOutSid(v){ const r=ALLOC.result[ALLOC.brand]; if(!r) return; (r.out=r.out||{sid:'',q:{}}).sid=v; render(); }
+function allocSupplier(v){ const r=ALLOC.result[ALLOC.brand]; if(!r) return; r.supplier=v; render(); }
 function allocOutCell(pid, v){
   const r = ALLOC.result[ALLOC.brand]; if(!r) return;
   const n = Math.max(0, Math.round(num(v)));
@@ -2085,8 +2308,10 @@ function vAllocation(){
       '</table></div><p class="muted small" style="margin-top:6px">再開すると保存時の受注選択・サロン選択・計算結果がそのまま戻ります。確定すると下書きは自動で消えます</p></div>';
   }
 
-  // ① 対象受注
-  const olist = allocOrderGroups();
+  // ① 対象受注（振分済み=グレーの案件は下にまとめる。2026-07-18 ユーザー指定）
+  const doneOf = g => g.brands.size>0 && [...g.brands].every(b=>{ const e=(cov[g.id]||{})[b]; return e&&e.done; });
+  const olist = allocOrderGroups().sort((a,b)=>Number(doneOf(a))-Number(doneOf(b)));
+  const firstDoneId = (olist.find(g=>doneOf(g))||{}).id;
   html += '<div class="card"><b class="small">① 対象の受注を選ぶ（'+selIds.length+'件選択中）</b><p class="muted small" style="margin:4px 0 0">行をクリックすると商品の内訳が開きます</p><div class="tblwrap" style="margin-top:8px;max-height:340px;overflow:auto"><table>' +
     '<tr><th></th><th>受注ID</th><th>状態</th><th>卸先</th><th>ブランド</th><th>受注日</th><th class="num">明細数</th></tr>' +
     (olist.map(g=>{
@@ -2096,7 +2321,8 @@ function vAllocation(){
       const isDone = g.brands.size>0 && [...g.brands].every(b=>bc[b]&&bc[b].done);   // 全ブランドの数量が満ちて=振分完了
       const hasBroken = [...g.brands].some(b=>bc[b]&&bc[b].broken);   // 一部削除で数が合わない（済みでも選択可にして直せるように）
       const allK = new Set(); [...g.brands].forEach(b=>{ if(bc[b]) bc[b].kids.forEach(k=>allK.add(k)); });
-      let h = '<tr style="cursor:pointer'+(isDone?';background:color-mix(in srgb,var(--muted) 18%,transparent);opacity:.62':'')+'" onclick="allocOpenToggle(\''+g.id+'\')">' +
+      let h = (g.id===firstDoneId ? '<tr><td colspan="7" class="small muted" style="background:var(--wash);text-align:center">— ✅ 振分済みの案件 —</td></tr>' : '') +
+        '<tr style="cursor:pointer'+(isDone?';background:color-mix(in srgb,var(--muted) 18%,transparent);opacity:.62':'')+'" onclick="allocOpenToggle(\''+g.id+'\')">' +
         '<td onclick="event.stopPropagation()"><input type="checkbox" '+(ALLOC.sel[g.id]?'checked':'')+(isDone && !hasBroken?' disabled':'')+' onclick="allocToggleOrder(\''+g.id+'\',this.checked)" style="width:16px;height:16px"></td>' +
         '<td class="mono">'+(open?'▾':'▸')+' '+g.id+'</td><td>'+pill(g.st)+(isDone?' <span class="small" style="color:var(--good);font-weight:700">✅振分済み</span>'+(allK.size?' <span class="mono small muted">'+esc(kFmt(allK))+'</span>':''):'')+'</td><td class="small">'+esc(g.w)+'</td>' +
         '<td class="small">'+[...g.brands].map(b=>{ const e=bc[b]; const tip=e&&(e.kids.size||e.delKids.size)?' title="回収ID: '+esc(kFmt(e.kids)||'—')+(e.delKids.size?'／削除済み: '+esc(kFmt(e.delKids)):'')+'"':''; return '<span'+tip+(e&&e.broken?' style="color:var(--crit);font-weight:700"':'')+'>'+mark(b)+esc(b)+'</span>'; }).join('・')+'</td>' +
@@ -2202,6 +2428,19 @@ function vAllocation(){
       '<button class="btn sm" onclick="allocOutFill()">🔁 不足分をすべて外注枠へ（あと'+shortTotal+'点）</button>' +
       (outTotal>0?'<span class="small">外注計 <b>'+outTotal+'点</b></span>':'')+
       '<span class="muted small">サロンで配りきれない分をディーラーから仕入れる枠。確定すると外注先からの回収として回収・検品に載ります（検品→ロット処理も同じ流れ）</span></div>' +
+      // 🏭 仕入先（支払い集計用。2026-07-18）: マスタのディーラー行の掛け率列からこのブランドの扱いディーラーを判定。
+      // 複数該当（コスモ/ピュア両扱い等）は選択必須。1社なら自動で入れる（変更もできる）
+      (()=>{ const dl = rows('salons').filter(s=>String(s['種別']||'').trim()==='ディーラー' && String(s['サロンID']||'').trim());
+        const cands = dl.filter(s=>Object.keys(s).some(k=>{ const m=String(k).match(/^([^（(]+)[（(][^）)]*[%％][）)]\s*$/); return m && m[1].trim() && brand.indexOf(m[1].trim())===0 && String(s[k]).trim()!==''; }));
+        if(!r.supplier && cands.length===1) r.supplier = String(cands[0]['サロンID']).trim();
+        return '<div class="row" style="margin-top:8px;padding:8px 10px;border:1px dashed var(--axis);border-radius:10px;align-items:center">' +
+          '<b class="small">🏭 仕入先（どのディーラーから仕入れるか・支払い集計に使います）</b>' +
+          '<select onchange="allocSupplier(this.value)"><option value="">選んでください</option>' +
+          dl.map(s=>{ const sid=String(s['サロンID']).trim(); return '<option value="'+sid+'" '+(r.supplier===sid?'selected':'')+'>'+esc(salonLabel(s))+'</option>'; }).join('') + '</select>' +
+          (cands.length>1 ? '<span class="small" style="color:var(--s4)">⚠ '+esc(brand)+' は複数のディーラーから仕入れ可（'+cands.map(s=>esc(salonLabel(s))).join(' / ')+'）。今回どこから仕入れるか選んでください</span>'
+           : cands.length===1 ? '<span class="muted small">マスタの掛け率列から自動判定（違うときは変更OK）</span>'
+           : '<span class="small" style="color:var(--s4)">⚠ マスタの掛け率列からディーラーを判定できませんでした。手で選んでください</span>') +
+          '</div>'; })() +
       '<table style="margin-top:8px"><tr><th>商品</th><th class="num">必要数</th>' +
       r.salonIds.map(s=>'<th class="num small">'+esc(names[s]||s)+'</th>').join('') +
       '<th class="num small" style="color:var(--s4)">🤝外注</th><th class="num">割当計</th><th class="num">余り</th></tr>' +
@@ -2252,7 +2491,7 @@ function allocPrint(){
     '.salon{page-break-inside:avoid;margin-bottom:10px}@page{size:A4 portrait;margin:12mm}@media print{button{display:none}}</style></head><body>' +
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
     '<h1>'+esc(brand)+' サロン振り分け表（'+today()+'）</h1>' +
-    '<p>対象受注: '+selIds.join(', ')+' ／ 1サロン枠: ¥'+Math.round(r.budget).toLocaleString()+(r.cap?' ／ 同一商品上限: '+r.cap:'')+'</p>' +
+    '<p>対象受注: '+selIds.join(', ')+' ／ 1サロン枠: ¥'+Math.round(r.budget).toLocaleString()+(r.cap?' ／ 同一商品上限: '+r.cap:'')+(r.supplier?' ／ 仕入先: '+esc(names[r.supplier]||r.supplier):'')+'</p>' +
     sections + outSection +
     (leftovers.length ? '<div class="salon"><h2>配りきれなかった分（余り）</h2><table><tr><th>商品</th><th class="num">余り個数</th></tr>' +
       leftovers.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+'</td><td class="num">'+x.left+'</td></tr>').join('') + '</table></div>' : '') +
@@ -2278,8 +2517,13 @@ async function allocCommit(){
   const total = lines.reduce((a,l)=>a+l.items.reduce((b,x)=>b+x.qty,0),0);
   const outTotal = outItems.reduce((a,x)=>a+x.qty,0);
   if(!lines.length){ toast('個数が1以上のサロンがありません', true); return; }
-  if(!confirm(brand+' の割り振りを確定します。\n対象受注: '+selIds.join(', ')+'\nサロン '+(lines.length-(outItems.length?1:0))+'軒・合計 '+total+'点'+(outTotal?'（うち🤝外注 '+outTotal+'点）':'')+' を「回収待ち」で回収・検品に登録します。よろしいですか？')) return;
-  const res = await act('commitAllocation', {brand, orderIds:selIds, lines}, brand+' の回収データを作成しました', ['collectionLedger']);
+  // 🏭 仕入先（支払い集計用）: 卸行があるときは必須（モデニカ等の複数ディーラー扱いブランド対応。2026-07-18）
+  const hasWholesale = lines.some(l=>!l.out);
+  if(hasWholesale && !r.supplier){ toast('🏭 仕入先を選んでください（どのディーラーから仕入れるか。支払い集計に使います）', true); return; }
+  const supRow = rows('salons').find(s=>String(s['サロンID']).trim()===r.supplier);
+  const supName = supRow ? salonLabel(supRow) : r.supplier||'';
+  if(!confirm(brand+' の割り振りを確定します。\n対象受注: '+selIds.join(', ')+(hasWholesale&&supName?'\n仕入先: '+supName:'')+'\nサロン '+(lines.length-(outItems.length?1:0))+'軒・合計 '+total+'点'+(outTotal?'（うち🤝外注 '+outTotal+'点）':'')+' を「回収待ち」で回収・検品に登録します。よろしいですか？')) return;
+  const res = await act('commitAllocation', {brand, orderIds:selIds, lines, supplierId:r.supplier||''}, brand+' の回収データを作成しました', ['collectionLedger']);
   if(res){
     delete ALLOC.result[brand];
     apiPost('deleteAllocDraft', {brand}, ['allocDrafts']).then(()=>render()).catch(()=>{});   // 確定したブランドの下書きは自動削除（無ければ何もしない）
