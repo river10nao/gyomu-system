@@ -13,8 +13,6 @@
   --s1:#2a78d6; --s2:#1baf7a; --s3:#eda100; --s4:#008300; --s5:#4a3aa7; --s6:#e34948;
   --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b;
   --accent:#2a78d6; --accent-ink:#fff; --wash:rgba(42,120,214,.08);
-  --zebra:rgba(11,11,11,.028);
-  --shadow:0 1px 2px rgba(20,20,15,.05), 0 1px 6px rgba(20,20,15,.05);
 }
 /* 表示モード: data-theme 未指定=OS設定に従う(自動)、light/dark=手動固定 */
 :root[data-theme="dark"]{
@@ -22,8 +20,6 @@
   --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
   --s1:#3987e5; --s2:#199e70; --s3:#c98500; --s5:#9085e9; --s6:#e66767;
   --accent:#3987e5; --wash:rgba(57,135,229,.14);
-  --zebra:rgba(255,255,255,.035);
-  --shadow:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.25);
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
@@ -31,12 +27,10 @@
     --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
     --s1:#3987e5; --s2:#199e70; --s3:#c98500; --s5:#9085e9; --s6:#e66767;
     --accent:#3987e5; --wash:rgba(57,135,229,.14);
-    --zebra:rgba(255,255,255,.035);
-    --shadow:0 1px 2px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.25);
   }
 }
 *{box-sizing:border-box;margin:0}
-body{background:var(--page);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI","Hiragino Sans",sans-serif;font-size:14.5px;line-height:1.6;-webkit-font-smoothing:antialiased}
+body{background:var(--page);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI","Hiragino Sans",sans-serif;font-size:14px;line-height:1.6}
 button{font:inherit;cursor:pointer}
 input,select{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--axis);border-radius:8px;padding:7px 10px}
 input:focus,select:focus{outline:2px solid var(--accent);outline-offset:-1px}
@@ -45,42 +39,38 @@ a{color:var(--accent)}
 /* ===== レイアウト ===== */
 #app{display:none;min-height:100vh}
 .shell{display:flex;min-height:100vh}
-nav{width:212px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--grid);padding:14px 10px;position:sticky;top:0;height:100vh;overflow-y:auto}
-nav .brand{font-weight:700;font-size:16px;padding:6px 10px 16px;border-bottom:1px solid var(--grid);margin-bottom:8px}
-nav .brand small{display:block;color:var(--muted);font-weight:400;font-size:11px;margin-top:2px}
-nav button{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;background:none;color:var(--ink2);padding:9px 12px;border-radius:8px;font-size:13.5px;transition:background .12s}
+nav{width:210px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--grid);padding:14px 10px;position:sticky;top:0;height:100vh;overflow-y:auto}
+nav .brand{font-weight:700;font-size:16px;padding:6px 10px 14px}
+nav .brand small{display:block;color:var(--muted);font-weight:400;font-size:11px}
+nav button{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;background:none;color:var(--ink2);padding:9px 12px;border-radius:8px;font-size:13.5px}
 nav button:hover{background:var(--wash)}
-nav button.on{background:var(--wash);color:var(--accent);font-weight:700;box-shadow:inset 3px 0 0 var(--accent)}
+nav button.on{background:var(--wash);color:var(--accent);font-weight:600}
 nav .foot{margin-top:14px;border-top:1px solid var(--grid);padding-top:10px;font-size:11.5px;color:var(--muted);padding-left:10px}
-main{flex:1;padding:24px 28px;max-width:1240px;min-width:0}
-h1{font-size:20px;font-weight:700;letter-spacing:-.01em;margin-bottom:5px}
-.sub{color:var(--muted);font-size:12.5px;line-height:1.55;margin-bottom:20px}
-.card{background:var(--surface);border:1px solid var(--ring);border-radius:14px;padding:18px 20px;margin-bottom:16px;box-shadow:var(--shadow)}
-.card>b.small:first-child{display:block;font-size:13px;font-weight:700;color:var(--ink);letter-spacing:.01em;padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid var(--grid)}
+main{flex:1;padding:22px 26px;max-width:1240px;min-width:0}
+h1{font-size:19px;margin-bottom:4px}
+.sub{color:var(--muted);font-size:12.5px;margin-bottom:16px}
+.card{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:16px;margin-bottom:14px}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .grow{flex:1}
 .right{margin-left:auto}
 
 /* ===== 部品 ===== */
-.btn{border:1px solid var(--axis);background:var(--surface);color:var(--ink);border-radius:8px;padding:7px 15px;font-weight:500;transition:background .12s,border-color .12s}
+.btn{border:1px solid var(--axis);background:var(--surface);color:var(--ink);border-radius:8px;padding:7px 14px}
 .btn:hover{background:var(--wash)}
-.btn.pri{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:700;box-shadow:0 1px 3px rgba(0,0,0,.15)}
-.btn.pri:hover{filter:brightness(1.08)}
-.btn.sm{padding:5px 11px;font-size:12.5px;border-radius:7px;font-weight:500}
+.btn.pri{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn.pri:hover{opacity:.9}
+.btn.sm{padding:4px 10px;font-size:12.5px;border-radius:7px}
 .btn:disabled{opacity:.45;cursor:not-allowed}
-.tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:14px}
-.tabs button{border:0;background:none;color:var(--ink2);padding:7px 14px;border-radius:20px;font-size:13px;font-weight:500;transition:background .12s}
-.tabs button:hover{background:var(--wash)}
-.tabs button.on{background:var(--accent);color:#fff;font-weight:700;box-shadow:0 1px 3px rgba(0,0,0,.15)}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px}
+.tabs button{border:0;background:none;color:var(--ink2);padding:7px 13px;border-radius:20px;font-size:13px}
+.tabs button.on{background:var(--accent);color:#fff;font-weight:600}
 .tabs button .n{opacity:.75;font-size:11.5px;margin-left:3px}
 .tabs button .n.hot{opacity:1;background:var(--warn);color:#3d2c00;font-weight:700;border-radius:10px;padding:1px 7px}
 nav button .nb, #mnav button .nb{margin-left:6px;font-size:11px;background:var(--warn);color:#3d2c00;font-weight:700;border-radius:10px;padding:1px 7px;display:inline-block}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th{text-align:left;color:var(--muted);font-weight:700;font-size:11px;letter-spacing:.02em;border-bottom:2px solid var(--axis);padding:8px 10px;white-space:nowrap}
-td{border-bottom:1px solid var(--grid);padding:8px 10px;vertical-align:top}
+th{text-align:left;color:var(--muted);font-weight:600;font-size:11.5px;border-bottom:1px solid var(--grid);padding:6px 8px;white-space:nowrap}
+td{border-bottom:1px solid var(--grid);padding:7px 8px;vertical-align:top}
 tr:last-child td{border-bottom:0}
-tr:nth-child(even) td{background:var(--zebra)}
-tr:hover td{background:var(--wash)}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .tblwrap{overflow-x:auto}
 /* マスタ等の縦長テーブル: ヘッダー行を固定し、セルは折り返さず長文は…で省略 */
@@ -88,12 +78,12 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 .tblwrap.sticky th{position:sticky;top:0;background:var(--surface);z-index:2;box-shadow:0 1px 0 var(--grid);padding-top:14px}
 .tblwrap.sticky td{white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
 .vline{border-left:1px solid var(--grid)}   /* 掛け率などの列を縦罫線で区切る */
-.pill{display:inline-block;border-radius:20px;padding:3px 11px;font-size:11.5px;font-weight:700;letter-spacing:.01em;white-space:nowrap}
-.kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:16px}
-.kpi{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow)}
-.kpi .l{color:var(--muted);font-size:11.5px;font-weight:700;letter-spacing:.02em}
-.kpi .v{font-size:24px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums}
-.kpi .d{font-size:11.5px;color:var(--ink2);margin-top:3px}
+.pill{display:inline-block;border-radius:20px;padding:2px 10px;font-size:11.5px;font-weight:600;white-space:nowrap}
+.kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:14px}
+.kpi{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:14px 16px}
+.kpi .l{color:var(--muted);font-size:11.5px;font-weight:600}
+.kpi .v{font-size:24px;font-weight:700;margin-top:2px}
+.kpi .d{font-size:11.5px;color:var(--ink2);margin-top:2px}
 .bar-outer{background:var(--grid);border-radius:6px;height:10px;overflow:hidden}
 .bar-inner{height:100%;border-radius:6px;background:var(--s1)}
 .steps{display:flex;gap:3px;align-items:center;flex-wrap:wrap;font-size:10.5px;color:var(--muted)}
@@ -107,12 +97,9 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 .muted{color:var(--muted)}
 .small{font-size:12px}
 .mono{font-variant-numeric:tabular-nums}
-.ordcard{border:1px solid var(--grid);border-radius:11px;padding:13px 15px;margin-bottom:11px;background:var(--surface);transition:border-color .12s}
+.ordcard{border:1px solid var(--grid);border-radius:10px;padding:12px 14px;margin-bottom:10px}
 .ordcard summary{cursor:pointer;list-style:none;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .ordcard summary::-webkit-details-marker{display:none}
-.ordcard summary::before{content:'▸';display:inline-block;flex:0 0 auto;color:var(--muted);font-size:11px;width:10px;transition:transform .12s}
-.ordcard[open] summary::before{content:'▸';transform:rotate(90deg)}
-.ordcard:hover{border-color:var(--axis)}
 .chart{width:100%}
 .gauge{margin-bottom:10px}
 .loading{position:fixed;inset:0;background:var(--page);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;z-index:50;font-size:14px;color:var(--ink2)}
@@ -127,10 +114,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
   main{padding:14px;padding-bottom:74px}
   #mnav{display:flex;position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--grid);z-index:40;overflow-x:auto}
   #mnav button{flex:1;border:0;background:none;color:var(--ink2);padding:9px 4px;font-size:10.5px;min-width:62px}
-  #mnav button.on{color:var(--accent);font-weight:700;box-shadow:inset 0 2px 0 var(--accent)}
-  .btn{padding:9px 16px}
-  .btn.sm{padding:7px 13px;font-size:12.5px}
-  .card{padding:15px 16px}
+  #mnav button.on{color:var(--accent);font-weight:700}
   .kpi .v{font-size:19px}
   /* KPIカード: 170px基準だと375px幅で1列に落ちて縦に間延びするため、モバイルはやや狭い基準で2列を確保 */
   .kpis{grid-template-columns:repeat(auto-fill,minmax(136px,1fr));gap:8px}
