@@ -1173,9 +1173,16 @@ function vOrders(){
           : '<span class="muted small">記録済み（直すときは日付を変えて保存）</span>') +
         '</div>'; })() : '') +
       '<div class="row" style="margin-top:10px">' +
-      (g.st==='振分/発注' && !String(g.ord||'').trim()
-        ? '<button class="btn sm" onclick="toast(\'先に📦発注日を入れてください（実際に発注した日）\', true)" style="opacity:.55">✔ 発注済み（→ 回収中）</button>'
-        : advanceBtn('order', g.id, g.st)) +
+      // 進行ガード（サーバー側と同条件）: 請求書未発行・発注日未入力の間はボタンを案内に差し替え（スルー事故防止）
+      (()=>{ const activeDocs = rows('docLog').filter(d=>String(d['削除']||'').trim()==='' && String(d['受注ID']||'').trim()===String(g.id).trim()).map(d=>String(d['種類']||''));
+        const isCreditPay = NM.credit && String(g.pay||'').indexOf(NM.credit)===0;
+        const guard =
+          (g.st==='商談中' && !activeDocs.some(k=> isCreditPay ? k.indexOf('請求書（全額')>=0 : (k.indexOf('請求書①')>=0 || k.indexOf('請求書（全額')>=0))) ? ['✔ 請求済み（→ 半金入金待ち）', isCreditPay ? '先に請求書（全額）を発行してください（📄帳票発行から）' : '先に請求書①（前金）を発行してください（📄帳票発行から）'] :
+          (g.st==='振分/発注' && !String(g.ord||'').trim()) ? ['✔ 発注済み（→ 回収中）','先に📦発注日を入れてください（実際に発注した日）'] :
+          (g.st==='最終入金待ち' && !isCreditPay && !activeDocs.some(k=>k.indexOf('請求書②')>=0||k.indexOf('請求書（全額')>=0)) ? ['✔ 入金確認済み（→ 最終入金完了）','先に請求書②（残金）を発行してください（📄帳票発行から）'] : null;
+        return guard
+          ? '<button class="btn sm" onclick="toast(\''+guard[1]+'\', true)" style="opacity:.55">'+guard[0]+'</button>'
+          : advanceBtn('order', g.id, g.st); })() +
       (canShip && !busy('order', g.id) ? '<button class="btn sm" onclick="act(\'createShipment\',{受注ID:\''+g.id+'\'},\'出荷を作成しました\',[\'shipments\'])">🚚 出荷を作成</button>' : '') +
       (ship ? '<span class="small muted">出荷: '+ship['出荷ID']+' '+pill(ship['ステータス'])+'</span>' : '') +
       '<button class="btn sm" onclick="viewState.docFor=(viewState.docFor===\''+g.id+'\'?null:\''+g.id+'\');render()">📄 帳票発行</button>' +
