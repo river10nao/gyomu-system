@@ -470,7 +470,7 @@ const NAVS = ()=>[
   ['dashboard','📊 ダッシュボード'], ['orders','📋 受注'], ['allocation','🧮 振り分け'],
   ['collection','📦 回収・検品'],
   ['stock','🏷 在庫'], ['shipments','🚚 出荷'], ['hanbai','🛍 店販/EC'],
-  ['payments','💰 支払い'],
+  ['payments','💰 '+NM.co+'支払い'],
   ['salonpay','💴 '+NM.spay+'支払'], ['quota','📐 仕入枠'], ['masters','⚙️ マスタ管理'],
   ['opslog','📝 操作ログ']
 ];
@@ -589,7 +589,7 @@ function vPayments(){
       amt:unit*qty, isOut:String(r['区分']||'').trim()==='外注'});
   });
 
-  let html = '<h1>支払い</h1><div class="sub">仕入先・支払先ごとの支払予定。計上日は受注カードの📦発注日（未入力の分は振分確定日で「仮」計上）。行を開くと根拠明細が見られます</div>';
+  let html = '<h1>'+esc(NM.co)+'支払い</h1><div class="sub">仕入先・支払先ごとの支払予定。計上日は受注カードの📦発注日（未入力の分は振分確定日で「仮」計上）。行を開くと根拠明細が見られます</div>';
 
   // ---- MTG前払いアラート（発注に合わせて先払い準備が必要） ----
   const mtgPending = Object.keys(bySup).flatMap(k=>bySup[k]).filter(l=>l.brand==='MTG');
@@ -619,7 +619,7 @@ function vPayments(){
         return '<div style="margin-top:8px;border-top:1px solid var(--axis);padding-top:6px">' +
           '<div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_'+supId+'_'+k+'\')">'+(open?'▾':'▸')+' <b class="small">'+esc(g.pr.label)+'</b>' +
           '<span class="small">支払予定: <b>'+esc(g.pr.payLabel)+'</b></span>' +
-          '<span class="right"><b>'+yen(sub)+'</b> <span class="muted small">税抜（税込 '+yen(sub+tax)+'）</span>'+(prov?' <span class="small" style="color:var(--s4)">仮あり</span>':'')+'</span></div>' +
+          '<span class="right"><b>'+yen(sub+tax)+'</b> <span class="muted small">税込（税抜 '+yen(sub)+'）</span>'+(prov?' <span class="small" style="color:var(--s4)">仮あり</span>':'')+'</span></div>' +
           (open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>計上日</th><th>回収ID</th><th>受注</th><th>サロン</th><th>ブランド</th><th>商品</th><th class="num">個数</th><th class="num">単価</th><th class="num">金額</th></tr>' +
             g.lines.map(l=>'<tr><td class="small">'+esc(l.date)+(l.prov?' <span style="color:var(--s4)">仮</span>':'')+'</td><td class="mono small">'+esc(l.kid)+'</td><td class="mono small">'+esc(l.oids)+'</td><td class="small">'+esc(l.salon)+'</td><td class="small">'+esc(l.brand)+'</td><td class="small">'+esc(l.name)+' '+esc(l.size)+'</td><td class="num">'+l.qty+'</td><td class="num">'+yen(l.unit)+(l.unitNote?'<br><span class="small" style="color:var(--s4)">'+esc(l.unitNote)+'</span>':'')+'</td><td class="num">'+yen(l.amt)+'</td></tr>').join('') +
             '</table></div>' : '') + '</div>';
@@ -724,11 +724,13 @@ function vPayments(){
     });
     const keys = Object.keys(months).sort().reverse().slice(0,3);
     if(!keys.length) return;
-    html += '<div class="card"><div class="row"><b>💴 '+esc(NM.spay)+'（前払い・振込手数料）</b><span class="small muted">MTG前払い=サロン仕入価格×個数（発注に合わせて都度） ／ 振込1サロンにつき'+TRANSFER_FEE_YEN.toLocaleString()+'円（翌月末・精算の詳細は「'+esc(NM.spay)+'支払」画面）</span></div>' +
+    html += '<div class="card"><div class="row"><b>💴 '+esc(NM.spay)+'（前払い・振込手数料）</b><span class="small muted">精算の詳細は「'+esc(NM.spay)+'支払」画面</span></div>' +
       keys.map(m=>{ const g=months[m]; const mtgIds=Object.keys(g.mtg); const mtgTotal=mtgIds.reduce((a,s)=>a+g.mtg[s].amt,0);
-        return '<div style="margin-top:6px;border-top:1px solid var(--axis);padding-top:6px" class="small"><b>'+esc(m)+'</b>' +
-          (mtgIds.length ? '<div style="margin-top:4px">⚠ MTG前払い（都度）: '+mtgIds.map(s=>esc(g.mtg[s].salon)+' '+yen(g.mtg[s].amt)).join(' ／ ')+' ＝ <b>'+yen(mtgTotal)+'</b></div>' : '') +
-          '<div style="margin-top:4px">振込手数料（翌月末・目安）: 対象サロン最大 '+g.feeSalons.size+'軒 × '+TRANSFER_FEE_YEN.toLocaleString()+'円 = <b>'+yen(g.feeSalons.size*TRANSFER_FEE_YEN)+'</b> <span class="muted">（実際に振込が発生したサロン数で確定）</span></div></div>'; }).join('') + '</div>';
+        return '<div style="margin-top:6px;border-top:1px solid var(--axis);padding-top:6px" class="small"><b>'+esc(m.replace('/','年'))+'月分</b>' +
+          '<div class="row" style="margin-top:4px"><span>MTG前払い（発注のたび都度・サロン仕入価格×個数）</span><span class="right">' +
+            (mtgIds.length ? '<b>'+yen(mtgTotal)+'</b> <span class="muted">（'+mtgIds.map(s=>esc(g.mtg[s].salon)+' '+yen(g.mtg[s].amt)).join(' ／ ')+'）</span>'
+                           : '<b>今回なし</b> <span class="muted">（MTG商品の振り分けが無いため）</span>')+'</span></div>' +
+          '<div class="row" style="margin-top:4px"><span>振込手数料（翌月末払い・'+TRANSFER_FEE_YEN.toLocaleString()+'円×振込サロン数）</span><span class="right"><b>'+yen(g.feeSalons.size*TRANSFER_FEE_YEN)+'</b> <span class="muted">目安（最大 '+g.feeSalons.size+'軒。実際に振込したサロン数で確定）</span></span></div></div>'; }).join('') + '</div>';
   })();
 
   return html;
