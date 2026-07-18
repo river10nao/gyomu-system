@@ -30,6 +30,8 @@
   }
 }
 *{box-sizing:border-box;margin:0}
+/* スマホSafariが横スクロールブロックの文字を勝手に拡大するのを止め、CSS指定サイズに全体を揃える */
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 body{background:var(--page);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI","Hiragino Sans",sans-serif;font-size:14px;line-height:1.6}
 button{font:inherit;cursor:pointer}
 input,select{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--axis);border-radius:8px;padding:7px 10px}
