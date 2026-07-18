@@ -486,10 +486,45 @@ function navCounts(){
     // 振り分けは下書き数ではなく「振分が終わっていない案件」数（2026-07-18 ユーザー指定）
     allocation: (()=>{ const cov = allocCoverage();
       return allocOrderGroups().filter(g=>!(g.brands.size>0 && [...g.brands].every(b=>{ const e=(cov[g.id]||{})[b]; return e&&e.done; }))).length; })(),
-    // 💰支払い: MTG案件のアラート（前払い準備が必要な期間=回収がまだ入庫まで進んでいない間。2026-07-18 ユーザー要望）
-    payments: uniq(rows('collectionLedger').filter(r=>brandOf(String(r['商品ID']||'').trim())==='MTG'), '回収ID',
-      st=>st!=='ロット処理済み' && st!=='ロット処理なし')
+    // MTG前払いアラート: 未完了（✔前払い完了が押されていない）×回収がまだ入庫まで進んでいないMTG回収の数。
+    // 支払い画面とサロン精算画面の両方に出す（2026-07-18 ユーザー要望）
+    payments: mtgPendCount(), salonpay: mtgPendCount()
   };
+}
+function mtgPendCount(){ return mtgPrepayGroups().pend.length; }
+// MTG前払いの状況を回収ID単位でまとめる（pend=未完了・done=完了済み）。金額=サロン仕入価格×個数（前払い原資）
+function mtgPrepayGroups(){
+  const term = st=>st==='ロット処理済み'||st==='ロット処理なし';
+  const by = {};
+  rows('collectionLedger').forEach(r=>{
+    const pid = String(r['商品ID']||'').trim();
+    if(brandOf(pid)!=='MTG') return;
+    const kid = String(r['回収ID']||'').trim(); if(!kid) return;
+    const g = by[kid]=by[kid]||{kid, salon:String(r['サロン名']||''), amt:0, n:0, marked:0, active:0, doneAt:''};
+    g.amt += salonCost(pid)*num(r['個数']); g.n++;
+    const mk = String(r['MTG前払い済']||'').trim();
+    if(mk){ g.marked++; g.doneAt = mk; }
+    if(!term(String(r['ステータス']||'').trim())) g.active++;
+  });
+  const all = Object.values(by);
+  return { pend: all.filter(g=>g.marked<g.n && g.active>0), done: all.filter(g=>g.marked>=g.n) };
+}
+// ⚠MTG前払いカード（💰支払い・サロン精算の両画面共通）。✔で完了=アラート消し込み（回収台帳「MTG前払い済」列に記録）
+function mtgAlertCard(){
+  const g = mtgPrepayGroups();
+  if(!g.pend.length && !g.done.length) return '';
+  return '<div class="card"'+(g.pend.length?' style="border-color:var(--warn)"':'')+'>' +
+    (g.pend.length
+      ? '<b>⚠ MTG前払いが必要な案件（'+g.pend.length+'件）</b> <span class="small muted">サロン着の代引きに合わせて '+esc(NM.spay)+' がサロンへ事前振込 → その原資を先に '+esc(NM.spay)+' へ。支払いできたら ✔ で完了にするとアラートが消えます</span>' +
+        g.pend.map(x=>'<div class="row small" style="margin-top:6px;border-top:1px solid var(--axis);padding-top:6px"><span class="mono">'+esc(x.kid)+'</span><span>'+esc(x.salon)+'</span>' +
+          '<span class="right"><b>'+yen(x.amt)+'</b> <button class="btn sm" onclick="if(confirm(\''+esc(x.kid)+'（'+esc(x.salon)+'）のMTG前払いを完了にしますか？\'))act(\'setMtgPrepaid\',{kid:\''+esc(x.kid)+'\'},\'MTG前払いを完了にしました\',[\'collectionLedger\'])">✔ 前払い完了</button></span></div>').join('')
+      : '<b class="small">MTG前払い: 未完了はありません</b>') +
+    (g.done.length
+      ? '<details style="margin-top:6px"><summary class="small muted" style="cursor:pointer">✔ 完了済み '+g.done.length+'件</summary>' +
+        g.done.map(x=>'<div class="row small" style="margin-top:4px"><span class="mono">'+esc(x.kid)+'</span><span>'+esc(x.salon)+'</span><span class="muted">'+esc(x.doneAt)+'</span>' +
+          '<span class="right">'+yen(x.amt)+' <button class="btn sm" onclick="act(\'setMtgPrepaid\',{kid:\''+esc(x.kid)+'\',off:true},\'完了を取り消しました\',[\'collectionLedger\'])">↩ 戻す</button></span></div>').join('')+'</details>'
+      : '') +
+    '</div>';
 }
 function renderNav(){
   const nc = navCounts();
@@ -607,11 +642,8 @@ function vPayments(){
   let html = '<h1>'+esc(NM.co)+'支払い</h1><div class="sub">仕入先・支払先ごとの支払予定。計上日は受注カードの📦発注日（未入力の分は振分確定日で「仮」計上）。行を開くと根拠明細が見られます</div>' +
     '<div class="row" style="margin-bottom:12px">対象月（計上日）: '+monthSel+'</div>';
 
-  // ---- MTG前払いアラート（発注に合わせて先払い準備が必要） ----
-  const mtgPending = Object.keys(bySup).flatMap(k=>bySup[k]).filter(l=>l.brand==='MTG');
-  if(mtgPending.length){
-    html += '<div class="card" style="border-color:var(--s4)"><b>⚠ MTG案件あり</b> <span class="small">MTGはサロン着の代引きに合わせて '+esc(NM.spay)+' がサロンへ事前振込 → その原資を先に '+esc(NM.spay)+' へ支払います（下の💴カード参照）</span></div>';
-  }
+  // ---- MTG前払いアラート（✔完了ボタンつき・サロン精算画面と共通。対象月フィルタに関わらず未完了は常に出す） ----
+  html += mtgAlertCard();
 
   // ---- 支払先カード（仕入先=ディーラー/外注） ----
   const supIds = Object.keys(bySup).filter(k=>k!=='');
@@ -2040,6 +2072,20 @@ async function mbSubmit(){
   const known = new Set(rows('orderLedger').map(r=>String(r['受注ID']||'').trim()));
   const badOids = orderIds.filter(o=>!known.has(o));
   if(badOids.length){ toast('受注が見つかりません（打ち間違い？）: '+badOids.join(', '), true); return; }
+  // 必要数超過ガード（サーバー側にも同じチェックあり）: 受注の数が合わなくなる登録はエラー（2026-07-18 ユーザー要望）
+  if(orderIds.length){
+    const needBy = {};
+    rows('orderLedger').forEach(r=>{ if(orderIds.includes(String(r['受注ID']||'').trim())){ const pid=String(r['商品ID']||'').trim(); needBy[pid]=(needBy[pid]||0)+num(r['個数']); } });
+    const haveBy = {};
+    rows('collectionLedger').forEach(r=>{ if(!String(r['対象受注']||'').split(',').some(x=>orderIds.includes(x.trim()))) return;
+      const pid=String(r['商品ID']||'').trim(); haveBy[pid]=(haveBy[pid]||0)+num(r['個数']); });
+    const over = items.map(it=>{
+      const need=needBy[it.pid]||0, have=haveBy[it.pid]||0;
+      if(need===0) return it.name+'（対象受注にこの商品はありません）';
+      return have+it.qty>need ? it.name+'（必要 '+need+'・登録済み '+have+'・今回 '+it.qty+'）' : '';
+    }).filter(Boolean);
+    if(over.length){ toast('受注の必要数を超えるため登録できません: '+over.join('／'), true); return; }
+  }
   const total = items.reduce((a,x)=>a+x.qty,0);
   const date = viewState.mbDate || new Date().toLocaleDateString('sv-SE');
   if(!confirm('手動仕入れを登録します。\n回収先: '+salonLabel(sRow||{})+'\n仕入日: '+date+(orderIds.length?'\n対象受注: '+orderIds.join(', '):'\n対象受注: なし（後からスプシで紐づけできます）')+'\n合計 '+total+'点 を回収番号1つで「回収待ち」に登録します。よろしいですか？')) return;
@@ -2234,6 +2280,7 @@ function vSalonPay(){
   const due = new Date(y, m+1, 0);
   const dueStr = due.getFullYear()+'年'+(due.getMonth()+1)+'月'+due.getDate()+'日';
   return '<h1>'+NM.spay+'支払</h1><div class="sub">サロンへの支払いは'+NM.spay+'経由。協力費（'+yen(BRAND_FEE)+'/ブランド/サロン）は<b>対象月の翌月末払い</b>。MTG代金は<b>都度払い</b>で月次には含めません</div>' +
+  mtgAlertCard() +   // MTG前払いアラート（✔完了ボタンつき・💰支払い画面と共通。2026-07-18 両画面に表示のユーザー要望）
   '<div class="row" style="margin-bottom:12px">対象月: '+monthPicker() +
   '<button class="btn right" onclick="exportSalonPay()">CSV出力</button></div>' +
   '<div class="kpis">' +
