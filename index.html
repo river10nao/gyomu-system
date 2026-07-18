@@ -1966,7 +1966,12 @@ function manualBuyForm(){
       : '<label class="small">仕入先（ディーラー・支払い集計に使います）<br><select style="max-width:240px" onchange="viewState.mbSup=this.value;render()"><option value="">選択してください</option>' +
         dealers.map(s=>{ const id=String(s['サロンID']).trim(); return '<option value="'+id+'" '+(supId===id?'selected':'')+'>'+esc(salonLabel(s))+'</option>'; }).join('')+'</select></label>') +
     '<label class="small">仕入日（発注日・支払い計上の基準月）<br><input type="date" value="'+(viewState.mbDate||t)+'" onchange="viewState.mbDate=this.value"></label>' +
+    // 対象受注は任意（後からオーダーが決まるパターンに対応。2026-07-18 ユーザー要望）。
+    // 空欄で登録→後からスプシの回収台帳「対象受注」列を直接編集して紐づけ/修正もできる（カンマ区切りの受注ID）
+    '<label class="small">対象受注（任意・カンマ区切りで複数可）<br><input list="mbOidList" value="'+esc(viewState.mbOids||'')+'" onchange="viewState.mbOids=this.value" placeholder="例: O0012（後から決まるなら空欄）" style="width:220px">' +
+    '<datalist id="mbOidList">'+allocOrderGroups().map(g=>'<option value="'+esc(g.id)+'">'+esc(g.w||'')+' '+esc(g.date||'')+'</option>').join('')+'</datalist></label>' +
     '</div>' +
+    '<p class="muted small" style="margin:6px 0 0">対象受注を入れると、その受注の振分済み判定・支払い計上日（📦発注日）に紐づきます。空欄で登録した分も、後からスプシ「回収台帳」の対象受注列に受注IDを書けば同じように紐づきます。</p>' +
     '<div class="row" style="margin-top:10px;align-items:flex-end">' +
     '<label class="small grow">① JANコード列（1行=1商品。商品ID＝P0135 のように書いてもOK）<br><textarea id="mbJans" rows="4" oninput="viewState.mbJansTxt=this.value" style="width:100%;font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--axis);border-radius:8px;padding:8px" placeholder="4954835270892&#10;P0135&#10;…">'+esc(viewState.mbJansTxt||'')+'</textarea></label>' +
     '<label class="small" style="width:160px">② 数量列（同じ順）<br><textarea id="mbQtys" rows="4" oninput="viewState.mbQtyTxt=this.value" style="width:100%;font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--axis);border-radius:8px;padding:8px" placeholder="12&#10;6&#10;…">'+esc(viewState.mbQtyTxt||'')+'</textarea></label>' +
@@ -2006,11 +2011,16 @@ async function mbSubmit(){
   if(!isOut && !(viewState.mbSup||'')){ toast('仕入先（ディーラー）を選んでください（支払い集計に使います）', true); return; }
   const items = (viewState.mbRows||[]).filter(r=>r.pid && num(r.qty)>0).map(r=>({pid:r.pid, name:r.name, size:r.size, qty:num(r.qty)}));
   if(!items.length){ toast('数量が1以上の商品がありません', true); return; }
+  // 対象受注（任意）: 入力があれば実在チェック（サーバー側にも同じチェックあり）
+  const orderIds = String(viewState.mbOids||'').split(/[,、\s]+/).map(s=>s.trim()).filter(Boolean);
+  const known = new Set(rows('orderLedger').map(r=>String(r['受注ID']||'').trim()));
+  const badOids = orderIds.filter(o=>!known.has(o));
+  if(badOids.length){ toast('受注が見つかりません（打ち間違い？）: '+badOids.join(', '), true); return; }
   const total = items.reduce((a,x)=>a+x.qty,0);
   const date = viewState.mbDate || new Date().toLocaleDateString('sv-SE');
-  if(!confirm('手動仕入れを登録します。\n回収先: '+salonLabel(sRow||{})+'\n仕入日: '+date+'\n合計 '+total+'点 を回収番号1つで「回収待ち」に登録します。よろしいですか？')) return;
-  const res = await act('commitManualPurchase', {salonId:sid, supplierId:isOut?'':(viewState.mbSup||''), date, items}, '手動仕入れを登録しました', ['collectionLedger']);
-  if(res){ viewState.mbRows=[]; viewState.mbJansTxt=''; viewState.mbQtyTxt=''; toast('回収ID: '+res.collectionId+' を作成しました'); render(); }
+  if(!confirm('手動仕入れを登録します。\n回収先: '+salonLabel(sRow||{})+'\n仕入日: '+date+(orderIds.length?'\n対象受注: '+orderIds.join(', '):'\n対象受注: なし（後からスプシで紐づけできます）')+'\n合計 '+total+'点 を回収番号1つで「回収待ち」に登録します。よろしいですか？')) return;
+  const res = await act('commitManualPurchase', {salonId:sid, supplierId:isOut?'':(viewState.mbSup||''), date, orderIds, items}, '手動仕入れを登録しました', ['collectionLedger']);
+  if(res){ viewState.mbRows=[]; viewState.mbJansTxt=''; viewState.mbQtyTxt=''; viewState.mbOids=''; toast('回収ID: '+res.collectionId+' を作成しました'); render(); }
 }
 
 // ===== 画面: 在庫 =====
