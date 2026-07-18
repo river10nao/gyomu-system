@@ -1397,6 +1397,13 @@ function vOrders(){
   const staging = rows('orders').length;
   const shipsByOrder = {};
   rows('shipments').forEach(sp=>{ if(sp['受注ID']) shipsByOrder[sp['受注ID']]=sp; });
+  // 受注→回収の逆引き（回収台帳の「対象受注」列から。受注カードに紐づく回収番号を出す。2026-07-18 ユーザー要望）
+  const collsByOrder = {};
+  rows('collectionLedger').forEach(c=>{
+    String(c['対象受注']||'').split(',').map(x=>x.trim()).filter(Boolean).forEach(oid=>{
+      (collsByOrder[oid]=collsByOrder[oid]||{})[String(c['回収ID']).trim()] = String(c['ステータス']||'').trim();
+    });
+  });
 
   // 完了案件（お金=最終入金完了 かつ モノ=出荷完了 or 出荷なし）は「すべて」タブでは下の「✅完了分」に固める（2026-07-16 ユーザー指定）
   // 最終入金完了でも出荷が残っている案件は作業中なので上に残す。個別タブでは絞り込み結果をそのまま出す
@@ -1480,7 +1487,10 @@ function vOrders(){
           ? '<button class="btn sm" onclick="toast(\''+guard[1]+'\', true)" style="opacity:.55">'+guard[0]+'</button>'
           : advanceBtn('order', g.id, g.st); })() +
       (canShip && !busy('order', g.id) ? '<button class="btn sm" onclick="act(\'createShipment\',{受注ID:\''+g.id+'\'},\'出荷を作成しました\',[\'shipments\'])">🚚 出荷を作成</button>' : '') +
-      (ship ? '<span class="small muted">出荷: '+ship['出荷ID']+' '+pill(ship['ステータス'])+'</span>' : '') +
+      (ship ? '<span class="small muted">🚚 出荷: '+ship['出荷ID']+' '+pill(ship['ステータス'])+'</span>' : '') +
+      // 紐づく回収番号（回収台帳の対象受注から逆引き。2026-07-18 ユーザー要望「それぞれの場所で見れるように」）
+      (()=>{ const ks=collsByOrder[String(g.id).trim()]||{}; const ids=Object.keys(ks);
+        return ids.length ? '<span class="small muted">📥 回収: '+ids.map(k=>k+'('+esc(ks[k])+')').join(', ')+'</span>' : ''; })() +
       '<button class="btn sm" onclick="viewState.docFor=(viewState.docFor===\''+g.id+'\'?null:\''+g.id+'\');render()">📄 帳票発行</button>' +
       rollbackBtn('order', g.id, g.st) +
       deleteBtn('order', g.id) +
@@ -2002,6 +2012,10 @@ function vCollection(){
     return '<details class="ordcard" '+(isOpenC?'open':'')+' ontoggle="(viewState.open=viewState.open||{})[\''+g.id+'\']=this.open"><summary>' + selBox(g.id) +
       '<b>'+g.id+'</b> '+pill(g.st)+' <span>'+esc(g.salon)+'</span><span class="muted small">'+esc(g.date)+' / '+esc(g.kubun||'卸')+(String(g.rows[0]['仕入先名']||'').trim()?' / 🏭 '+esc(g.rows[0]['仕入先名']):'')+'</span>' +
       (String(g.rows[0]['対象受注']||'').trim() ? '<span class="muted small">📋 '+esc(g.rows[0]['対象受注'])+(cBrands?' '+esc(cBrands):'')+'</span>' : '') +
+      // 紐づく出荷番号（対象受注→出荷の逆引き。2026-07-18 ユーザー要望「それぞれの場所で見れるように」）
+      (()=>{ const oids=String(g.rows[0]['対象受注']||'').split(',').map(x=>x.trim()).filter(Boolean);
+        const ds=[...new Set(rows('shipments').filter(s=>oids.includes(String(s['受注ID']||'').trim())).map(s=>String(s['出荷ID']).trim()+'('+String(s['ステータス']||'').trim()+')'))];
+        return ds.length ? '<span class="muted small">🚚 '+ds.join(', ')+'</span>' : ''; })() +
       '<span class="right mono">'+qty+'点</span></summary>' +
       '<div class="tblwrap" style="margin-top:8px"><table><tr><th>商品</th><th>容量</th><th class="num">個数</th><th>在庫ID</th></tr>' +
       g.rows.map(r=>'<tr><td>'+esc(r['商品名'])+'</td><td>'+esc(r['容量'])+'</td><td class="num">'+r['個数']+'</td><td class="mono small">'+esc(r['在庫ID']||'—')+'</td></tr>').join('') +
@@ -2191,12 +2205,14 @@ function vShipments(){
   '<button class="btn right" onclick="exportTable(\'出荷登録\',\'shipments\')">CSV出力</button></div>' +
   tabsHtml('shipment', tab, counts) +
   '<div class="row" style="margin-bottom:10px">'+bulkBar('shipment', list.map(r=>r['出荷ID']))+'</div>' +
-  '<div class="card tblwrap"><table><tr><th></th><th>出荷ID</th><th>受注ID</th><th>宛先</th><th>状態</th><th>作成日</th><th>出荷日</th><th></th></tr>' +
+  '<div class="card tblwrap"><table><tr><th></th><th>出荷ID</th><th>受注ID</th><th>回収</th><th>宛先</th><th>状態</th><th>作成日</th><th>出荷日</th><th></th></tr>' +
   (list.map(r=>{
     const id=r['出荷ID'], st=r['ステータス'];
-    return '<tr><td>'+selBox(id)+'</td><td class="mono">'+id+'</td><td class="mono small">'+esc(r['受注ID'])+'</td><td>'+esc(r['卸先名']||r['サロン名']||r['注文者氏名'])+'</td><td>'+pill(st)+'</td><td class="small">'+esc(r['作成日'])+'</td><td class="small">'+esc(r['出荷日']||'—')+'</td>' +
+    // 紐づく回収番号（受注ID→回収台帳の対象受注で逆引き。2026-07-18 ユーザー要望）
+    const ks=[...new Set(rows('collectionLedger').filter(c=>String(c['対象受注']||'').split(',').map(x=>x.trim()).includes(String(r['受注ID']||'').trim())).map(c=>String(c['回収ID']).trim()))];
+    return '<tr><td>'+selBox(id)+'</td><td class="mono">'+id+'</td><td class="mono small">'+esc(r['受注ID'])+'</td><td class="mono small">'+(ks.join(', ')||'—')+'</td><td>'+esc(r['卸先名']||r['サロン名']||r['注文者氏名'])+'</td><td>'+pill(st)+'</td><td class="small">'+esc(r['作成日'])+'</td><td class="small">'+esc(r['出荷日']||'—')+'</td>' +
     '<td><div class="row">'+advanceBtn('shipment', id, st)+rollbackBtn('shipment', id, st)+deleteBtn('shipment', id)+'</div></td></tr>';
-  }).join('') || '<tr><td colspan="8" class="muted">出荷はまだありません</td></tr>') + '</table></div>' +
+  }).join('') || '<tr><td colspan="9" class="muted">出荷はまだありません</td></tr>') + '</table></div>' +
   trashSection('shipment', 'shipments', '出荷ID', r=>String(r['卸先名']||r['サロン名']||'')+' 受注:'+String(r['受注ID']||''));
 }
 
