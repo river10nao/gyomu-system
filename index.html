@@ -896,10 +896,6 @@ function calcQuota(month){
 function vDashboard(){
   const m = selMonth, s = calcSales(m);
   const stock = rows('stock').filter(r=>num(r['残数'])>0);
-  // 検品待ち・出荷は案件（受注）単位で数える（2026-07-14 ユーザー指定。回収は「対象受注」から逆引き）
-  const ordersOfCollection = r=>{ const t=String(r['対象受注']||'').split(',').map(x=>x.trim()).filter(Boolean); return t.length?t:['回収:'+String(r['回収ID']||'').trim()]; };
-  const nInspect = new Set(rows('collectionLedger').filter(r=>r['ステータス']==='検品待ち').flatMap(ordersOfCollection)).size;
-  const nShip = new Set(rows('shipments').filter(r=>['引去確認待ち','引去済','出荷手配中'].includes(r['ステータス'])).map(r=>String(r['受注ID']||r['出荷ID']||'').trim())).size;
   const nAzukari = new Set(rows('hanbaiOrders').filter(r=>r['ステータス']==='預かり中').map(r=>String(r['サロンID']||r['サロン名']||'').trim())).size;   // 店舗数で数える（同じサロンの複数注文は1店舗）
   // EC預かり在庫: 区分=ECの在庫（入庫は店販と同様、出庫はEC注文が入ったとき）。残数>0のサロン数と点数
   const ecHold = stock.filter(r=>String(r['区分']||'').trim()==='EC');
@@ -1153,9 +1149,6 @@ function vDashboard(){
     kpi(m+' 売上（税抜）', yen(s.sales)) +
     kpi('仕入れ額（税抜）', yen(s.cost)) +
     kpi('利益（概算）', yen(s.profit), s.sales>0 ? '利益率 '+Math.round(s.profit/s.sales*100)+'%' : '') +
-    kpi('入金待ちの請求書', pendDocs.length+'枚', pendDocs.length ? '直近'+(pendDocs[0]._recv?'着金':'期限')+' '+(pendDocs[0]._due||'—') : '') +
-    kpi('検品待ち', nInspect+'案件') +
-    kpi('出荷 進行中', nShip+'案件') +
     kpi('店販品 預かり中', nAzukari+'店舗') +
     kpi('EC商品 預かり中', nEc+'店舗', ecQty?'残 '+ecQty+'点':'') +
   '</div>' +
