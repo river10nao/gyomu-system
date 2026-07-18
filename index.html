@@ -1153,8 +1153,9 @@ function vDashboard(){
     (()=>{ const g=s.goal||{};
       const sr = g.sales ? Math.round(s.sales/g.sales*100) : null;
       const pr = g.profit ? Math.round(s.profit/g.profit*100) : null;
+      const br = g.buy ? Math.round(s.cost/g.buy*100) : null;
       return kpi('目標達成率', sr!==null ? sr+'%' : '—',
-        sr!==null ? '売上目標 '+yen(g.sales)+(pr!==null?' ／ 利益 '+pr+'%':'') : '「月次目標」シートに売上目標を入れると表示'); })() +
+        sr!==null ? '売上目標 '+yen(g.sales)+(pr!==null?' ／ 利益 '+pr+'%':'')+(br!==null?' ／ 仕入 '+br+'%':'') : '「月次目標」シートに売上目標を入れると表示'); })() +
     kpi('店販品 預かり中', nAzukari+'店舗') +
     kpi('EC商品 預かり中', nEc+'店舗', ecQty?'残 '+ecQty+'点':'') +
   '</div>' +
