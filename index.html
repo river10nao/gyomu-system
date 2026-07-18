@@ -893,8 +893,6 @@ function calcQuota(month){
 function vDashboard(){
   const m = selMonth, s = calcSales(m);
   const stock = rows('stock').filter(r=>num(r['残数'])>0);
-  const surplus = stock.filter(isSurplus);   // 余剰在庫 = 寝ているお金（通常の回収在庫はすぐ出荷されるのでKPIにしない）
-  const surplusValue = surplus.reduce((a,r)=>a+num(r['在庫金額（税抜）']),0);
   // 検品待ち・出荷は案件（受注）単位で数える（2026-07-14 ユーザー指定。回収は「対象受注」から逆引き）
   const ordersOfCollection = r=>{ const t=String(r['対象受注']||'').split(',').map(x=>x.trim()).filter(Boolean); return t.length?t:['回収:'+String(r['回収ID']||'').trim()]; };
   const nInspect = new Set(rows('collectionLedger').filter(r=>r['ステータス']==='検品待ち').flatMap(ordersOfCollection)).size;
@@ -1045,7 +1043,19 @@ function vDashboard(){
   { const nPend = allocPending().length;
     if(nPend) boardChips.push('<div class="row" style="gap:6px"><b class="small" style="min-width:88px">🧮 振り分け</b>' +
       '<button class="btn sm" onclick="go(\'allocation\');render()">振り分け未完了 <span class="n hot">'+nPend+'</span></button></div>'); }
-  chipsFor('📦 回収・検品','collection','collection',rows('collectionLedger'),'回収ID',['ロット処理なし'],ordersOfCollection);   // 案件数で表示
+  // 回収・検品は「何サロン・外注何社」で表示（2026-07-18 ユーザー指定。1回収=1サロン=1箱なので実働の箱数感覚に合わせる）
+  { const flowC = FLOW.collection, doneC = new Set(['ロット処理済み','ロット処理なし']);
+    const per = {};   // ステータス → {sal:サロン名Set, out:外注先Set}
+    rows('collectionLedger').forEach(r=>{ const id=String(r['回収ID']||'').trim(); if(!id) return;
+      const st=r['ステータス']; if(doneC.has(st) || !flowC.includes(st)) return;
+      const p = per[st] = per[st] || {sal:new Set(), out:new Set()};
+      const name = String(r['サロン名']||'').trim() || id;
+      (String(r['区分']||'').trim()==='外注' ? p.out : p.sal).add(name); });
+    const chips = flowC.filter(st=>per[st]).map(st=>{ const p=per[st];
+      const t = [p.sal.size?p.sal.size+'サロン':'', p.out.size?'外注'+p.out.size+'社':''].filter(Boolean).join('・');
+      return '<button class="btn sm" onclick="go(\'collection\');viewState.tab=\''+st+'\';render()">'+esc(st)+' <span class="n hot">'+t+'</span></button>'; });
+    if(chips.length) boardChips.push('<div class="row" style="gap:6px"><b class="small" style="min-width:88px">📦 回収・検品</b>'+chips.join('')+'</div>');
+  }
   chipsFor('🚚 出荷','shipments','shipment',rows('shipments'),'出荷ID',null,r=>[String(r['受注ID']||r['出荷ID']||'').trim()]);   // 案件数で表示
   chipsFor('🛍 店販/EC','hanbai','hanbai',rows('hanbaiOrders'),'注文ID',['EC出品中','完売']);
   const boardHtml = '<div class="card"><b class="small">🚧 業務の残件（どこで止まっているか）</b><div style="margin-top:8px;display:flex;flex-direction:column;gap:6px">' +
@@ -1138,9 +1148,9 @@ function vDashboard(){
   boardHtml +
   '<div class="kpis">' +
     kpi(m+' 売上（税抜）', yen(s.sales)) +
+    kpi('仕入れ額（税抜）', yen(s.cost)) +
     kpi('利益（概算）', yen(s.profit), s.sales>0 ? '利益率 '+Math.round(s.profit/s.sales*100)+'%' : '') +
     kpi('入金待ちの請求書', pendDocs.length+'枚', pendDocs.length ? '直近'+(pendDocs[0]._recv?'着金':'期限')+' '+(pendDocs[0]._due||'—') : '') +
-    kpi('余剰在庫（税抜）', yen(surplusValue), surplus.length ? surplus.reduce((a,r)=>a+num(r['残数']),0)+'点 / '+surplus.length+'ロット' : '売れ残りなし') +
     kpi('検品待ち', nInspect+'案件') +
     kpi('出荷 進行中', nShip+'案件') +
     kpi('店販品 預かり中', nAzukari+'店舗') +
