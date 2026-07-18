@@ -2352,22 +2352,32 @@ function allocCalc(){
   // 計算順: ①金額枠ありの外注先へ先取り（上の行から・枠は外注先への支払額ベース） → ②自社サロンへ均等配分 → ③枠が空欄の外注先が余りを全部吸収
   const coutsRaw = ALLOC.mode!=='own' ? (conf.outs||[]) : [];
   if(coutsRaw.some(o=>num(o.budget)>0 && !o.sid)){ toast('外注仕入枠に金額だけ入って外注先が選ばれていない行があります', true); return; }
-  const routs = coutsRaw.filter(o=>o.sid).map(o=>({sid:o.sid, budget:o.budget, q:{}}));
+  const routs = coutsRaw.filter(o=>o.sid).map(o=>({sid:o.sid, budget:o.budget, cap:o.cap, q:{}}));
   const rem = {}; items.forEach(i=>rem[i.pid]=i.need);
   routs.filter(o=>num(o.budget)>0).forEach(o=>{
     const b = num(o.budget); let spent = 0;
+    const ocap = num(o.cap)||0;   // 同一商品の上限（箱/個数の単位。商品の偏り防止・2026-07-18 ユーザー要望）
     items.forEach(i=>{
       const unit = i.unit>1 ? i.unit : 1;
       const u = allocOutUnit(o.sid, i.pid);
       let take = 0;
-      while(rem[i.pid]-take >= unit && spent + u*unit <= b){ take += unit; spent += u*unit; }
+      while(rem[i.pid]-take >= unit && spent + u*unit <= b && (!ocap || take/unit < ocap)){ take += unit; spent += u*unit; }
       if(take>0){ o.q[i.pid]=take; rem[i.pid]-=take; }
     });
   });
   const m = allocRun(items.map(i=>({...i, need:rem[i.pid]})), salonIds, budget, cap);
   salonIds.forEach(s=>items.forEach(i=>{ rem[i.pid] -= num((m[s]||{})[i.pid]); }));
-  const sink = routs.find(o=>!num(o.budget));   // 枠が空欄の外注先=余りの受け皿（複数あれば最初の行）
-  if(sink) items.forEach(i=>{ if(rem[i.pid]>0){ sink.q[i.pid]=(sink.q[i.pid]||0)+rem[i.pid]; rem[i.pid]=0; } });
+  // 枠が空欄の外注先=余りの受け皿（上の行から順・同一商品上限は守る。上限で受けきれない分は余りとして残る=確定ブロック対象）
+  routs.filter(o=>!num(o.budget)).forEach(o=>{
+    const ocap = num(o.cap)||0;
+    items.forEach(i=>{
+      if(rem[i.pid]<=0) return;
+      const unit = i.unit>1 ? i.unit : 1;
+      let give = rem[i.pid];
+      if(ocap) give = Math.min(give, Math.max(0, ocap*unit - num(o.q[i.pid])));
+      if(give>0){ o.q[i.pid]=(o.q[i.pid]||0)+give; rem[i.pid]-=give; }
+    });
+  });
   ALLOC.result[brand] = { salonIds, items, m, budget, cap, outs:routs };
   render();
 }
@@ -2410,6 +2420,7 @@ function allocOutFill(idx){
   const outs = allocOutsOf(r); const o = outs[idx]; if(!o) return;
   if(!o.sid){ toast('先に外注先を選んでください（金額枠の単価＝その外注先の掛け率で計算するため）', true); return; }
   const b = num(o.budget) || Infinity;
+  const ocap = num(o.cap)||0;   // 同一商品の上限（箱/個数の単位）
   let spent = r.items.reduce((a,i)=>a+num(o.q[i.pid])*allocOutUnit(o.sid,i.pid),0);   // 既に入っている分も枠に含める
   let moved = 0;
   r.items.forEach(i=>{
@@ -2419,7 +2430,7 @@ function allocOutFill(idx){
     const others = outs.reduce((a,oo)=>a+num(oo.q[i.pid]),0);
     const left = i.need - asg - others;
     let take = 0;
-    while(left-take >= unit && spent + u*unit <= b){ take += unit; spent += u*unit; }
+    while(left-take >= unit && spent + u*unit <= b && (!ocap || (num(o.q[i.pid])+take)/unit < ocap)){ take += unit; spent += u*unit; }
     if(take>0){ o.q[i.pid] = num(o.q[i.pid]) + take; moved += take; }
   });
   if(!moved){ toast(num(o.budget) ? '金額枠いっぱいか、余りがありません' : '余りはありません（全て割り振り済みです）'); return; }
@@ -2582,6 +2593,7 @@ function vAllocation(){
           '<select onchange="allocCOutSet('+gi+',\'sid\',this.value)"><option value="">外注先を選ぶ</option>' +
           dealers.map(s=>{ const sid=String(s['サロンID']).trim(); return '<option value="'+sid+'" '+(o.sid===sid?'selected':'')+'>'+esc(salonLabel(s))+'</option>'; }).join('') + '</select>' +
           '<label class="small">金額枠（円）<br><input type="number" value="'+esc(o.budget||'')+'" onchange="allocCOutSet('+gi+',\'budget\',this.value)" placeholder="例: 300000（空欄=余り全部）" style="width:180px"></label>' +
+          '<label class="small">同一商品の上限（箱/個数の単位。空欄=無制限）<br><input type="number" value="'+esc(o.cap||'')+'" onchange="allocCOutSet('+gi+',\'cap\',this.value)" placeholder="例: 10" style="width:150px"></label>' +
           '<button class="btn sm" onclick="allocCOutDel('+gi+')">🗑</button></div>').join('') +
         '</div>'; })() +
     '<div class="row" style="margin-top:10px">' +
@@ -2612,7 +2624,10 @@ function vAllocation(){
     html += '<div class="card tblwrap"><div class="row"><b class="small">③ '+esc(brand)+' 割り振り結果（対象受注: '+selIds.join(', ')+'）</b>' +
       '<button class="btn sm" onclick="allocPrint()">🖨 印刷用を開く（PDF保存）</button>' +
       '<button class="btn sm" onclick="allocSaveDraft()">💾 確認待ちで保存</button>' +
-      '<button class="btn pri sm right" onclick="allocCommit()">✅ 確定して回収データを作成</button></div>' +
+      // 余りが残っている間は確定に進めない（2026-07-18 ユーザー要望。押すと理由をトースト表示）
+      (shortTotal>0
+        ? '<button class="btn sm right" style="opacity:.55" onclick="toast(\'余りが '+shortTotal+'点 残っています。全て割り振ってから確定してください\', true)">✅ 確定して回収データを作成</button>'
+        : '<button class="btn pri sm right" onclick="allocCommit()">✅ 確定して回収データを作成</button>')+'</div>' +
       // 外注枠のサマリー（枠の指定は②で。ここは結果確認＋🔁での手直し。自社サロンのみモードでは出さない）
       (allocMode!=='own' && outs.length ? '<div style="margin-top:8px;padding:8px 10px;border:1px dashed var(--axis);border-radius:10px">' +
       '<div class="row"><b class="small">🤝 外注仕入枠の結果</b>' +
@@ -2624,7 +2639,7 @@ function vAllocation(){
         const names2 = rows('salons').find(s=>String(s['サロンID']).trim()===o.sid);
         return '<div class="row" style="margin-top:6px;align-items:center">' +
         '<b class="small">🤝 '+esc(names2?salonLabel(names2):(o.sid||'外注先未選択'))+'</b>' +
-        '<span class="small muted">枠 '+(num(o.budget)?yen(num(o.budget)):'空欄（余り全部）')+'</span>' +
+        '<span class="small muted">枠 '+(num(o.budget)?yen(num(o.budget)):'空欄（余り全部）')+(num(o.cap)?'・同一商品上限 '+num(o.cap):'')+'</span>' +
         '<span class="small">計 <b>'+cnt+'点</b> ／ <b>'+yen(money)+'</b>'+(num(o.budget)&&money>num(o.budget)?' <span style="color:var(--crit)">⚠枠超過</span>':'')+'</span>' +
         '<button class="btn sm" onclick="allocOutFill('+gi+')">🔁 余りをここへ（枠まで）</button></div>'; }).join('') +
       '</div>' : '') +
@@ -2650,7 +2665,7 @@ function vAllocation(){
           r.salonIds.map(s=>{ const v=num((r.m[s]||{})[i.pid]); const bad = i.unit>1 && v%i.unit!==0;
             return '<td class="num"><input type="number" value="'+(v||'')+'" min="0" onchange="allocCell(\''+i.pid+'\',\''+s+'\',this.value)" style="width:64px;text-align:right'+(bad?';border-color:var(--crit)':'')+'"'+(bad?' title="箱の入数（'+i.unit+'）の倍数ではありません"':'')+'></td>'; }).join('') +
           (allocMode!=='own' ? outs.map((o,gi)=>{ const ov=num((o.q||{})[i.pid]); return '<td class="num"><input type="number" value="'+(ov||'')+'" min="0" onchange="allocOutCell(\''+i.pid+'\','+gi+',this.value)" style="width:64px;text-align:right;border-color:var(--s4)"></td>'; }).join('') : '') +
-          '<td class="num">'+(asg+oq)+'</td><td class="num"'+(left<0?' style="color:var(--crit)"':'')+'>'+left+'</td></tr>';
+          '<td class="num">'+(asg+oq)+'</td><td class="num"'+(left!==0?' style="color:var(--crit);font-weight:700"':'')+'>'+left+'</td></tr>';
       }).join('') +
       '<tr style="background:var(--wash)"><td><b>合計金額 / 枠 '+yen(r.budget)+'</b></td><td></td>' +
       r.salonIds.map(s=>{ const sp=spentOf(s); const over=sp>r.budget;
@@ -2658,7 +2673,13 @@ function vAllocation(){
       (allocMode!=='own' ? outs.map(o=>{ const money=r.items.reduce((a,i)=>a+num((o.q||{})[i.pid])*allocOutUnit(o.sid,i.pid),0);
         return '<td class="num small"><b>'+yen(money)+'</b>'+(num(o.budget)&&money>num(o.budget)?'<br>⚠枠超過':'')+'</td>'; }).join('') : '') +
       '<td colspan="2"></td></tr></table>' +
-      '<p class="muted small" style="margin-top:6px">余りが残った商品は確定後も受注に紐づいたままです。次回の振り分けで同じ受注を選べば続きを割り振れます。サロン列の金額=サロン仕入価格（税抜）×個数、外注列の金額=外注先の掛け率×定価×個数。</p></div>';
+      // 余りの一覧（目立たせる・2026-07-18 ユーザー要望）。余りが0になるまで✅確定はできない
+      (shortTotal>0 ? '<div style="margin-top:8px;padding:10px 12px;border:1.5px solid var(--crit);border-radius:10px;background:color-mix(in srgb,var(--crit) 6%,transparent)">' +
+        '<b class="small" style="color:var(--crit)">⚠ 余りが '+shortTotal+'点 あります — 全て割り振るまで確定できません</b>' +
+        '<div class="small" style="margin-top:4px;color:var(--crit)">' +
+        r.items.map(i=>{ const left=i.need-assignedOf(i.pid)-outQty(i.pid); return left>0 ? esc(i.name)+' '+esc(i.size||'')+' × <b>'+left+'</b>' : ''; }).filter(Boolean).join('　／　') +
+        '</div><div class="muted small" style="margin-top:4px">サロンを増やす・枠金額/上限をゆるめる・外注枠に入れる、のいずれかで割り切ってください（表のマスは直接手直しできます）</div></div>' : '') +
+      '<p class="muted small" style="margin-top:6px">サロン列の金額=サロン仕入価格（税抜）×個数、外注列の金額=外注先の掛け率×定価×個数。</p></div>';
   }
   return html;
 }
@@ -2716,7 +2737,7 @@ async function allocOutBulk(){
   if(!items.length){ toast('数量がありません', true); return; }
   const name = salonLabel(rows('salons').find(s=>String(s['サロンID']).trim()===sid)||{}) || sid;
   const total = items.reduce((a,x)=>a+x.qty,0);
-  if(!confirm('外注のみの一括登録をします。\n対象受注: '+selIds.join(', ')+'\n外注先: '+name+'\n合計 '+total+'点 を回収番号1つで「回収待ち」に登録します。よろしいですか？')) return;
+  if(!confirm('外注のみの一括登録をします。\n対象受注: '+selIds.join(', ')+'\n外注先: '+name+'\n合計 '+total+'点 を回収番号1つで「回収待ち」に登録します。\n\n⚠ 登録後は、この画面での修正はできません（直す場合は回収・検品側で削除してやり直しになります）。よろしいですか？')) return;
   const res = await act('commitOutsourceBulk', {orderIds:selIds, salonId:sid, items}, '外注仕入を登録しました', ['collectionLedger']);
   if(res){ toast('回収ID: '+res.collectionId+' を作成しました'); render(); }
 }
@@ -2742,12 +2763,19 @@ async function allocCommit(){
   }
   const total = lines.reduce((a,l)=>a+l.items.reduce((b,x)=>b+x.qty,0),0);
   if(!lines.length){ toast('個数が1以上のサロンがありません', true); return; }
+  // 余りが残っている間は確定できない（ボタン側でも塞いでいるが、下書き再開などの抜け道防止で二重ガード。2026-07-18）
+  const shortLeft = r.items.reduce((a,i)=>{
+    const asg = r.salonIds.reduce((x,s)=>x+num((r.m[s]||{})[i.pid]),0);
+    const oq = allocOutsOf(r).reduce((x,o)=>x+num((o.q||{})[i.pid]),0);
+    return a + Math.max(0, i.need-asg-oq);
+  },0);
+  if(shortLeft>0){ toast('余りが '+shortLeft+'点 残っています。全て割り振ってから確定してください', true); return; }
   // 🏭 仕入先（支払い集計用）: 卸行があるときは必須（複数ディーラーが扱うブランドへの対応。2026-07-18）
   const hasWholesale = lines.some(l=>!l.out);
   if(hasWholesale && !r.supplier){ toast('🏭 仕入先を選んでください（どのディーラーから仕入れるか。支払い集計に使います）', true); return; }
   const supRow = rows('salons').find(s=>String(s['サロンID']).trim()===r.supplier);
   const supName = supRow ? salonLabel(supRow) : r.supplier||'';
-  if(!confirm(brand+' の割り振りを確定します。\n対象受注: '+selIds.join(', ')+(hasWholesale&&supName?'\n仕入先: '+supName:'')+'\nサロン '+salonCount+'軒・合計 '+total+'点'+(outTotal?'（うち🤝外注 '+outTotal+'点）':'')+' を「回収待ち」で回収・検品に登録します。よろしいですか？')) return;
+  if(!confirm(brand+' の割り振りを確定します。\n対象受注: '+selIds.join(', ')+(hasWholesale&&supName?'\n仕入先: '+supName:'')+'\nサロン '+salonCount+'軒・合計 '+total+'点'+(outTotal?'（うち🤝外注 '+outTotal+'点）':'')+' を「回収待ち」で回収・検品に登録します。\n\n⚠ 確定後は、この画面での振り分けの修正はできません（直す場合は回収・検品側で該当の回収を削除してやり直しになります）。よろしいですか？')) return;
   const res = await act('commitAllocation', {brand, orderIds:selIds, lines, supplierId:r.supplier||''}, brand+' の回収データを作成しました', ['collectionLedger']);
   if(res){
     delete ALLOC.result[brand];
