@@ -1438,7 +1438,8 @@ function vOrders(){
       '</table></div>' +
       // 発注日はステータスボタンの真上。未入力のまま回収中へ進めない（スルー事故防止。サーバー側にも同じガード。2026-07-17 ユーザー指定）
       (FLOW.order.indexOf(g.st)>=2 ? (()=>{ const ordEmpty = !String(g.ord||'').trim();
-        return '<div class="row small" style="margin-top:10px;align-items:center;gap:8px'+(ordEmpty&&g.st==='振分/発注'?';padding:8px 10px;border:1.5px dashed var(--warn);border-radius:8px':'')+'">📦 <b>発注日</b>: ' +
+        // 未入力の注意喚起は薄いオレンジ背景＋左の太線で（点線は使わない・2026-07-18 ユーザー指定）
+        return '<div class="row small" style="margin-top:10px;align-items:center;gap:8px'+(ordEmpty&&g.st==='振分/発注'?';padding:8px 10px;background:color-mix(in srgb,var(--warn) 10%,transparent);border-left:3px solid var(--warn);border-radius:8px':'')+'">📦 <b>発注日</b>: ' +
         '<input type="date" id="ord'+g.id+'" value="'+esc(String(g.ord||'').trim().replace(/\//g,'-'))+'" style="padding:4px 8px">' +
         '<button class="btn sm" onclick="saveOrderDate(\''+g.id+'\')">保存</button>' +
         (ordEmpty ? '<span class="small" style="color:var(--ink2)"><b>※入力しないと「回収中」へ進めません。</b>実際にディーラーへ発注した日＝どの月の支払いに乗るかの基準です（ズレるとディーラー請求書と合いません）</span>'
