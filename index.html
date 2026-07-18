@@ -88,7 +88,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 .bar-inner{height:100%;border-radius:6px;background:var(--s1)}
 .steps{display:flex;gap:3px;align-items:center;flex-wrap:wrap;font-size:10.5px;color:var(--muted)}
 .step{display:flex;align-items:center;gap:3px}
-.dot{width:9px;height:9px;border-radius:50%;background:var(--grid);border:1px solid var(--axis)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--grid);border:1px solid var(--axis);vertical-align:-1px}
 .dot.done{background:var(--good);border-color:var(--good)}
 .dot.now{background:var(--accent);border-color:var(--accent)}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--page);padding:10px 20px;border-radius:10px;font-size:13px;z-index:99;box-shadow:0 4px 20px rgba(0,0,0,.3);max-width:90vw}
