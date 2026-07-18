@@ -1146,7 +1146,7 @@ function vDashboard(){
   alertsHtml() +
   boardHtml +
   '<div class="kpis">' +
-    kpi(m+' 売上（税抜）', yen(s.sales)) +
+    kpi('売上（税抜）', yen(s.sales)) +
     kpi('仕入れ額（税抜）', yen(s.cost)) +
     kpi('利益（概算）', yen(s.profit), s.sales>0 ? '利益率 '+Math.round(s.profit/s.sales*100)+'%' : '') +
     kpi('店販品 預かり中', nAzukari+'店舗') +
