@@ -567,8 +567,13 @@ function vPayments(){
   const ordDate = {};   // 受注ID → 📦発注日（受注カードで入れた実発注日）
   rows('orderLedger').forEach(r=>{ const id=String(r['受注ID']||'').trim(); if(id && !ordDate[id] && String(r['発注日']||'').trim()) ordDate[id]=String(r['発注日']).trim(); });
 
+  // 対象月フィルタ（計上日の月で絞る。既定=すべて。2026-07-18 ユーザー要望）
+  const payM = viewState.payMonth || 'すべて';
+  const inMonth = dateStr => payM==='すべて' || monthOf(dateStr)===payM;
+
   // ---- 仕入明細を仕入先ごとに集める ----
   const bySup = {};   // supId（''=未設定） → lines[]
+  const allMonths = new Set();
   rows('collectionLedger').filter(r=>String(r['削除']||'').trim()==='').forEach(r=>{
     const qty = num(r['個数']); if(qty<=0) return;
     const supId = String(r['仕入先ID']||'').trim();
@@ -577,6 +582,8 @@ function vPayments(){
     const oids = String(r['対象受注']||'').split(',').map(x=>x.trim()).filter(Boolean);
     const od = oids.map(o=>ordDate[o]).find(Boolean);
     const date = od || String(r['発注日']||'').trim();   // 発注日未入力の間は振分確定日で仮計上
+    allMonths.add(monthOf(date));
+    if(!inMonth(date)) return;
     const rate = payRateOf(sal[supId], brand);
     const list = num((product(pid)||{})['定価（税抜）']);
     let unit, unitNote='';
@@ -584,12 +591,18 @@ function vPayments(){
       unit = Math.floor(list*(Math.round((rate-BROKER_RATE)*1000)/1000));   // 39.9%は切捨・2%は仲介側へ
     } else if(rate!=null){ unit = Math.round(list*rate); }
     else { unit = ownCost(pid); unitNote='率未設定→仕入価格で仮'; }
-    (bySup[supId]=bySup[supId]||[]).push({date, prov:!od, kid:String(r['回収ID']||'').trim(), oids:oids.join(', '),
+    // 受注に紐づかない仕入（手動仕入れ・外注一括の旧データ等）は行自体の発注日が計上日なので「仮」にしない
+    (bySup[supId]=bySup[supId]||[]).push({date, prov:oids.length>0 && !od, kid:String(r['回収ID']||'').trim(), oids:oids.join(', '),
       salon:String(r['サロン名']||''), brand, name:String(r['商品名']||''), size:String(r['容量']||''), qty, unit, unitNote,
       amt:unit*qty, isOut:String(r['区分']||'').trim()==='外注'});
   });
+  rows('hanbaiOrders').forEach(r=>allMonths.add(monthOf(r['注文日'])));
+  allMonths.delete('');
+  const monthSel = '<select onchange="viewState.payMonth=this.value;render()"><option '+(payM==='すべて'?'selected':'')+'>すべて</option>' +
+    [...allMonths].sort().reverse().map(m=>'<option '+(m===payM?'selected':'')+'>'+m+'</option>').join('')+'</select>';
 
-  let html = '<h1>'+esc(NM.co)+'支払い</h1><div class="sub">仕入先・支払先ごとの支払予定。計上日は受注カードの📦発注日（未入力の分は振分確定日で「仮」計上）。行を開くと根拠明細が見られます</div>';
+  let html = '<h1>'+esc(NM.co)+'支払い</h1><div class="sub">仕入先・支払先ごとの支払予定。計上日は受注カードの📦発注日（未入力の分は振分確定日で「仮」計上）。行を開くと根拠明細が見られます</div>' +
+    '<div class="row" style="margin-bottom:12px">対象月（計上日）: '+monthSel+'</div>';
 
   // ---- MTG前払いアラート（発注に合わせて先払い準備が必要） ----
   const mtgPending = Object.keys(bySup).flatMap(k=>bySup[k]).filter(l=>l.brand==='MTG');
@@ -664,7 +677,7 @@ function vPayments(){
         byOrder[oid].sales += num(r['小計（税抜）']);
         byOrder[oid].cost += num(r['個数'])*ownCost(String(r['商品ID']||'').trim());
       });
-      Object.values(byOrder).filter(o=>o.st==='最終入金完了').forEach(o=>{
+      Object.values(byOrder).filter(o=>o.st==='最終入金完了' && inMonth(o.pay2)).forEach(o=>{   // 対象月は入金②日基準
         const b = base==='売上' ? o.sales : (o.sales-o.cost);
         const fee = Math.round(b*rate);
         // 入金が15日まで→当月末、16日以降→翌10日
@@ -687,7 +700,7 @@ function vPayments(){
   }
 
   // ---- 店販請求元（請求書ベース・想定額の参考） ----
-  const mavLines = rows('hanbaiOrders').filter(r=>String(r['削除']||'').trim()==='' && String(r['請求元ID']||'').trim()===PAYIDS.maverick);
+  const mavLines = rows('hanbaiOrders').filter(r=>String(r['削除']||'').trim()==='' && String(r['請求元ID']||'').trim()===PAYIDS.maverick && inMonth(String(r['注文日']||'')));
   if(mavLines.length){
     const mrow = sal[PAYIDS.maverick]||{};
     const per = {};
@@ -722,7 +735,7 @@ function vPayments(){
         g.mtg[sid].amt += salonCost(pid)*num(r['個数']);
       }
     });
-    const keys = Object.keys(months).sort().reverse().slice(0,3);
+    const keys = payM==='すべて' ? Object.keys(months).sort().reverse().slice(0,3) : Object.keys(months).filter(m=>m===payM);
     if(!keys.length) return;
     html += '<div class="card"><div class="row"><b>💴 '+esc(NM.spay)+'（前払い・振込手数料）</b><span class="small muted">精算の詳細は「'+esc(NM.spay)+'支払」画面</span></div>' +
       keys.map(m=>{ const g=months[m]; const mtgIds=Object.keys(g.mtg); const mtgTotal=mtgIds.reduce((a,s)=>a+g.mtg[s].amt,0);
@@ -1892,7 +1905,9 @@ function vCollection(){
   return '<h1>サロン回収・検品</h1><div class="sub">検品→「ロット処理済み」または「ロット処理なし」で在庫台帳へ自動入庫されます（1回収 = 1サロン = 1箱）</div>' +
   '<div class="row" style="margin-bottom:12px">' +
     '<button class="btn pri" onclick="if(confirm(\'サロン回収管理（サロン振り分けの結果）を回収台帳へ取り込みますか？\'))act(\'commitCollection\',{},\'回収を取り込みました\',[\'collectionLedger\'])">📥 サロン振り分け分を取込（'+staging+'明細）</button>' +
+    '<button class="btn" onclick="viewState.mbOpen=!viewState.mbOpen;render()">➕ 手動仕入れ（受注なし）</button>' +
     '<button class="btn right" onclick="exportTable(\'回収台帳\',\'collectionLedger\')">CSV出力</button></div>' +
+  (viewState.mbOpen ? manualBuyForm() : '') +
   tabsHtml('collection', tab, counts, ['ロット処理なし']) +
   '<div class="row" style="margin-bottom:10px">'+bulkBar('collection', list.map(g=>g.id), noLotBulk, terminalTab)+'</div>' +
   (list.map(g=>{
@@ -1916,6 +1931,86 @@ function vCollection(){
       deleteBtn('collection', g.id) + '</div></details>';
   }).join('') || '<p class="muted">該当する回収がありません</p>') +
   trashSection('collection', 'collectionLedger', '回収ID', r=>String(r['サロン名']||'')+' '+String(r['発注日']||''));
+}
+// ➕ 手動仕入れ（受注なし・Task#35 2026-07-18）: 受注に紐づかない仕入れを回収台帳へ直接登録するフォーム。
+// 受注の案件作成と同じ「JAN列＋数量列を貼って展開」方式。登録後は通常の回収→検品→入庫フロー
+function manualBuyForm(){
+  const t = new Date().toLocaleDateString('sv-SE');
+  const active = rows('salons').filter(s=>String(s['サロンID']||'').trim() && String(s['ストップ']||'').trim()==='');
+  const targets = active.filter(s=>['サロン','','外注'].includes(String(s['種別']||'').trim()));
+  const dealers = active.filter(s=>String(s['種別']||'').trim()==='ディーラー');
+  const sid = viewState.mbSid||'';
+  const sRow = targets.find(s=>String(s['サロンID']).trim()===sid);
+  const isOut = !!(sRow && String(sRow['種別']||'').trim()==='外注');
+  const supId = isOut ? sid : (viewState.mbSup||'');
+  const supRow = active.find(s=>String(s['サロンID']).trim()===supId);
+  // 参考単価: 仕入先の掛け率×定価（支払い画面と同じ）。率が無い商品は仕入価格で近似
+  const unitOfRow = r=>{ if(!r.pid) return 0;
+    const rate = payRateOf(supRow, brandOf(r.pid));
+    const list = num((product(r.pid)||{})['定価（税抜）']);
+    return (rate!=null && list) ? Math.round(list*rate) : ownCost(r.pid); };
+  const rws = viewState.mbRows||[];
+  let sub=0;
+  const trs = rws.map((r,i)=>{
+    const u = unitOfRow(r); const s = u*(num(r.qty)||0); sub += s;
+    return '<tr'+(r.pid?'':' style="color:var(--crit)"')+'><td class="mono small">'+esc(r.jan)+'</td><td>'+esc(r.name)+'</td><td class="small">'+esc(r.size)+'</td>' +
+      '<td><input type="text" inputmode="numeric" value="'+esc(r.qty||'')+'" style="width:64px;padding:4px 8px" oninput="viewState.mbRows['+i+'].qty=this.value" onchange="render()"></td>' +
+      '<td class="num">'+yen(u)+'</td><td class="num">'+yen(s)+'</td></tr>';
+  }).join('');
+  const bad = rws.filter(r=>!r.pid).length;
+  return '<div class="card" style="background:var(--wash)"><b class="small">➕ 手動仕入れ（受注なし） — 回収台帳へ直接登録して、通常の回収→検品→入庫フローに乗せます（支払い画面にも計上）</b>' +
+    '<div class="row" style="margin-top:10px">' +
+    '<label class="small">回収先（サロン/外注先）<br><select style="max-width:240px" onchange="viewState.mbSid=this.value;render()"><option value="">選択してください</option>' +
+      targets.map(s=>{ const id=String(s['サロンID']).trim(); return '<option value="'+id+'" '+(sid===id?'selected':'')+'>'+(String(s['種別']||'').trim()==='外注'?'🤝 ':'')+esc(salonLabel(s))+'</option>'; }).join('')+'</select></label>' +
+    (isOut ? '<label class="small">仕入先<br><span class="pill" style="margin-top:6px;display:inline-block">🤝 外注仕入（仕入先=回収先自身）</span></label>'
+      : '<label class="small">仕入先（ディーラー・支払い集計に使います）<br><select style="max-width:240px" onchange="viewState.mbSup=this.value;render()"><option value="">選択してください</option>' +
+        dealers.map(s=>{ const id=String(s['サロンID']).trim(); return '<option value="'+id+'" '+(supId===id?'selected':'')+'>'+esc(salonLabel(s))+'</option>'; }).join('')+'</select></label>') +
+    '<label class="small">仕入日（発注日・支払い計上の基準月）<br><input type="date" value="'+(viewState.mbDate||t)+'" onchange="viewState.mbDate=this.value"></label>' +
+    '</div>' +
+    '<div class="row" style="margin-top:10px;align-items:flex-end">' +
+    '<label class="small grow">① JANコード列（1行=1商品。商品ID＝P0135 のように書いてもOK）<br><textarea id="mbJans" rows="4" oninput="viewState.mbJansTxt=this.value" style="width:100%;font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--axis);border-radius:8px;padding:8px" placeholder="4954835270892&#10;P0135&#10;…">'+esc(viewState.mbJansTxt||'')+'</textarea></label>' +
+    '<label class="small" style="width:160px">② 数量列（同じ順）<br><textarea id="mbQtys" rows="4" oninput="viewState.mbQtyTxt=this.value" style="width:100%;font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--axis);border-radius:8px;padding:8px" placeholder="12&#10;6&#10;…">'+esc(viewState.mbQtyTxt||'')+'</textarea></label>' +
+    '<button class="btn pri" onclick="mbExpand()">③ ↓ 展開して確認</button></div>' +
+    (rws.length ? '<div class="tblwrap" style="margin-top:12px"><table><tr><th>JAN</th><th>商品名</th><th>容量</th><th>数量</th><th class="num">仕入単価（参考）</th><th class="num">小計</th></tr>'+trs+'</table></div>' +
+      '<div class="row" style="margin-top:10px">' +
+      (bad?'<span class="small" style="color:var(--crit)">⚠ 未登録JAN '+bad+'件（赤い行）は登録されません</span>':'') +
+      '<span class="right mono">合計 <b>'+yen(sub)+'</b> <span class="muted small">税抜・'+(supRow?esc(salonLabel(supRow))+'の掛け率ベース':'仕入先未選択（仕入価格で仮）')+'</span></span></div>' +
+      '<div class="row" style="margin-top:10px"><button class="btn pri" onclick="mbSubmit()">📝 この内容で仕入れを登録（回収待ちへ）</button>' +
+      '<button class="btn" onclick="viewState.mbOpen=false;viewState.mbRows=[];render()">閉じる</button></div>'
+      : '<div class="row" style="margin-top:8px"><button class="btn" onclick="viewState.mbOpen=false;render()">閉じる</button></div>') +
+    '</div>';
+}
+function mbExpand(){
+  viewState.mbJansTxt = document.getElementById('mbJans').value;
+  viewState.mbQtyTxt = document.getElementById('mbQtys').value;
+  const lines = viewState.mbJansTxt.split(/\r?\n/).map(s=>s.trim()).filter(s=>s!=='');
+  if(!lines.length){ toast('JANを貼り付けてください', true); return; }
+  const qtys = viewState.mbQtyTxt.split(/\r?\n/).map(s=>s.trim());
+  viewState.mbRows = lines.map((raw,i)=>{
+    const qty = qtys[i]!==undefined && qtys[i]!=='' ? qtys[i] : '';
+    const isPid = /^P\d{3,}$/i.test(raw);
+    const jan = isPid ? raw.toUpperCase() : raw.replace(/\D/g,'');
+    const p = isPid
+      ? rows('products').find(pp=>String(pp['商品ID']||'').trim().toUpperCase()===raw.toUpperCase())
+      : (jan ? rows('products').find(pp=>String(pp['JANコード']||'').replace(/\D/g,'')===jan) : null);
+    if(!p) return {jan: raw, pid:'', name:'⚠ 未登録（商品マスタにJAN/商品IDが見つかりません）', size:'', qty};
+    return {jan, pid:String(p['商品ID']).trim(), name:p['商品名'], size:p['容量']||'', qty};
+  });
+  render();
+}
+async function mbSubmit(){
+  const sid = viewState.mbSid||'';
+  if(!sid){ toast('回収先（サロン/外注先）を選んでください', true); return; }
+  const sRow = rows('salons').find(s=>String(s['サロンID']).trim()===sid);
+  const isOut = !!(sRow && String(sRow['種別']||'').trim()==='外注');
+  if(!isOut && !(viewState.mbSup||'')){ toast('仕入先（ディーラー）を選んでください（支払い集計に使います）', true); return; }
+  const items = (viewState.mbRows||[]).filter(r=>r.pid && num(r.qty)>0).map(r=>({pid:r.pid, name:r.name, size:r.size, qty:num(r.qty)}));
+  if(!items.length){ toast('数量が1以上の商品がありません', true); return; }
+  const total = items.reduce((a,x)=>a+x.qty,0);
+  const date = viewState.mbDate || new Date().toLocaleDateString('sv-SE');
+  if(!confirm('手動仕入れを登録します。\n回収先: '+salonLabel(sRow||{})+'\n仕入日: '+date+'\n合計 '+total+'点 を回収番号1つで「回収待ち」に登録します。よろしいですか？')) return;
+  const res = await act('commitManualPurchase', {salonId:sid, supplierId:isOut?'':(viewState.mbSup||''), date, items}, '手動仕入れを登録しました', ['collectionLedger']);
+  if(res){ viewState.mbRows=[]; viewState.mbJansTxt=''; viewState.mbQtyTxt=''; toast('回収ID: '+res.collectionId+' を作成しました'); render(); }
 }
 
 // ===== 画面: 在庫 =====
@@ -2250,11 +2345,30 @@ function allocCalc(){
   const budget = num(conf.budget);
   const cap = num(conf.cap)||0;
   const salonIds = Object.keys(ALLOC.salons).filter(k=>ALLOC.salons[k]);
-  // サロン0軒でも計算できる（外注のみ・複数外注先のケース: 全量が余りになり、③の外注枠で金額割りする。2026-07-18）
   if(salonIds.length && !budget){ toast('1サロンの枠金額（円）を入れてください', true); return; }
   const items = allocItems(brand);
   if(!items.length){ toast('このブランドの商品がありません', true); return; }
-  ALLOC.result[brand] = { salonIds, items, m: allocRun(items, salonIds, budget, cap), budget, cap };
+  // 🤝外注仕入枠は②で事前指定（2026-07-18 ユーザー要望「計算の前に外注の枠を入れて、その上で割り振る」）。
+  // 計算順: ①金額枠ありの外注先へ先取り（上の行から・枠は外注先への支払額ベース） → ②自社サロンへ均等配分 → ③枠が空欄の外注先が余りを全部吸収
+  const coutsRaw = ALLOC.mode!=='own' ? (conf.outs||[]) : [];
+  if(coutsRaw.some(o=>num(o.budget)>0 && !o.sid)){ toast('外注仕入枠に金額だけ入って外注先が選ばれていない行があります', true); return; }
+  const routs = coutsRaw.filter(o=>o.sid).map(o=>({sid:o.sid, budget:o.budget, q:{}}));
+  const rem = {}; items.forEach(i=>rem[i.pid]=i.need);
+  routs.filter(o=>num(o.budget)>0).forEach(o=>{
+    const b = num(o.budget); let spent = 0;
+    items.forEach(i=>{
+      const unit = i.unit>1 ? i.unit : 1;
+      const u = allocOutUnit(o.sid, i.pid);
+      let take = 0;
+      while(rem[i.pid]-take >= unit && spent + u*unit <= b){ take += unit; spent += u*unit; }
+      if(take>0){ o.q[i.pid]=take; rem[i.pid]-=take; }
+    });
+  });
+  const m = allocRun(items.map(i=>({...i, need:rem[i.pid]})), salonIds, budget, cap);
+  salonIds.forEach(s=>items.forEach(i=>{ rem[i.pid] -= num((m[s]||{})[i.pid]); }));
+  const sink = routs.find(o=>!num(o.budget));   // 枠が空欄の外注先=余りの受け皿（複数あれば最初の行）
+  if(sink) items.forEach(i=>{ if(rem[i.pid]>0){ sink.q[i.pid]=(sink.q[i.pid]||0)+rem[i.pid]; rem[i.pid]=0; } });
+  ALLOC.result[brand] = { salonIds, items, m, budget, cap, outs:routs };
   render();
 }
 function allocCell(pid, sid, v){
@@ -2266,10 +2380,16 @@ function allocCell(pid, sid, v){
 // 🤝外注仕入枠の操作（複数外注先・金額枠つき。2026-07-18 ユーザー要望「A社30万分・B社50万分」のような割り方に対応）
 function allocOutsOf(r){ if(!r.outs){ r.outs = r.out ? [r.out] : []; delete r.out; } return r.outs; }   // 旧下書き（単一外注枠）互換
 function allocSupplier(v){ const r=ALLOC.result[ALLOC.brand]; if(!r) return; r.supplier=v; render(); }
-function allocOutSid(idx, v){ const r=ALLOC.result[ALLOC.brand]; if(!r) return; const o=allocOutsOf(r)[idx]; if(o){ o.sid=v; render(); } }
-function allocOutBudget(idx, v){ const r=ALLOC.result[ALLOC.brand]; if(!r) return; const o=allocOutsOf(r)[idx]; if(o){ o.budget=v; render(); } }
-function allocOutAddCol(){ const r=ALLOC.result[ALLOC.brand]; if(!r) return; allocOutsOf(r).push({sid:'', q:{}}); render(); }
-function allocOutDelCol(idx){ const r=ALLOC.result[ALLOC.brand]; if(!r) return; allocOutsOf(r).splice(idx,1); render(); }
+// ②の外注仕入枠（計算前の設定。ALLOC.conf[brand].outs = [{sid, budget}]。2026-07-18「計算の前に枠を入れる」方式へ変更）
+function allocCOuts(){ const c=ALLOC.conf[ALLOC.brand]=ALLOC.conf[ALLOC.brand]||{}; return c.outs=c.outs||[]; }
+function allocCOutSet(idx, k, v){ const o=allocCOuts()[idx]; if(!o) return; o[k]=v; allocCOutInvalidate(); }
+function allocCOutAdd(){ allocCOuts().push({sid:'', budget:''}); render(); }
+function allocCOutDel(idx){ allocCOuts().splice(idx,1); allocCOutInvalidate(); }
+function allocCOutInvalidate(){
+  // 枠の変え方で配分が変わるので、計算済みの結果は破棄して押し直してもらう（入数変更と同じ扱い）
+  if(ALLOC.result[ALLOC.brand]){ delete ALLOC.result[ALLOC.brand]; toast('外注仕入枠を変更しました。「🧮 割り振りを計算」を押し直してください'); }
+  render();
+}
 function allocOutCell(pid, idx, v){
   const r = ALLOC.result[ALLOC.brand]; if(!r) return;
   const o = allocOutsOf(r)[idx]; if(!o) return;
@@ -2372,12 +2492,13 @@ function vAllocation(){
   const outTokens = formTokens.filter(t=>outNameSet.has(t) || t==='外注' || t==='業者直卸');   // 旧値（外注/業者直卸）も外注系として扱う
   const hasOwn = formTokens.length===0 || formTokens.includes('自社サロン');
   const allocMode = (!hasOwn && outTokens.length) ? 'out' : (hasOwn && !outTokens.length ? 'own' : 'mixed');
+  ALLOC.mode = allocMode;   // allocCalc から参照（own のときは外注枠を使わない）
 
   // ⚡ 外注のみ: サロン割り振りを丸ごとスキップして、全数量を外注先からの回収として一括登録（回収番号1つ）
-  // 外注先が2社以上のときは⚡は使わず、通常フローの🤝外注枠で金額枠割りする（サロン0軒でも🧮計算できる）
+  // 外注先が2社以上のときは⚡は使わず、②の🤝外注仕入枠で金額枠割りする（サロン0軒でも🧮計算できる）
   const outUniqueIds = [...new Set(outTokens.map(t=>outIdOf(t)).filter(Boolean))];
   if(allocMode==='out' && outUniqueIds.length>1){
-    html += '<div class="card" style="border-color:var(--s4)"><b class="small">🤝 外注のみ・複数社の受注</b><p class="muted small" style="margin:4px 0 0">サロン選択は不要です。そのまま「🧮 割り振りを計算」→ ③の🤝外注仕入枠で外注先ごとに金額枠（例: 30万分）を入れて🔁で割り振ってください。</p></div>';
+    html += '<div class="card" style="border-color:var(--s4)"><b class="small">🤝 外注のみ・複数社の受注</b><p class="muted small" style="margin:4px 0 0">サロン選択は不要です。②の🤝外注仕入枠に外注先ごとの金額枠（例: 300000）を入れて「🧮 割り振りを計算」を押すと、上の行から枠の金額分ずつ・枠が空欄の外注先に残り全部が入ります。</p></div>';
   }
   if(allocMode==='out' && outUniqueIds.length<=1){
     const items = brands.flatMap(b=>allocItems(b).map(i=>({brand:b, ...i})));
@@ -2427,7 +2548,7 @@ function vAllocation(){
     return html;
   }
   if(prevRows.length) html += '<div class="card">'+prevHtml+'</div>';
-  const conf = ALLOC.conf[brand]||{};
+  const conf = ALLOC.conf[brand] = ALLOC.conf[brand]||{};
   const items = allocItems(brand);
   const needTotal = items.reduce((a,i)=>a+i.need,0);
   // ストップ中のサロンは候補から外す（選択済みに残っていても外す）
@@ -2447,6 +2568,22 @@ function vAllocation(){
       (showUnit?'<td class="num"><input type="number" value="'+(i.unit>1?i.unit:'')+'" min="1" placeholder="1（バラ）" onchange="allocUnit(\''+i.pid+'\',this.value)" style="width:84px;text-align:right"></td>':'')+'</tr>').join('') +
     '</table></div>' +
     (showUnit?'<p class="muted small" style="margin:6px 0 0">入数（箱）は商品マスタの値が自動で入ります（レフィル=3 など）。今回だけ変えたいときはここで書き換え、バラに戻すなら 1 を入れてください。</p>':''); })() +
+    // 🤝外注仕入枠（計算前の設定・自社サロンのみモードでは出さない）: 受注の仕入れ形態の外注先が自動で行に入る。
+    // 金額枠あり=🧮計算でその外注先へ先取り（支払額ベース・上の行から順）／枠が空欄=自社サロンに配ったあとの余りを全部吸収
+    (()=>{ if(allocMode==='own') return '';
+      if(!conf.outs){ const ids=[...new Set(outTokens.map(t=>outIdOf(t)).filter(Boolean))];
+        conf.outs = ids.map(sid=>({sid, budget:''})); if(!conf.outs.length) conf.outs.push({sid:'', budget:''}); }
+      const dealers = outSalons.filter(s=>String(s['ストップ']||'').trim()==='');
+      return '<div style="margin-top:10px;padding:8px 10px;border:1px dashed var(--axis);border-radius:10px">' +
+        '<div class="row"><b class="small">🤝 外注仕入枠（受注の仕入れ形態から自動・複数OK）</b>' +
+        '<button class="btn sm" onclick="allocCOutAdd()">＋外注先を追加</button>' +
+        '<span class="muted small">🧮計算で、金額枠を入れた外注先に先にその金額分（その外注先への支払額ベース）→ 残りを自社サロンへ → 枠が空欄の外注先に余り全部、の順で入ります</span></div>' +
+        conf.outs.map((o,gi)=>'<div class="row" style="margin-top:6px;align-items:center">' +
+          '<select onchange="allocCOutSet('+gi+',\'sid\',this.value)"><option value="">外注先を選ぶ</option>' +
+          dealers.map(s=>{ const sid=String(s['サロンID']).trim(); return '<option value="'+sid+'" '+(o.sid===sid?'selected':'')+'>'+esc(salonLabel(s))+'</option>'; }).join('') + '</select>' +
+          '<label class="small">金額枠（円）<br><input type="number" value="'+esc(o.budget||'')+'" onchange="allocCOutSet('+gi+',\'budget\',this.value)" placeholder="例: 300000（空欄=余り全部）" style="width:180px"></label>' +
+          '<button class="btn sm" onclick="allocCOutDel('+gi+')">🗑</button></div>').join('') +
+        '</div>'; })() +
     '<div class="row" style="margin-top:10px">' +
     '<label class="small">1サロンの枠金額（円）<br><input type="number" value="'+esc(conf.budget||'')+'" onchange="allocConf(\'budget\',this.value)" placeholder="例: 200000"></label>' +
     '<label class="small">1サロン同一商品の上限（箱/個数の単位。空欄=無制限）<br><input type="number" value="'+esc(conf.cap||'')+'" onchange="allocConf(\'cap\',this.value)" placeholder="'+NM.boxBrand+'は 1"></label>' +
@@ -2466,10 +2603,8 @@ function vAllocation(){
     const names = {}; rows('salons').forEach(s=>names[String(s['サロンID']).trim()]=salonLabel(s));
     const assignedOf = pid=>r.salonIds.reduce((a,s)=>a+num((r.m[s]||{})[pid]),0);
     const spentOf = sid=>r.items.reduce((a,i)=>a+num((r.m[sid]||{})[i.pid])*i.price,0);
-    // 🤝外注仕入枠: サロンで配りきれない分を外注先から仕入れる（複数外注先・金額枠対応 2026-07-18）
+    // 🤝外注仕入枠: ②で指定した枠に沿って計算済み。ここでは結果の確認＋🔁での手直しだけ（2026-07-18 枠指定を計算前へ移設）
     const outs = allocOutsOf(r);
-    // 受注の仕入れ形態に入っている外注先を初期行として出しておく（選び直し・追加は自由）
-    if(!outs.length && outTokens.length){ outTokens.forEach(t=>{ const sid=outIdOf(t); if(sid && !outs.some(o=>o.sid===sid)) outs.push({sid, q:{}}); }); }
     const outQty = pid=>outs.reduce((a,o)=>a+num((o.q||{})[pid]),0);
     const outTotal = r.items.reduce((a,i)=>a+outQty(i.pid),0);
     const shortTotal = r.items.reduce((a,i)=>a+Math.max(0, i.need-assignedOf(i.pid)-outQty(i.pid)),0);
@@ -2478,25 +2613,23 @@ function vAllocation(){
       '<button class="btn sm" onclick="allocPrint()">🖨 印刷用を開く（PDF保存）</button>' +
       '<button class="btn sm" onclick="allocSaveDraft()">💾 確認待ちで保存</button>' +
       '<button class="btn pri sm right" onclick="allocCommit()">✅ 確定して回収データを作成</button></div>' +
-      // 外注枠は自社サロンのみモードでは出さない（2026-07-18 簡素化）。複数外注先OK・金額枠は外注先への支払額ベース
-      (allocMode!=='own' ? '<div style="margin-top:8px;padding:8px 10px;border:1px dashed var(--axis);border-radius:10px">' +
-      '<div class="row"><b class="small">🤝 外注仕入枠（複数OK）</b>' +
-      '<button class="btn sm" onclick="allocOutAddCol()">＋外注先を追加</button>' +
+      // 外注枠のサマリー（枠の指定は②で。ここは結果確認＋🔁での手直し。自社サロンのみモードでは出さない）
+      (allocMode!=='own' && outs.length ? '<div style="margin-top:8px;padding:8px 10px;border:1px dashed var(--axis);border-radius:10px">' +
+      '<div class="row"><b class="small">🤝 外注仕入枠の結果</b>' +
       '<span class="small">余り <b>'+shortTotal+'点</b>'+(outTotal>0?' ／ 外注計 <b>'+outTotal+'点</b>':'')+'</span>' +
-      '<span class="muted small">サロンで配りきれない分を外注先から仕入れる枠。上の行から順に🔁で金額枠まで入れると「1社目に30万分→残りは次の外注先」のような割り方ができます。確定すると外注先ごとに別の回収番号で回収・検品に載ります</span></div>' +
+      '<span class="muted small">外注先や金額枠を変えるときは②で直して🧮を押し直してください。表の外注列は1個単位で手直しできます。確定すると外注先ごとに別の回収番号で回収・検品に載ります</span></div>' +
       outs.map((o,gi)=>{
         const cnt = r.items.reduce((a,i)=>a+num((o.q||{})[i.pid]),0);
         const money = r.items.reduce((a,i)=>a+num((o.q||{})[i.pid])*allocOutUnit(o.sid,i.pid),0);
+        const names2 = rows('salons').find(s=>String(s['サロンID']).trim()===o.sid);
         return '<div class="row" style="margin-top:6px;align-items:center">' +
-        '<select onchange="allocOutSid('+gi+',this.value)"><option value="">外注先を選ぶ</option>' +
-        dealers.map(s=>{ const sid=String(s['サロンID']).trim(); return '<option value="'+sid+'" '+(o.sid===sid?'selected':'')+'>'+esc(salonLabel(s))+'</option>'; }).join('') + '</select>' +
-        '<label class="small">金額枠（円・この外注先への支払額ベース。空欄=余り全部）<br><input type="number" value="'+esc(o.budget||'')+'" onchange="allocOutBudget('+gi+',this.value)" placeholder="例: 300000" style="width:120px"></label>' +
-        '<button class="btn sm" onclick="allocOutFill('+gi+')">🔁 余りをここへ（枠まで）</button>' +
-        '<span class="small">計 <b>'+cnt+'点</b> ／ <b>'+yen(money)+'</b></span>' +
-        '<button class="btn sm" onclick="allocOutDelCol('+gi+')">🗑</button></div>'; }).join('') +
+        '<b class="small">🤝 '+esc(names2?salonLabel(names2):(o.sid||'外注先未選択'))+'</b>' +
+        '<span class="small muted">枠 '+(num(o.budget)?yen(num(o.budget)):'空欄（余り全部）')+'</span>' +
+        '<span class="small">計 <b>'+cnt+'点</b> ／ <b>'+yen(money)+'</b>'+(num(o.budget)&&money>num(o.budget)?' <span style="color:var(--crit)">⚠枠超過</span>':'')+'</span>' +
+        '<button class="btn sm" onclick="allocOutFill('+gi+')">🔁 余りをここへ（枠まで）</button></div>'; }).join('') +
       '</div>' : '') +
       // 🏭 仕入先（支払い集計用。2026-07-18）: マスタのディーラー行の掛け率列からこのブランドの扱いディーラーを判定。
-      // 複数該当（コスモ/ピュア両扱い等）は選択必須。1社なら自動で入れる（変更もできる）
+      // 複数該当（同一ブランドを2社が扱う等）は選択必須。1社なら自動で入れる（変更もできる）
       (()=>{ const dl = rows('salons').filter(s=>String(s['種別']||'').trim()==='ディーラー' && String(s['サロンID']||'').trim());
         const cands = dl.filter(s=>Object.keys(s).some(k=>{ const m=String(k).match(/^([^（(]+)[（(][^）)]*[%％][）)]\s*$/); return m && m[1].trim() && brand.indexOf(m[1].trim())===0 && String(s[k]).trim()!==''; }));
         if(!r.supplier && cands.length===1) r.supplier = String(cands[0]['サロンID']).trim();
@@ -2609,7 +2742,7 @@ async function allocCommit(){
   }
   const total = lines.reduce((a,l)=>a+l.items.reduce((b,x)=>b+x.qty,0),0);
   if(!lines.length){ toast('個数が1以上のサロンがありません', true); return; }
-  // 🏭 仕入先（支払い集計用）: 卸行があるときは必須（モデニカ等の複数ディーラー扱いブランド対応。2026-07-18）
+  // 🏭 仕入先（支払い集計用）: 卸行があるときは必須（複数ディーラーが扱うブランドへの対応。2026-07-18）
   const hasWholesale = lines.some(l=>!l.out);
   if(hasWholesale && !r.supplier){ toast('🏭 仕入先を選んでください（どのディーラーから仕入れるか。支払い集計に使います）', true); return; }
   const supRow = rows('salons').find(s=>String(s['サロンID']).trim()===r.supplier);
