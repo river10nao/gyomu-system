@@ -374,7 +374,9 @@ function pill(st){ return '<span class="pill" style="background:color-mix(in srg
 // 注意: oncompositionstart はHTML属性ではブラウザが発火しないため、document への委任で拾う
 let imeComposing = false;
 function searchIn(v, target){
-  if(target==='alloc') ALLOC.q = v; else viewState.q = v;
+  if(target==='alloc') ALLOC.q = v;
+  else if(String(target||'').indexOf('allocg')===0) (ALLOC.qg=ALLOC.qg||{})[target.slice(6)] = v;   // 振り分けグループ別のサロン絞り込み
+  else viewState.q = v;
   if(!imeComposing) render();
 }
 function searchAttrs(target){
@@ -2506,13 +2508,22 @@ function allocRun(items, salonIds, budget, cap, spread){
 }
 function allocToggleOrder(id, on){ ALLOC.sel[id]=on; render(); }
 function allocOpenToggle(id){ ALLOC.open=ALLOC.open||{}; ALLOC.open[id]=!ALLOC.open[id]; render(); }
-function allocToggleSalon(id, on){ ALLOC.salons[id]=on; render(); }
+// 割り振りグループ（2026-07-18 ユーザー要望のUI再設計）: 「ディーラーを選ぶ→そのディーラー分のサロンを選ぶ」を＋で増やす。
+// 同じサロンを複数グループで選ぶと、そのサロンは枠2本（ディーラー2社仕入れ）になる。スロットID=グループ1: sid / グループ2: sid#2 …
+function allocGroups(){
+  if(!ALLOC.groups || !ALLOC.groups.length) ALLOC.groups = [{sup:'', sel:{...(ALLOC.salons||{})}}];   // 旧下書き（salons平面）からの引き継ぎ
+  return ALLOC.groups;
+}
+function allocToggleSalon(gi, id, on){ allocGroups()[gi].sel[id]=on; render(); }
+function allocGroupSup(gi, v){ allocGroups()[gi].sup=v; render(); }
+function allocGroupAdd(){ allocGroups().push({sup:'', sel:{}}); render(); }
+function allocGroupDel(gi){ allocGroups().splice(gi,1); allocDualInvalidate(); }
 function allocConf(k, v){ const c=ALLOC.conf[ALLOC.brand]=ALLOC.conf[ALLOC.brand]||{}; c[k]=v; }
 // 2社仕入れ（2026-07-18 ユーザー要望）: 仕入枠の「1サロン20万」はディーラー1社あたり。
 // 2社使えるブランドは、同じサロンに「2枠目」（別ディーラー経由・枠も別）を作って倍まで仕入れられる。
 // スロットID = サロンID（1枠目）/ サロンID#2（2枠目）。台帳に書くときは #2 を外して同じサロンとして記帳する
 function slotBase(s){ return String(s).split('#')[0]; }
-function slotName(names, s){ const n = names[slotBase(s)]||slotBase(s); return String(s).indexOf('#')>0 ? n+'（2枠目）' : n; }
+function slotName(names, s){ const parts=String(s).split('#'); const n = names[parts[0]]||parts[0]; return parts[1] ? n+'（'+parts[1]+'枠目）' : n; }
 function allocBrandDealers(brand){   // このブランドを扱うディーラー（率列あり・ストップ除外）のサロンID一覧
   return rows('salons').filter(s=>String(s['種別']||'').trim()==='ディーラー' && String(s['サロンID']||'').trim() && String(s['ストップ']||'').trim()==='')
     .filter(s=>Object.keys(s).some(k=>{ const m=String(k).match(/^([^（(]+)[（(][^）)]*[%％][）)]\s*$/); return m && m[1].trim() && brand.indexOf(m[1].trim())===0 && String(s[k]).trim()!==''; }))
@@ -2524,10 +2535,10 @@ function allocCalc(){
   const conf = ALLOC.conf[brand]||{};
   const budget = num(conf.budget);
   const cap = num(conf.cap)||0;
-  const baseIds = Object.keys(ALLOC.salons).filter(k=>ALLOC.salons[k]);
-  // 2社仕入れ: 各サロンを「1枠目 / 2枠目」の2スロットに分けて配分（枠金額・同一商品上限はスロットごと）
-  const dual = !!conf.dual;
-  const salonIds = dual ? baseIds.flatMap(s=>[s, s+'#2']) : baseIds;
+  // グループ（ディーラー×サロン選択）→ スロット展開。グループ2以降の同一サロンは sid#2, sid#3 …（枠・上限はスロットごと）
+  const groups = allocGroups().map(g=>({sup:String(g.sup||'').trim(), ids:Object.keys(g.sel||{}).filter(k=>g.sel[k])})).filter(g=>g.ids.length);
+  const salonIds = groups.flatMap((g,gi)=>g.ids.map(s=>gi>0 ? s+'#'+(gi+1) : s));
+  if(salonIds.length !== new Set(salonIds).size){ toast('同じサロンが同じグループ内で重複しています', true); return; }
   if(salonIds.length && !budget){ toast('1サロンの枠金額（円）を入れてください', true); return; }
   const items = allocItems(brand);
   if(!items.length){ toast('このブランドの商品がありません', true); return; }
@@ -2571,12 +2582,16 @@ function allocCalc(){
     });
   });
   const res = { salonIds, items, m, budget, cap, outs:routs };
-  if(dual){
-    // 2枠目の既定仕入先は「1枠目と別のディーラー」: ブランドの扱いディーラー候補を順に割り当てる
+  if(groups.length){
+    // 仕入先の既定: グループで選んだディーラー（未選択グループはブランドの扱いディーラー候補をグループ順に）
     const cands = allocBrandDealers(brand);
-    res.supSplit = true; res.supBy = {};
-    if(cands[0]) res.supplier = cands[0];
-    baseIds.forEach(s=>{ if(cands[0]) res.supBy[s]=cands[0]; if(cands[1]) res.supBy[s+'#2']=cands[1]; });
+    res.supBy = {};
+    groups.forEach((g,gi)=>{
+      const sup = g.sup || cands[gi] || cands[0] || '';
+      if(sup) g.ids.forEach(s=>{ res.supBy[gi>0 ? s+'#'+(gi+1) : s] = sup; });
+    });
+    res.supplier = groups[0].sup || cands[0] || '';
+    res.supSplit = groups.length>1 || groups.some(g=>g.sup && g.sup!==res.supplier);   // 複数グループ時は③でスロット別に表示
   }
   ALLOC.result[brand] = res;
   render();
@@ -2773,13 +2788,12 @@ function vAllocation(){
   const needTotal = items.reduce((a,i)=>a+i.need,0);
   // ストップ中のサロンは候補から外す（選択済みに残っていても外す）
   const stopIds = new Set(rows('salons').filter(s=>String(s['ストップ']||'').trim()!=='').map(s=>String(s['サロンID']).trim()));
-  Object.keys(ALLOC.salons).forEach(sid=>{ if(stopIds.has(sid)) delete ALLOC.salons[sid]; });
-  const salonSel = Object.keys(ALLOC.salons).filter(k=>ALLOC.salons[k]);
-  const q = ALLOC.q||'';
-  const salons = rows('salons').filter(s=>String(s['サロンID']||'').trim())
+  allocGroups().forEach(g=>Object.keys(g.sel||{}).forEach(sid=>{ if(stopIds.has(sid)) delete g.sel[sid]; }));
+  const salonPool = rows('salons').filter(s=>String(s['サロンID']||'').trim())
     .filter(s=>['サロン',''].includes(String(s['種別']||'').trim()))   // 振り分け先は自社サロンのみ（ディーラー/外注は候補に出さない。2026-07-18）
-    .filter(s=>!stopIds.has(String(s['サロンID']).trim()))
-    .filter(s=>!q || (salonLabel(s)+s['サロンID']).includes(q));
+    .filter(s=>!stopIds.has(String(s['サロンID']).trim()));
+  const dealerRows = rows('salons').filter(s=>String(s['種別']||'').trim()==='ディーラー' && String(s['サロンID']||'').trim() && String(s['ストップ']||'').trim()==='');
+  const brandCands = allocBrandDealers(brand);
   html += '<div class="card"><b class="small">② '+esc(brand)+' の割り振り条件（毎回入力）</b>' +
     // 商品一覧は開閉式に格納（情報が多く見づらいとのユーザー指摘 2026-07-18）。入数調整が要る箱単位ブランドだけ最初から開く
     (()=>{ const showUnit = brand.includes(''+NM.boxBrand+'') || items.some(i=>i.unit>1);
@@ -2814,14 +2828,28 @@ function vAllocation(){
     '<label class="small">1サロン同一商品の上限（箱/個数）<br><input type="number" value="'+esc(conf.cap||'')+'" onchange="allocConf(\'cap\',this.value)" placeholder="'+NM.boxBrand+'は 1・空欄=無制限"></label>' +
     // 商品をばらけさせる: 全商品を1単位ずつ混ぜて配る（サロン・外注とも商品が偏らない。2026-07-18 ユーザー要望）
     '<label class="small" style="padding-bottom:6px"><input type="checkbox" '+(conf.spread!==false?'checked':'')+' onclick="allocConf(\'spread\',this.checked)" style="width:15px;height:15px;vertical-align:-2px"> <b>商品をばらけさせる</b> <span class="muted">OFF=商品順に詰める（前の商品から固まる）</span></label>' +
-    '<label class="small" style="padding-bottom:6px"><input type="checkbox" '+(conf.dual?'checked':'')+' onclick="allocConf(\'dual\',this.checked); allocDualInvalidate()" style="width:15px;height:15px;vertical-align:-2px"> <b>2社仕入れ（各サロンに2枠目）</b> <span class="muted">同じサロンがディーラー2社から仕入れる。枠金額・上限は各枠ごと</span></label>' +
     '</div>' +
-    '<div style="margin-top:10px"><b class="small">割り振り先サロン（'+salonSel.length+'軒選択中・毎回選ぶ）</b> ' +
-    '<input class="search" placeholder="サロン名で絞る" value="'+esc(q)+'"'+searchAttrs('alloc')+'  style="max-width:220px">' +
-    '<div style="margin-top:6px;max-height:170px;overflow:auto;display:flex;flex-wrap:wrap;gap:4px">' +
-    salons.map(s=>{ const sid=String(s['サロンID']).trim(); const on=ALLOC.salons[sid];
-      return '<label class="pill" style="cursor:pointer;background:'+(on?'color-mix(in srgb,var(--s1) 20%, transparent)':'var(--wash)')+'"><input type="checkbox" '+(on?'checked':'')+' onclick="allocToggleSalon(\''+sid+'\',this.checked)" style="width:14px;height:14px;vertical-align:-2px"> '+esc(salonLabel(s))+'</label>'; }).join('') +
-    '</div></div>' +
+    // 割り振りグループ: ディーラーを選び、その下でそのディーラー分のサロンを選ぶ。＋で別ディーラーのグループを追加（2026-07-18 ユーザー要望のUI）
+    allocGroups().map((g,gi)=>{
+      const selCnt = Object.keys(g.sel||{}).filter(k=>g.sel[k]).length;
+      const gq = (ALLOC.qg||{})[gi]||'';
+      const list = salonPool.filter(s=>!gq || (salonLabel(s)+s['サロンID']).includes(gq));
+      const multi = allocGroups().length>1;
+      return '<div style="margin-top:10px;padding:10px 12px;background:var(--wash);border-radius:10px">' +
+        '<div class="row" style="align-items:center"><b class="small">割り振り先サロン'+(multi?'（グループ'+(gi+1)+'）':'')+'（'+selCnt+'軒選択中・毎回選ぶ）</b>' +
+        '<label class="small">🏭 仕入先ディーラー <select onchange="allocGroupSup('+gi+',this.value)">' +
+        '<option value="">（自動判定'+(brandCands.length?': '+esc(brandCands.map(sid=>{const d=dealerRows.find(x=>String(x['サロンID']).trim()===sid);return d?salonLabel(d):sid;})[Math.min(gi,brandCands.length-1)]):'')+'）</option>' +
+        dealerRows.map(s=>{ const sid=String(s['サロンID']).trim(); return '<option value="'+sid+'" '+(g.sup===sid?'selected':'')+'>'+esc(salonLabel(s))+'</option>'; }).join('') + '</select></label>' +
+        '<input class="search" placeholder="サロン名で絞る" value="'+esc(gq)+'"'+searchAttrs('allocg'+gi)+' style="max-width:200px">' +
+        (gi>0?'<button class="btn sm" style="margin-left:auto" onclick="allocGroupDel('+gi+')">🗑 このグループを削除</button>':'') +
+        '</div>' +
+        '<div style="margin-top:6px;max-height:170px;overflow:auto;display:flex;flex-wrap:wrap;gap:4px">' +
+        list.map(s=>{ const sid=String(s['サロンID']).trim(); const on=(g.sel||{})[sid];
+          return '<label class="pill" style="cursor:pointer;background:'+(on?'color-mix(in srgb,var(--s1) 20%, transparent)':'var(--wash)')+'"><input type="checkbox" '+(on?'checked':'')+' onclick="allocToggleSalon('+gi+',\''+sid+'\',this.checked)" style="width:14px;height:14px;vertical-align:-2px"> '+esc(salonLabel(s))+'</label>'; }).join('') +
+        '</div></div>';
+    }).join('') +
+    '<div style="margin-top:8px"><button class="btn sm" onclick="allocGroupAdd()">＋ 別のディーラーから仕入れるグループを追加</button>' +
+    '<span class="muted small" style="margin-left:8px">同じサロンを複数グループで選ぶと、そのサロンは枠が2本（2社仕入れ）になります</span></div>' +
     '<div class="row" style="margin-top:10px"><button class="btn pri" onclick="allocCalc()">🧮 割り振りを計算</button>' +
     '<span class="muted small">計算後も表の数字は自由に手直しできます（ディーラー確認後の増減はここで直してから確定）</span></div></div>';
 
