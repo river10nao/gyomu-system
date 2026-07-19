@@ -816,7 +816,8 @@ function vPayments(){
       per[pr.key].sub += amt;
     });
     const open = (viewState.aggOpen||{})['pay_mav'];
-    html += '<div class="card"><div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_mav\')">'+(open?'▾':'▸')+' <b>🏭 '+esc(salonLabel(mrow))+'（店販請求元・サロン直接払い）</b><span class="small muted">請求書はサロン宛で発行 → PDFをサロンへ転送 → サロンが直接支払う（'+esc(NM.co)+'の支払いなし・2026-07-19確定）。下は転送チェック用の参考額（仕入価格×個数）</span></div>' +
+    // サロン直接払い＝会社の出金ではないため、支払いカードと同列に見えないよう背景・破線で差別化（2026-07-19 ユーザー要望）
+    html += '<div class="card" style="background:var(--wash);border-style:dashed"><div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_mav\')">'+(open?'▾':'▸')+' <b>🏭 '+esc(salonLabel(mrow))+'（店販請求元・サロン直接払い）</b><span class="pill" style="background:color-mix(in srgb,var(--muted) 18%, transparent);color:var(--muted);font-weight:700">'+esc(NM.co)+'の支払い対象外</span><span class="small muted">請求書はサロン宛で発行 → PDFをサロンへ転送 → サロンが直接支払う（2026-07-19確定）。下は転送チェック用の参考額（仕入価格×個数）</span></div>' +
       Object.keys(per).sort().reverse().map(k=>{ const g=per[k];
         return '<div class="row small" style="margin-top:6px;border-top:1px solid var(--axis);padding-top:6px"><b>'+esc(g.pr.label)+'</b><span>支払予定: <b>'+esc(g.pr.payLabel)+'</b></span><span class="right"><b>'+yen(g.sub)+'</b> <span class="muted">想定</span></span></div>' +
           (open ? '<div class="tblwrap" style="margin-top:4px"><table><tr><th>注文日</th><th>サロン</th><th>商品</th><th class="num">個数</th><th class="num">想定額</th></tr>' +
