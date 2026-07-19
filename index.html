@@ -1561,7 +1561,7 @@ function vOrders(){
       '</details>';
   }
 }
-function tabsHtml(entity, cur, counts, extraTabs, activeExtras){
+function tabsHtml(entity, cur, counts, extraTabs, activeExtras, extraBadges){
   const flow = FLOW[entity];
   const done = new Set([flow[flow.length-1]].concat(extraTabs||[]));   // 終端ステータス（extraTabs=ロット処理なし等も終端）は目立たせない
   (activeExtras||[]).forEach(t=>done.delete(t));                        // 例外: EC出品中は販売進行中なので数字を目立たせる
@@ -1569,7 +1569,9 @@ function tabsHtml(entity, cur, counts, extraTabs, activeExtras){
   return '<div class="tabs">' + tabs.map(t=>{
     const n = counts[t]||0;
     const hot = t!=='すべて' && !done.has(t) && n>0;   // 未完了ステータスに残件あり = まだ終わっていない案件
-    return '<button class="'+(t===cur?'on':'')+'" onclick="setVS(\'tab\',\''+t+'\')">'+t+'<span class="n'+(hot?' hot':'')+'">'+n+'</span></button>';
+    // extraBadges: タブ→件数。ステータスとは別の要対応（請求書送付待ち等）を終端タブでも警告色で出す（2026-07-19）
+    const extra = (extraBadges && extraBadges[t]) ? '<span class="n hot">'+extraBadges[t].label+extraBadges[t].n+'</span>' : '';
+    return '<button class="'+(t===cur?'on':'')+'" onclick="setVS(\'tab\',\''+t+'\')">'+t+'<span class="n'+(hot?' hot':'')+'">'+n+'</span>'+extra+'</button>';
   }).join('') + '</div>';
 }
 let _covMemo = {a:null, b:null, val:null};   // allocCoverageのメモ化（journeyは受注カードごとに呼ばれるため。台帳の参照が変わったら再計算）
@@ -2320,7 +2322,13 @@ function vHanbai(){
     '<button class="btn pri" onclick="addHanbaiUI()">受付</button></div>' +
     '<p class="muted small" style="margin:6px 0 0">請求元＝その注文の請求書が来る会社（注文サイトの運営元）。選んでおくと支払いの集計に載ります</p></div>' +
   '<div class="row" style="margin-bottom:12px"><button class="btn right" onclick="exportTable(\'店販EC注文\',\'hanbaiOrders\')">CSV出力</button></div>' +
-  tabsHtml('hanbai', tab, counts, ['EC出品中','完売'], ['EC出品中']) +
+  // 請求書送付待ちはステータスが終端（お渡し済み等）でも消えない要対応なので、タブにも📨バッジで出す（2026-07-19 ユーザー指摘）
+  tabsHtml('hanbai', tab, counts, ['EC出品中','完売'], ['EC出品中'], (()=>{
+    const by = {};
+    invP.forEach(r=>{ const st=String(r['ステータス']||'').trim();
+      by[st]={label:'📨', n:(by[st]?.n||0)+1}; by['すべて']={label:'📨', n:(by['すべて']?.n||0)+1}; });
+    return by;
+  })()) +
   '<div class="row" style="margin-bottom:10px">'+bulkBar('hanbai', list.map(r=>r['注文ID']))+'</div>' +
   '<div class="card tblwrap"><table><tr><th></th><th>注文ID</th><th>区分</th><th>注文日</th><th>サロン</th><th>商品</th><th class="num">個数</th><th>状態</th><th>お渡し</th><th></th></tr>' +
   (list.map(r=>{
