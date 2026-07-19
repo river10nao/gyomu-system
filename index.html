@@ -310,7 +310,7 @@ async function boot(){
 }
 
 // 起動時に全データを並列ロード → 以後の検索・絞込みはブラウザ内で即時
-const SHEETS = ['products','wholesalers','salons','orderLedger','collectionLedger','shipments','hanbaiOrders','stock','stockLog','monthlyGoals','quotaMaster','orders','collection','docLog','alerts','allocDrafts'];
+const SHEETS = ['products','wholesalers','salons','orderLedger','collectionLedger','shipments','hanbaiOrders','stock','stockLog','monthlyGoals','quotaMaster','orders','collection','docLog','alerts','allocDrafts','salonPayLog'];
 // alerts はGAS側で6シート読む一番重い項目（単体約4秒）なので、起動・全読み直しの完了を待たせず後から差し込む
 const CORE_SHEETS = SHEETS.filter(n => n !== 'alerts');
 let dbFresh = false;   // 保存スナップショットで先に画面を出している間は false（書き込み操作をガード）
@@ -550,6 +550,26 @@ function invoiceSentUI(id, off){
   if(!off && !confirm(id+' の請求書PDFをサロンへ送付済みにしますか？')) return;
   act('setHanbaiInvoiceSent', {ids:[id], '注文ID':id, ...(off?{off:true}:{})},
     off?'送付済みを取り消しました':'請求書を送付済みにしました', ['hanbaiOrders']);
+}
+// サロン精算 月次支払の消し込み（2026-07-19 ユーザー承認: 月次は翌月末に1本振込なので月単位1チェック。
+// 記録はスプシ「サロン精算支払記録」= 月・金額・記録日時。押し忘れは期日超過で警告色）
+function spayDoneCard(month, total, due, dueStr, hasData){
+  if(!hasData) return '';
+  const paid = rows('salonPayLog').find(r=>String(r['月']||'').trim()===month);
+  if(paid) return '<div class="card" style="border-color:var(--good)"><div class="row">' +
+    '<span class="pill" style="background:color-mix(in srgb,var(--good) 15%, transparent);color:var(--good)">✔ '+esc(month)+'分 支払済み</span>' +
+    '<span class="small muted">'+yen(num(paid['金額']))+' ／ 記録: '+esc(String(paid['記録日時']||''))+'</span>' +
+    '<button class="btn sm right" onclick="spayDoneUI(\''+esc(month)+'\',0,true)">↩ 取消</button></div></div>';
+  const overdue = new Date() > due;
+  return '<div class="card"'+(overdue?' style="border-color:var(--warn)"':'')+'><div class="row">' +
+    (overdue ? '<b style="color:var(--warn)">⚠ 支払期日（'+esc(dueStr)+'）を過ぎています。振込がすんだら消し込んでください</b>'
+             : '<span class="small muted">'+esc(NM.spay)+'への振込がすんだら ✔ で消し込みます（払い忘れ・二重払い防止）</span>') +
+    '<button class="btn sm right" style="background:var(--warn);color:#3d2c00;border-color:var(--warn);font-weight:700" onclick="spayDoneUI(\''+esc(month)+'\','+num(total)+')">✔ この月は支払済みにする</button></div></div>';
+}
+function spayDoneUI(month, amount, off){
+  if(!off && !confirm(month+' 分の月次支払（'+yen(amount)+'）を'+NM.spay+'へ支払済みにしますか？')) return;
+  act('setSalonPayDone', {month:month, amount:amount, ...(off?{off:true}:{})},
+    off?'支払済みを取り消しました':month+'分を支払済みにしました', ['salonPayLog']);
 }
 // ⚠MTG前払いカード。side='co'（💰支払い画面）/'spay'（サロン精算画面）で別フラグ・別ボタン（連動しない）
 function mtgAlertCard(side){
@@ -2384,6 +2404,7 @@ function vSalonPay(){
     kpi(selMonth+'分 月次支払額', yen(total), '支払期日: '+dueStr+'（協力費−店販/EC請求）') +
     kpi(selMonth+' MTG都度払い（参考）', yen(mtgTotal), '発生ごとに支払い済みのはずの額') +
   '</div>' +
+  spayDoneCard(selMonth, total, due, dueStr, lines.length>0) +   // 月次支払の消し込み（2026-07-19）
   '<div class="card tblwrap"><b class="small">月次支払（翌月末に'+NM.spay+'へ振込）</b><table style="margin-top:8px"><tr><th>サロン</th><th>利用ブランド</th><th class="num">協力費</th><th class="num">店販/EC請求（差引く）</th><th class="num">差引支払額</th></tr>' +
   (lines.map(l=>'<tr><td>'+esc(l.name)+'<div class="muted small">'+esc(l.sid)+'</div></td><td class="small">'+l.brands.map(esc).join('・')+' <span class="muted">('+l.brands.length+')</span></td>' +
     '<td class="num">'+yen(l.fee)+'</td><td class="num">'+(l.charge?'−'+yen(l.charge).slice(1):'—')+'</td><td class="num"><b>'+yen(l.net)+'</b></td></tr>').join('') || '<tr><td colspan="5" class="muted">この月の対象データがありません</td></tr>') +
