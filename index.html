@@ -892,7 +892,12 @@ function monthPicker(){
   rows('orderLedger').forEach(r=>ms.add(monthOf(r['受注日'])));
   rows('collectionLedger').forEach(r=>ms.add(monthOf(r['発注日'])));
   rows('hanbaiOrders').forEach(r=>ms.add(monthOf(r['注文日'])));
-  ms.add(monthOf(today())); ms.delete('');
+  ms.add(monthOf(today()));
+  // 来月・翌々月も常に選べるようにする（2026-07-19 ユーザー要望）:
+  // 支払日ベースの出金は仕入の翌月末・翌々月に落ちるため、データが無い先の月も先読みできる必要がある
+  [1,2].forEach(k=>{ const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()+k);
+    ms.add(d.toLocaleDateString('sv-SE').slice(0,7).replace('-','/')); });
+  ms.delete('');
   const list = [...ms].sort().reverse();
   return '<select onchange="selMonth=this.value;render()">' +
     list.map(m=>'<option '+(m===selMonth?'selected':'')+'>'+m+'</option>').join('') + '</select>';
