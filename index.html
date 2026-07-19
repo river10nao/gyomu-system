@@ -492,7 +492,12 @@ function navCounts(){
     orders:     uniq(rows('orderLedger'),      '受注ID', st=>st!=='納品完了'),   // 納品完了までが「動いている案件」（2026-07-18）
     collection: uniq(rows('collectionLedger'), '回収ID', st=>st!=='ロット処理済み' && st!=='ロット処理なし'),
     shipments:  uniq(rows('shipments'),        '出荷ID', st=>st!=='出荷完了'),
-    hanbai:     uniq(rows('hanbaiOrders'),     '注文ID', st=>st!=='お渡し済み' && st!=='完売'),
+    // 店販EC = 動いている注文 ∪ 請求書送付待ち（終端まで進んでいても送付するまでバッジに残す・2026-07-19）
+    hanbai:     (()=>{ const s = new Set();
+      rows('hanbaiOrders').forEach(r=>{ const id=String(r['注文ID']||'').trim(); const st=String(r['ステータス']||'').trim();
+        if(id && st && st!=='お渡し済み' && st!=='完売') s.add(id); });
+      invoicePend().forEach(r=>s.add(String(r['注文ID']||'').trim()));
+      return s.size; })(),
     // 振り分けは下書き数ではなく「振分が終わっていない案件」数（2026-07-18 ユーザー指定）
     allocation: (()=>{ const cov = allocCoverage();
       return allocOrderGroups().filter(g=>!(g.brands.size>0 && [...g.brands].every(b=>{ const e=(cov[g.id]||{})[b]; return e&&e.done; }))).length; })(),
@@ -532,6 +537,19 @@ function mtgDone(kidsCsv, off, label, side){
   const kids = String(kidsCsv||'').split(',').filter(Boolean);
   act('setMtgPrepaid', {kids, side: side==='spay'?'spay':'co', ...(off?{off:true}:{})},
     off?'完了を取り消しました':what+'を完了にしました', ['collectionLedger']);
+}
+// 請求書送付チェック（2026-07-19 ユーザー要望）: サロン直接払いの請求元（店販）の注文は、
+// 届いたサロン宛請求書PDFをサロンへ転送する運用。発注後〜送付までオレンジで警告し、送付したら📨で消し込む
+function invoicePend(){
+  return rows('hanbaiOrders').filter(r=>String(r['削除']||'').trim()==='' &&
+    String(r['請求元ID']||'').trim()===PAYIDS.maverick &&
+    String(r['ステータス']||'').trim()!=='' && String(r['ステータス']||'').trim()!=='受付' &&
+    String(r['請求書送付済み']||'').trim()==='');
+}
+function invoiceSentUI(id, off){
+  if(!off && !confirm(id+' の請求書PDFをサロンへ送付済みにしますか？')) return;
+  act('setHanbaiInvoiceSent', {ids:[id], '注文ID':id, ...(off?{off:true}:{})},
+    off?'送付済みを取り消しました':'請求書を送付済みにしました', ['hanbaiOrders']);
 }
 // ⚠MTG前払いカード。side='co'（💰支払い画面）/'spay'（サロン精算画面）で別フラグ・別ボタン（連動しない）
 function mtgAlertCard(side){
@@ -778,7 +796,7 @@ function vPayments(){
       per[pr.key].sub += amt;
     });
     const open = (viewState.aggOpen||{})['pay_mav'];
-    html += '<div class="card"><div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_mav\')">'+(open?'▾':'▸')+' <b>🏭 '+esc(salonLabel(mrow))+'（店販請求元）</b><span class="small muted">締め: '+esc(String(mrow['締め日']||''))+' ／ 支払: '+esc(String(mrow['支払日']||''))+' ／ 金額は請求書で確定（下は仕入価格×個数の想定）。「サロンが払う」の意味は先方確認中</span></div>' +
+    html += '<div class="card"><div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_mav\')">'+(open?'▾':'▸')+' <b>🏭 '+esc(salonLabel(mrow))+'（店販請求元・サロン直接払い）</b><span class="small muted">請求書はサロン宛で発行 → PDFをサロンへ転送 → サロンが直接支払う（'+esc(NM.co)+'の支払いなし・2026-07-19確定）。下は転送チェック用の参考額（仕入価格×個数）</span></div>' +
       Object.keys(per).sort().reverse().map(k=>{ const g=per[k];
         return '<div class="row small" style="margin-top:6px;border-top:1px solid var(--axis);padding-top:6px"><b>'+esc(g.pr.label)+'</b><span>支払予定: <b>'+esc(g.pr.payLabel)+'</b></span><span class="right"><b>'+yen(g.sub)+'</b> <span class="muted">想定</span></span></div>' +
           (open ? '<div class="tblwrap" style="margin-top:4px"><table><tr><th>注文日</th><th>サロン</th><th>商品</th><th class="num">個数</th><th class="num">想定額</th></tr>' +
@@ -871,6 +889,8 @@ function calcSalonPay(month){
   });
   rows('hanbaiOrders').forEach(r=>{
     if(monthOf(r['注文日'])!==month) return;
+    // サロン宛請求書の直接払い請求元の分は立替が無いため差引に含めない（2026-07-19 確定）
+    if(String(r['請求元ID']||'').trim()===PAYIDS.maverick) return;
     const sid=String(r['サロンID']||'').trim(); if(!sid) return;
     ensure(sid,r['サロン名']).charge += salonCost(r['商品ID'])*num(r['個数']);
   });
@@ -2263,7 +2283,12 @@ function vHanbai(){
   const salonOpts = rows('salons').filter(s=>String(s['サロンID']||'').trim() && String(s['ストップ']||'').trim()==='').map(s=>'<option value="'+esc(s['サロンID'])+'">'+esc(s['サロン名(ディーラー含む)']||s['サロン名']||s['サロンID'])+'</option>').join('');   // ストップ中は存在しない扱い（2026-07-18）
   const prodOpts = rows('products').filter(p=>String(p['商品ID']||'').trim()).map(p=>'<option value="'+esc(p['商品ID'])+'">'+esc(p['商品名'])+(p['容量']?' / '+esc(p['容量']):'')+'</option>').join('');
 
+  const invP = invoicePend();
   return '<h1>店販注文/EC</h1><div class="sub">店販=回収時に同梱→仕分け→次回訪問時にお渡し。EC=入庫してEC出品中で完了（売れたら在庫の出庫ログへ記帳）</div>' +
+  // 請求書送付待ちアラート（サロン直接払いの請求元。転送するまで消えない・2026-07-19）
+  (invP.length ? '<div class="card" style="border-color:var(--warn)"><div class="row"><b>📨 請求書送付待ち '+invP.length+'件</b>' +
+    '<span class="small muted">請求元から届いたサロン宛の請求書PDFをサロンへ転送してください。転送したら各行の「📨 請求書送付」を押して消し込みます</span></div>' +
+    '<div class="small" style="margin-top:6px">'+invP.map(r=>'<span class="mono">'+esc(r['注文ID'])+'</span> '+esc(r['サロン名'])+'（'+esc(r['商品名'])+'）').join(' ／ ')+'</div></div>' : '') +
   '<div class="card"><b class="small">新規注文の受付</b><div class="row" style="margin-top:8px">' +
     '<select id="hbKubun" style="width:100px"><option value="店販">店販</option><option value="EC">EC</option></select>' +
     '<select id="hbSalon" style="max-width:220px"><option value="">サロンを選択</option>'+salonOpts+'</select>' +
@@ -2284,11 +2309,18 @@ function vHanbai(){
     const lot = ec ? rows('stock').find(z=>String(z['在庫ID']).trim()===String(r['在庫ID']||'').trim()) : null;
     const zan = lot ? num(lot['残数']) : null;
     const sellBtn = (ec && st==='EC出品中') ? '<button class="btn pri sm" onclick="ecSellUI(\''+id+'\')">💴 売れた</button>' : '';
+    // 請求書送付ボタン（サロン直接払いの請求元の注文のみ・発注後から送付までオレンジ・2026-07-19）
+    const invSent = String(r['請求書送付済み']||'').trim();
+    const invBtn = String(r['請求元ID']||'').trim()===PAYIDS.maverick
+      ? (invSent
+        ? '<span class="pill" style="background:color-mix(in srgb,var(--good) 15%, transparent);color:var(--good)" title="'+esc(invSent)+'">📨 送付済</span><button class="btn sm" onclick="invoiceSentUI(\''+id+'\',true)" title="送付済みを取り消す">↩</button>'
+        : (st!=='受付' ? '<button class="btn sm" style="background:var(--warn);color:#3d2c00;border-color:var(--warn);font-weight:700" onclick="invoiceSentUI(\''+id+'\')">📨 請求書送付</button>' : ''))
+      : '';
     // 完売はフロー外の終端なので、巻き戻し用フローにだけ 完売 を足す（進めるボタンには出さない）
     const rbFlow = ec ? FLOW.hanbaiEC.concat(['完売']) : FLOW.hanbai;
     return '<tr><td>'+selBox(id)+'</td><td class="mono">'+id+'</td><td>'+(ec?'<span class="pill" style="background:color-mix(in srgb,var(--s2) 15%, transparent);color:var(--s2)">EC</span>':'<span class="pill" style="background:color-mix(in srgb,var(--s1) 15%, transparent);color:var(--s1)">店販</span>')+'</td><td class="small">'+esc(r['注文日'])+'</td><td>'+esc(r['サロン名'])+'</td><td>'+esc(r['商品名'])+(String(r['請求元名']||'').trim()?' <span class="muted small">［請求元: '+esc(r['請求元名'])+'］</span>':'')+'</td><td class="num">'+r['個数']+'</td><td>'+pill(st)+'</td>' +
     '<td class="small">'+(ec ? (st==='EC出品中'&&zan!=null ? '残 '+zan+'点' : '') : esc(r['お渡し日']||'')+' '+esc(r['お渡し担当']||''))+'</td>' +
-    '<td><div class="row">'+sellBtn+advanceBtn('hanbai', id, st, hbFlowOf(r))+rollbackBtn('hanbai', id, st, rbFlow)+deleteBtn('hanbai', id)+'</div></td></tr>';
+    '<td><div class="row">'+sellBtn+invBtn+advanceBtn('hanbai', id, st, hbFlowOf(r))+rollbackBtn('hanbai', id, st, rbFlow)+deleteBtn('hanbai', id)+'</div></td></tr>';
   }).join('') || '<tr><td colspan="10" class="muted">注文はまだありません</td></tr>') + '</table></div>' +
   trashSection('hanbai', 'hanbaiOrders', '注文ID', r=>String(r['サロン名']||'')+' '+String(r['商品名']||'')) +
   '<div class="card"><div class="row"><b class="small">サロン別 月間注文集計</b> '+monthPicker()+'<span class="muted small">サロンをクリックすると注文明細が出ます</span></div>' +
