@@ -2349,7 +2349,13 @@ function vHanbai(){
     const rbFlow = ec ? FLOW.hanbaiEC.concat(['完売']) : FLOW.hanbai;
     return '<tr><td>'+selBox(id)+'</td><td class="mono">'+id+'</td><td>'+(ec?'<span class="pill" style="background:color-mix(in srgb,var(--s2) 15%, transparent);color:var(--s2)">EC</span>':'<span class="pill" style="background:color-mix(in srgb,var(--s1) 15%, transparent);color:var(--s1)">店販</span>')+'</td><td class="small">'+esc(r['注文日'])+'</td><td>'+esc(r['サロン名'])+'</td><td>'+esc(r['商品名'])+(String(r['請求元名']||'').trim()?' <span class="muted small">［請求元: '+esc(r['請求元名'])+'］</span>':'')+'</td><td class="num">'+r['個数']+'</td><td>'+pill(st)+'</td>' +
     '<td class="small">'+(ec ? (st==='EC出品中'&&zan!=null ? '残 '+zan+'点' : '') : esc(r['お渡し日']||'')+' '+esc(r['お渡し担当']||''))+'</td>' +
-    '<td><div class="row">'+sellBtn+invBtn+advanceBtn('hanbai', id, st, hbFlowOf(r))+rollbackBtn('hanbai', id, st, rbFlow)+deleteBtn('hanbai', id)+'</div></td></tr>';
+    // 操作ボタンは全行「1行固定・右寄せ・等間隔」に統一（2026-07-19 ユーザー要望「ゴチャつき解消」）。
+    // rollbackBtn の right クラス（margin-left:auto）と揃え用スペーサーは、この画面では散らばりの原因になるため外す
+    '<td style="white-space:nowrap"><div class="row" style="flex-wrap:nowrap;justify-content:flex-end;gap:6px">' +
+      [sellBtn, invBtn, advanceBtn('hanbai', id, st, hbFlowOf(r)),
+       rollbackBtn('hanbai', id, st, rbFlow).replace('btn sm right','btn sm').replace('<span class="right"></span>',''),
+       deleteBtn('hanbai', id)].filter(Boolean).join('') +
+    '</div></td></tr>';
   }).join('') || '<tr><td colspan="10" class="muted">注文はまだありません</td></tr>') + '</table></div>' +
   trashSection('hanbai', 'hanbaiOrders', '注文ID', r=>String(r['サロン名']||'')+' '+String(r['商品名']||'')) +
   '<div class="card"><div class="row"><b class="small">サロン別 月間注文集計</b> '+monthPicker()+'<span class="muted small">サロンをクリックすると注文明細が出ます</span></div>' +
