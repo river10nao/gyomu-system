@@ -2921,7 +2921,9 @@ function vAllocation(){
       let h = (g.id===firstDoneId ? '<tr><td colspan="7" class="small muted" style="background:var(--wash);text-align:center">— ✅ 振分済みの案件 —</td></tr>' : '') +
         '<tr style="cursor:pointer'+(isDone?';background:color-mix(in srgb,var(--muted) 18%,transparent);opacity:.62':'')+'" onclick="allocOpenToggle(\''+g.id+'\')">' +
         '<td onclick="event.stopPropagation()"><input type="checkbox" '+(ALLOC.sel[g.id]?'checked':'')+(isDone && !hasBroken?' disabled':'')+' onclick="allocToggleOrder(\''+g.id+'\',this.checked)" style="width:16px;height:16px"></td>' +
-        '<td class="mono">'+(open?'▾':'▸')+' '+g.id+'</td><td>'+pill(g.st)+(isDone?' <span class="small" style="color:var(--good);font-weight:700">✅振分済み</span>'+(allK.size?' <span class="mono small muted">'+esc(kFmt(allK))+'</span>':''):'')+'</td><td class="small">'+esc(g.w)+'</td>' +
+        '<td class="mono">'+(open?'▾':'▸')+' '+g.id+'</td><td>'+pill(g.st)+(isDone?' <span class="small" style="color:var(--good);font-weight:700">✅振分済み</span>'+(allK.size?' <span class="mono small muted">'+esc(kFmt(allK))+'</span>':'') +
+          // 確定後の再印刷（回収台帳から再構成）。行クリックの内訳開閉に食われないよう stopPropagation
+          [...g.brands].map(b=>{ const e=bc[b]; return e&&e.done&&e.kids.size ? ' <button class="btn sm" title="'+esc(b)+' の振り分け表を印刷" onclick="event.stopPropagation();allocPrintDone(\''+esc(b)+'\',\''+[...e.kids].join(',')+'\')">🖨'+(g.brands.size>1?' '+esc(b):'')+'</button>' : ''; }).join('') : '')+'</td><td class="small">'+esc(g.w)+'</td>' +
         '<td class="small">'+[...g.brands].map(b=>{ const e=bc[b]; const tip=e&&(e.kids.size||e.delKids.size)?' title="回収ID: '+esc(kFmt(e.kids)||'—')+(e.delKids.size?'／削除済み: '+esc(kFmt(e.delKids)):'')+'"':''; return '<span'+tip+(e&&e.broken?' style="color:var(--crit);font-weight:700"':'')+'>'+mark(b)+esc(b)+'</span>'; }).join('・')+'</td>' +
         '<td class="small muted">'+esc(g.date)+'</td><td class="num">'+g.n+'</td></tr>';
       if(open){
