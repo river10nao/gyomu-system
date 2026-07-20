@@ -3091,7 +3091,7 @@ function vAllocation(){
     // 2026-07-20 ユーザー要望: 自社サロンのみの受注で使う外注トグルを②カード内に表示
     (()=>{ if(baseAllocMode!=='own') return '';
       return '<div style="margin-top:10px"><label class="pill" style="cursor:pointer"><input type="checkbox" '+(ALLOC.addOut?'checked':'')+' onclick="allocAddOutToggle(this.checked)" style="width:15px;height:15px;vertical-align:-2px"> <b>🤝 外注も使う</b></label>' +
-        (ALLOC.addOut?'<p class="muted small" style="margin:5px 0 0">受注台帳の仕入れ形態は変わりません。確定した外注分は回収台帳へ外注として登録され、支払い集計に反映されます。</p>':'')+'</div>'; })() +
+        (ALLOC.addOut?'<p class="muted small" style="margin:5px 0 0">確定時に受注台帳の仕入れ形態へ外注先名が追加されます。外注分は回収台帳へ外注として登録され、支払い集計にも反映されます。</p>':'')+'</div>'; })() +
     // 🤝外注仕入枠（計算前の設定・自社サロンのみモードでは出さない）: 受注の仕入れ形態の外注先が自動で行に入る。
     // 金額枠あり=🧮計算でその外注先へ先取り（支払額ベース・上の行から順）／枠が空欄=自社サロンに配ったあとの余りを全部吸収
     (()=>{ if(allocMode==='own') return '';
@@ -3311,7 +3311,7 @@ async function allocOutBulk(){
   const name = salonLabel(rows('salons').find(s=>String(s['サロンID']).trim()===sid)||{}) || sid;
   const total = items.reduce((a,x)=>a+x.qty,0);
   if(!confirm('外注のみの一括登録をします。\n対象受注: '+selIds.join(', ')+'\n外注先: '+name+'\n合計 '+total+'点 を回収番号1つで「回収待ち」に登録します。\n\n⚠ 登録後は、この画面での修正はできません（直す場合は回収・検品側で削除してやり直しになります）。よろしいですか？')) return;
-  const res = await act('commitOutsourceBulk', {orderIds:selIds, salonId:sid, items}, '外注仕入を登録しました', ['collectionLedger']);
+  const res = await act('commitOutsourceBulk', {orderIds:selIds, salonId:sid, items}, '外注仕入を登録しました', ['collectionLedger','orderLedger']);
   if(res){ toast('回収ID: '+res.collectionId+' を作成しました'); render(); }
 }
 async function allocCommit(){
@@ -3360,7 +3360,7 @@ async function allocCommit(){
     splitUsed ? '\n仕入先（枠ごと）:\n' + lines.filter(l=>!l.out).map(l=>'　'+slotName(names,l.slot)+' ← '+supLabelOf(l.supplierId)).join('\n')
               : (r.supplier ? '\n仕入先: '+supLabelOf(r.supplier) : '');
   if(!confirm(brand+' の割り振りを確定します。\n対象受注: '+selIds.join(', ')+supText+'\nサロン '+salonCount+'枠・合計 '+total+'点'+(outTotal?'（うち🤝外注 '+outTotal+'点）':'')+(stockTotal?'＋📦在庫充当 '+stockTotal+'点（確定時に在庫から確保）':'')+' を「回収待ち」で回収・検品に登録します。\n\n⚠ 確定後は、この画面での振り分けの修正はできません（直す場合は回収・検品側で該当の回収を削除してやり直しになります）。よろしいですか？')) return;
-  const res = await act('commitAllocation', {brand, orderIds:selIds, lines, supplierId:r.supplier||'', stock:r.stock||[]}, brand+' の回収データを作成しました', ['collectionLedger','stock','stockLog']);
+  const res = await act('commitAllocation', {brand, orderIds:selIds, lines, supplierId:r.supplier||'', stock:r.stock||[]}, brand+' の回収データを作成しました', ['collectionLedger','orderLedger','stock','stockLog']);
   if(res){
     delete ALLOC.result[brand];
     apiPost('deleteAllocDraft', {brand}, ['allocDrafts']).then(()=>render()).catch(()=>{});   // 確定したブランドの下書きは自動削除（無ければ何もしない）
