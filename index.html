@@ -1862,7 +1862,7 @@ function trashSection(entity, sheetName, idCol, labelFn){
 // 請求書①＋②一括発行（invoiceSet）は「使わない」との判断でUIから除外（2026-07-14。API自体は残置）
 const DOC_KIND_UI = [['quote','見積書'],['invoice1','請求書①（前金）'],['invoice2','請求書②（残金）'],['invoiceFull','請求書（全額請求）'],['delivery','納品書']];
 // 経由案件だけに出す帳票（金額=確定卸値×97%。発注書=経由先発行・自社宛／請求書=自社発行・経由先宛）。名称はログイン後に入るため関数で組む
-const DOC_KIND_UI_VIA = ()=>[['viaOrder','🔁 発注書（'+NM.via+'→'+NM.co+'・97%）'],['viaInvoice1','🔁 '+NM.via+'請求書①（前金・97%）'],['viaInvoice2','🔁 '+NM.via+'請求書②（残金・97%）'],['viaInvoiceFull','🔁 '+NM.via+'請求書（全額・97%）']];
+const DOC_KIND_UI_VIA = ()=>[['viaOrder','🔁 発注書（'+NM.via+'→'+NM.co+'・97%）'],['viaInvoice1','🔁 請求書①（'+NM.co+'→'+NM.via+'・前金・97%）'],['viaInvoice2','🔁 請求書②（'+NM.co+'→'+NM.via+'・残金・97%）'],['viaInvoiceFull','🔁 請求書（'+NM.co+'→'+NM.via+'・全額・97%）']];
 function docListHtml(orderId){
   const docs = rows('docLog').filter(d=>String(d['受注ID']).trim()===String(orderId).trim());
   if(!docs.length) return '';
