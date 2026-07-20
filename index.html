@@ -2297,9 +2297,25 @@ function isSurplus(r){
   return h!=='回収入庫' && h!=='業者仕入';
 }
 function stockTable(list, emptyMsg){
-  return '<table><tr><th>在庫ID</th><th>商品</th><th>容量</th><th>区分</th><th>発生</th><th>仕入元</th><th class="num">入庫</th><th class="num">出庫</th><th class="num">残数</th><th class="num">仕入単価</th><th class="num">在庫金額</th><th>入庫日</th></tr>' +
-    (list.map(r=>'<tr><td class="mono small">'+esc(r['在庫ID'])+'</td><td>'+esc(r['商品名'])+'</td><td>'+esc(r['容量'])+'</td><td>'+esc(String(r['区分']||'').trim()||'卸')+'</td><td class="small">'+esc(r['発生区分'])+'</td><td class="small">'+esc(r['仕入元名'])+'</td>' +
-      '<td class="num">'+r['入庫数']+'</td><td class="num">'+r['出庫済']+'</td><td class="num"><b>'+r['残数']+'</b></td><td class="num">'+yen(num(r['仕入単価（税抜）']))+'</td><td class="num">'+yen(num(r['在庫金額（税抜）']))+'</td><td class="small">'+esc(r['発生日'])+'</td></tr>').join('') || '<tr><td colspan="12" class="muted">'+emptyMsg+'</td></tr>') +
+  // 商品単位でまとめて商品セルを縦結合（rowspan）。「全体で何個・内どのサロンから何個」が一目で読める形（2026-07-20 ユーザー要望）
+  const groups = {}, order = [];
+  list.forEach(r=>{
+    const k = String(r['商品ID']||'').trim() || String(r['商品名'])+'/'+String(r['容量']);
+    if(!groups[k]){ groups[k]=[]; order.push(k); }
+    groups[k].push(r);
+  });
+  const body = order.map(k=>{
+    const rs = groups[k];
+    const totQty = rs.reduce((a,r)=>a+num(r['残数']),0);
+    const totYen = rs.reduce((a,r)=>a+num(r['在庫金額（税抜）']),0);
+    const prodCell = '<td rowspan="'+rs.length+'" style="vertical-align:top;background:var(--wash)"><b>'+esc(rs[0]['商品名'])+'</b> <span class="small muted">'+esc(rs[0]['容量'])+'</span>' +
+      '<div style="margin-top:2px">計 <b>'+totQty+'</b>点 <span class="small muted">／ '+yen(totYen)+'</span></div></td>';
+    return rs.map((r,i)=>'<tr>'+(i===0?prodCell:'')+'<td class="small">'+esc(r['仕入元名'])+'</td><td class="num"><b>'+r['残数']+'</b></td>' +
+      '<td class="mono small">'+esc(r['在庫ID'])+'</td><td>'+esc(String(r['区分']||'').trim()||'卸')+'</td><td class="small">'+esc(r['発生区分'])+'</td>' +
+      '<td class="num">'+r['入庫数']+'</td><td class="num">'+r['出庫済']+'</td><td class="num">'+yen(num(r['仕入単価（税抜）']))+'</td><td class="num">'+yen(num(r['在庫金額（税抜）']))+'</td><td class="small">'+esc(r['発生日'])+'</td></tr>').join('');
+  }).join('');
+  return '<table><tr><th>商品（計）</th><th>仕入元</th><th class="num">残数</th><th>在庫ID</th><th>区分</th><th>発生</th><th class="num">入庫</th><th class="num">出庫</th><th class="num">仕入単価</th><th class="num">在庫金額</th><th>入庫日</th></tr>' +
+    (body || '<tr><td colspan="11" class="muted">'+emptyMsg+'</td></tr>') +
   '</table>';
 }
 function vStock(){
