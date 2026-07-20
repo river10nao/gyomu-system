@@ -1560,8 +1560,13 @@ function vOrders(){
   // 完了案件（お金=最終入金完了 かつ モノ=出荷完了 or 出荷なし）は「すべて」タブでは下の「✅完了分」に固める（2026-07-16 ユーザー指定）
   // 最終入金完了でも出荷が残っている案件は作業中なので上に残す。個別タブでは絞り込み結果をそのまま出す
   const isDoneGrp = g => g.st==='納品完了';   // 完了=納品完了のみ（出荷完了が通過条件。2026-07-18）
-  const doneList = tab==='すべて' ? list.filter(isDoneGrp) : [];
+  const doneAll = tab==='すべて' ? list.filter(isDoneGrp) : [];
   const activeList = tab==='すべて' ? list.filter(g=>!isDoneGrp(g)) : list;
+  // 完了分は件数が積み上がるので📦発注月で絞り込めるようにする（2026-07-20 ユーザー要望）。発注日未入力の分は受注日で拾う
+  const doneMonthOf = g => monthOf(g.ord) || monthOf(g.date);
+  const doneMonths = [...new Set(doneAll.map(doneMonthOf))].filter(Boolean).sort().reverse();
+  const doneMonth = doneMonths.includes(viewState.doneMonth) ? viewState.doneMonth : '';   // データが消えた月が選ばれたままにならないように
+  const doneList = doneMonth ? doneAll.filter(g=>doneMonthOf(g)===doneMonth) : doneAll;
 
   // 在庫の充足チェック用: 商品IDごとの残数合計（店販ロットは卸出荷に使わないため除外）
   // ※複数案件が同じ在庫を取り合うケースまでは見ない簡易判定（引去時はサーバー側で正確にチェックされる）
@@ -1597,8 +1602,11 @@ function vOrders(){
   '<div class="row" style="margin-bottom:10px">'+bulkBar('order', activeList.map(g=>g.id))+'</div>' +   // 全選択は表示中（完了分を除く）が対象
   (activeList.map(cardHtml).join('') || (doneList.length ? '' : '<p class="muted">該当する受注がありません</p>')) +
   // 完了分は下に固めて開閉式でまとめる（2026-07-16 ユーザー指定）。「すべて」タブのみ。完了タブでは普通に一覧表示
-  (doneList.length ? '<details class="ordcard" '+(viewState.doneOpen?'open':'')+' ontoggle="viewState.doneOpen=this.open" style="background:color-mix(in srgb,var(--good) 5%,transparent);border-color:color-mix(in srgb,var(--good) 30%,var(--grid))">' +
-    '<summary class="small" style="color:var(--good);font-weight:700">✅ 完了分（'+doneList.length+'件）— クリックで開閉</summary>' +
+  (doneAll.length ? '<details class="ordcard" '+(viewState.doneOpen?'open':'')+' ontoggle="viewState.doneOpen=this.open" style="background:color-mix(in srgb,var(--good) 5%,transparent);border-color:color-mix(in srgb,var(--good) 30%,var(--grid))">' +
+    '<summary class="small" style="color:var(--good);font-weight:700">✅ 完了分（'+doneAll.length+'件'+(doneMonth?' / '+esc(doneMonth)+'発注分 '+doneList.length+'件を表示中':'')+'）— クリックで開閉</summary>' +
+    (doneMonths.length>1 ? '<div class="tabs" style="margin-top:10px;margin-bottom:0"><span class="muted small" style="align-self:center;margin-right:4px">📦 発注月:</span>' +
+      [{v:'',label:'すべて',n:doneAll.length}].concat(doneMonths.map(m=>({v:m,label:m,n:doneAll.filter(g=>doneMonthOf(g)===m).length})))
+        .map(o=>'<button class="'+(o.v===doneMonth?'on':'')+'" onclick="setVS(\'doneMonth\',\''+o.v+'\')">'+esc(o.label)+'<span class="n">'+o.n+'</span></button>').join('') + '</div>' : '') +
     '<div style="margin-top:10px">'+doneList.map(cardHtml).join('')+'</div></details>' : '') +
   trashSection('order', 'orderLedger', '受注ID', r=>String(r['卸先名']||'')+' '+String(r['受注日']||''));
 
