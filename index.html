@@ -12,6 +12,7 @@
   --grid:#e1e0d9; --axis:#c3c2b7; --ring:rgba(11,11,11,.10);
   --s1:#2a78d6; --s2:#1baf7a; --s3:#eda100; --s4:#008300; --s5:#4a3aa7; --s6:#e34948;
   --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b;
+  --ec:#d6488f;   /* EC出品中バッジ専用ピンク（緑系ステータスと紛れないための独立色） */
   --accent:#2a78d6; --accent-ink:#fff; --wash:rgba(42,120,214,.08);
 }
 /* 表示モード: data-theme 未指定=OS設定に従う(自動)、light/dark=手動固定 */
@@ -19,14 +20,14 @@
   --page:#0d0d0d; --surface:#1a1a19; --ink:#fff; --ink2:#c3c2b7; --muted:#898781;
   --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
   --s1:#3987e5; --s2:#199e70; --s3:#c98500; --s5:#9085e9; --s6:#e66767;
-  --accent:#3987e5; --wash:rgba(57,135,229,.14);
+  --accent:#3987e5; --wash:rgba(57,135,229,.14); --ec:#e0569c;
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
     --page:#0d0d0d; --surface:#1a1a19; --ink:#fff; --ink2:#c3c2b7; --muted:#898781;
     --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
     --s1:#3987e5; --s2:#199e70; --s3:#c98500; --s5:#9085e9; --s6:#e66767;
-    --accent:#3987e5; --wash:rgba(57,135,229,.14);
+    --accent:#3987e5; --wash:rgba(57,135,229,.14); --ec:#e0569c;
   }
 }
 *{box-sizing:border-box;margin:0}
@@ -193,7 +194,7 @@ const STATUS_COLOR = {
   '最終入金待ち':'var(--s3)','最終入金完了':'var(--s1)','納品完了':'var(--good)',
   '回収待ち':'var(--serious)','検品待ち':'var(--s3)','ロット処理待ち':'var(--s1)','ロット処理済み':'var(--good)','ロット処理なし':'var(--s2)',
   '引去確認待ち':'var(--s3)','引去済':'var(--s1)','出荷手配中':'var(--s5)','出荷完了':'var(--good)',
-  '受付':'var(--s3)','ディーラー発注済':'var(--s1)','預かり中':'var(--s5)','お渡し済み':'var(--good)','EC出品中':'var(--s2)','完売':'var(--good)'
+  '受付':'var(--s3)','ディーラー発注済':'var(--s1)','預かり中':'var(--s5)','お渡し済み':'var(--good)','EC出品中':'var(--ec)','完売':'var(--good)'
 };
 
 // ===== 状態 =====
@@ -375,7 +376,13 @@ function today(){ return new Date().toLocaleDateString('sv-SE').replace(/-/g,'/'
 // rows() は削除済み（ソフト削除フラグあり）の行を自動で除外する。ゴミ箱表示だけ rowsAll() を使う
 function rowsAll(name){ return (DB[name]&&DB[name].rows)||[]; }
 function rows(name){ return rowsAll(name).filter(r=>!String(r['削除']||'').trim()); }
-function pill(st){ return '<span class="pill" style="background:color-mix(in srgb,'+(STATUS_COLOR[st]||'var(--muted)')+' 15%, transparent);color:'+(STATUS_COLOR[st]||'var(--muted)')+'">'+esc(st)+'</span>'; }
+// ベタ塗り（白文字）で出すステータス。EC出品中は薄緑のお渡し済み/完売と紛れやすいため（2026-07-20 ユーザー指定・ピンク）
+const STATUS_SOLID = {'EC出品中':1};
+function pill(st){
+  const c = STATUS_COLOR[st]||'var(--muted)';
+  if(STATUS_SOLID[st]) return '<span class="pill" style="background:'+c+';color:#fff">'+esc(st)+'</span>';
+  return '<span class="pill" style="background:color-mix(in srgb,'+c+' 15%, transparent);color:'+c+'">'+esc(st)+'</span>';
+}
 // 掛け払い案件は半金が無く「全額請求→入金は最後」のため、受注一覧のピルだけ「請求済み（◯◯）」表記にする
 // （2026-07-19 ユーザー確定。ステータス値・タブ名はそのまま＝見た目だけの読み替え）
 function orderPill(st, pay){
