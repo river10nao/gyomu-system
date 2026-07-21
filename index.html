@@ -2569,7 +2569,8 @@ function vSalonPay(){
   return '<h1>'+NM.spay+'支払</h1><div class="sub">サロンへの支払いは'+NM.spay+'経由。協力費（'+yen(BRAND_FEE)+'/ブランド/サロン）は<b>対象月の翌月末払い</b>。MTG代金は<b>都度払い</b>で月次には含めません</div>' +
   mtgAlertCard('spay') +   // MTGサロン振込アラート（✔振込完了ボタン。💰支払い画面とは別フラグで連動しない。2026-07-18 ユーザー指定）
   '<div class="row" style="margin-bottom:12px">対象月: '+monthPicker() +
-  '<button class="btn right" onclick="exportSalonPay()">CSV出力</button></div>' +
+  '<button class="btn right" onclick="exportSalonPay()">CSV出力</button>' +
+  '<button class="btn" onclick="issueSpayNotice()">📄支払通知書PDF</button></div>' +
   '<div class="kpis">' +
     kpi(selMonth+'分 月次支払額', yen(total), '支払期日: '+dueStr+'（協力費−店販/EC請求）') +
     kpi(selMonth+' MTG都度払い（参考）', yen(mtgTotal), '発生ごとに支払い済みのはずの額') +
@@ -2601,6 +2602,17 @@ function vSalonPay(){
     }).join('') || '<tr><td colspan="2" class="muted">この月のMTG商品はありません</td></tr>') +
     '</table><p class="muted small" style="margin-top:6px">MTGはサロンが商品代金を立て替えるため、発注の都度'+NM.spay+'経由で支払います（月末まとめ払いの対象外）</p></div>'; })() +
   '<p class="muted small">※ MTG・店販/EC請求の単価は商品マスタ「サロン仕入価格（税抜）」を使った参考値です。運用に合わせて精緻化できます。</p>';
+}
+// 📄支払通知書PDF（2026-07-21 ユーザー要望）: 月次サロン精算の内訳＋総額を1枚のPDFに。
+// 金額の計算はサーバー側（サロン精算と同じ正本）。精算手数料（1振込サロンあたり税抜3,500円）＋消費税を加算した支払総額入り
+async function issueSpayNotice(){
+  const key='spayNotice'; if(inflight.has(key)) return; inflight.add(key);
+  try{
+    const r = await apiPost('issueSalonPayNotice', {month: selMonth}, ['docLog']);
+    toast(r.docNo+' を発行しました（支払総額 '+yen(r.amount)+'・'+r.salons+'サロン）');
+    window.open(r.url, '_blank');   // ポップアップブロック時は受注画面の発行済み一覧から開けます
+  }catch(e){ toast(e.message, true); }
+  finally{ inflight.delete(key); render(); }
 }
 function exportSalonPay(){
   const lines = calcSalonPay(selMonth);
