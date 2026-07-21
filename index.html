@@ -2650,17 +2650,22 @@ function vQuota(){
     '<label class="small">1サロン上限 <input type="number" value="'+qMax+'" onchange="setVS(\'qMax\',this.value)" style="width:100px;text-align:right"></label>' +
     '<label class="small">1サロン安全枠 <input type="number" value="'+qSafe+'" onchange="setVS(\'qSafe\',this.value)" style="width:100px;text-align:right"></label></div>' +
     '<table style="margin-top:8px"><tr><th>ブランド</th><th class="num">今月仕入済み</th><th>ディーラー別内訳（各社の枠 '+yen(perDealerCap)+'）</th><th class="num">上限枠</th><th class="num">上限まであと</th><th class="num">安全枠</th><th class="num">安全枠まであと</th></tr>' +
-    (Object.keys(usedByBrand).sort((a,b)=>usedByBrand[b]-usedByBrand[a]).map(b=>{
-      const u = usedByBrand[b];
+    // 取引あるなしに関わらず全ブランドを出す（2026-07-21 ユーザー要望）: 商品マスタの全ブランドを土台に、
+    // 仕入済みブランドを金額降順で先頭・残りを名前順で¥0行として並べる
+    ((()=>{ const masterBrands = [...new Set(rows('products').map(p=>String(p['ブランド']||p['カテゴリー']||'').trim()).filter(Boolean))];
+      return [...new Set([...Object.keys(usedByBrand).sort((a,b)=>usedByBrand[b]-usedByBrand[a]), ...masterBrands.sort((a,b)=>a.localeCompare(b,'ja'))])]; })()
+    .map(b=>{
+      const u = usedByBrand[b]||0;
+      const dotColor = allBrands.indexOf(b)>=0 ? colorOf(b) : 'var(--grid)';
       const dc = Math.max(1, allocBrandDealers(b).length);   // 扱いディーラー数（率列から判定・0社=未設定は1社扱い）
       const capMax = salonN*qMax*dc, capSafe = salonN*qSafe*dc;
       const breakdown = Object.entries(usedBySup[b]||{}).sort((x,y)=>y[1]-x[1])
         .map(([n,v])=>'<div class="small"'+(v>perDealerCap?' style="color:var(--crit);font-weight:700"':'')+'>'+esc(n)+' '+yen(v)+(v>perDealerCap?'（1社枠超過）':'')+'</div>').join('');
-      return '<tr><td><span class="dot" style="background:'+colorOf(b)+';border-color:'+colorOf(b)+'"></span> '+esc(b)+'<div class="muted small">扱い '+dc+'社</div></td><td class="num"><b>'+yen(u)+'</b></td>' +
-        '<td>'+breakdown+'</td>' +
+      return '<tr><td><span class="dot" style="background:'+dotColor+';border-color:'+dotColor+'"></span> '+esc(b)+'<div class="muted small">扱い '+dc+'社</div></td><td class="num">'+(u>0?'<b>'+yen(u)+'</b>':'<span class="muted">'+yen(0)+'</span>')+'</td>' +
+        '<td>'+(breakdown||'<span class="muted small">この月の仕入なし</span>')+'</td>' +
         '<td class="num">'+yen(capMax)+'<div class="muted small">'+salonN+'軒×'+yen(qMax)+'×'+dc+'社</div></td>'+leftCell(capMax-u)+
         '<td class="num">'+yen(capSafe)+'<div class="muted small">'+salonN+'軒×'+yen(qSafe)+'×'+dc+'社</div></td>'+leftCell(capSafe-u)+'</tr>';
-    }).join('') || '<tr><td colspan="7" class="muted">この月のサロン向け仕入がありません</td></tr>') +
+    }).join('') || '<tr><td colspan="7" class="muted">商品マスタにブランドがありません</td></tr>') +
     '</table><p class="muted small" style="margin-top:6px">枠は【ディーラー1社あたり サロン数×1サロン枠】。2社から仕入れられるブランドは上限・安全枠が2倍になります。内訳の各社が1社枠（'+yen(perDealerCap)+'）を超えると赤字。1サロンの枠を変えると即再計算されます。</p></div>';
 
   return '<h1>サロン仕入枠</h1><div class="sub">サロンごとに1本のバー。色 = ブランド、バー全体 = そのサロンの枠合計。枠は「枠マスタ」シートで個別設定（未設定は'+yen(DEFAULT_QUOTA)+'/ブランド）</div>' +
