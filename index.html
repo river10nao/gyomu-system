@@ -1667,6 +1667,9 @@ function vOrders(){
       // 紐づく回収番号（回収台帳の対象受注から逆引き。2026-07-18 ユーザー要望「それぞれの場所で見れるように」）
       (()=>{ const ks=collsByOrder[String(g.id).trim()]||{}; const ids=Object.keys(ks);
         return ids.length ? '<span class="small muted">📥 回収: '+ids.map(k=>k+'('+esc(ks[k])+')').join(', ')+'</span>' : ''; })() +
+      // ✏️編集は振分前（商談中・半金入金待ち）＋回収未紐づけのみ表示（サーバー側にも同じガード。2026-07-21）
+      (['商談中','半金入金待ち'].includes(g.st) && !Object.keys(collsByOrder[String(g.id).trim()]||{}).length
+        ? '<button class="btn sm" onclick="editOrderUI(\''+g.id+'\')">✏️ 編集</button>' : '') +
       '<button class="btn sm" onclick="viewState.docFor=(viewState.docFor===\''+g.id+'\'?null:\''+g.id+'\');render()">📄 帳票発行</button>' +
       rollbackBtn('order', g.id, g.st) +
       deleteBtn('order', g.id) +
@@ -2008,7 +2011,13 @@ function newOrderForm(){
       '<td class="num" id="noSubC'+i+'">'+yen(s)+'</td></tr>';
   }).join('');
   const bad = rws.filter(r=>!r.pid).length;
-  return '<div class="card" style="background:var(--wash)"><b class="small">＋ 案件作成 — ①JANを貼る ②数量を貼る ③展開して確認 → 登録（商談中で作成されます）</b>' +
+  const editOid = viewState.editOid||null;   // ✏️編集モード（2026-07-21）
+  // 発行済み帳票がある案件の編集は、金額が変わるとPDFと食い違うため警告（保存は止めない・再発行はユーザー判断）
+  const editDocs = editOid ? rows('docLog').filter(d=>String(d['削除']||'').trim()==='' && String(d['受注ID']||'').trim()===editOid).length : 0;
+  return '<div class="card" style="background:var(--wash)"><b class="small">'+(editOid
+      ? '✏️ 案件を編集（'+editOid+'）— 数量・掛け率は表で直接、商品の追加・削除は①②を書き換えて「③展開」を押し直し → 保存'
+      : '＋ 案件作成 — ①JANを貼る ②数量を貼る ③展開して確認 → 登録（商談中で作成されます）')+'</b>' +
+    (editDocs ? '<div class="small" style="margin-top:6px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--warn) 12%,transparent);color:var(--ink)">⚠ この案件には発行済みの帳票が '+editDocs+' 件あります。金額が変わる編集をしたら、保存後に帳票を再発行してください（発行済みPDFは自動では直りません）</div>' : '') +
     '<div class="row" style="margin-top:10px">' +
     '<label class="small">卸先<br><select id="noW" style="max-width:240px" onchange="viewState.noW=this.value;noApplyRates()"><option value="">選択してください</option>'+wOpts+'</select></label>' +
     '<label class="small">受注日<br><input type="date" id="noDate" value="'+(viewState.noDate||t)+'" onchange="viewState.noDate=this.value"></label>' +
@@ -2031,9 +2040,9 @@ function newOrderForm(){
       '<div class="row" style="margin-top:10px"><span class="muted small">数量を直したいときは ② の枠を書き換えて「③ 展開して確認」を押し直すか、表の数量マスに直接入力（最初のマスに列ごと貼り付けもOK）</span>' +
       (bad?'<span class="small" style="color:var(--crit)">⚠ 未登録JAN '+bad+'件（赤い行）は登録されません</span>':'') +
       '<span class="right mono">合計 <b id="noTotalSub">'+yen(sub)+'</b> 税抜 ／ <b id="noTotalIncl">'+yen(Math.round(sub*1.1))+'</b> 税込</span></div>' +
-      '<div class="row" style="margin-top:10px"><button class="btn pri" id="noGo" onclick="noSubmit()">📝 この内容で案件を作成（商談中）</button>' +
-      '<button class="btn" onclick="viewState.newOrder=false;viewState.noRows=[];render()">閉じる</button></div>'
-      : '<div class="row" style="margin-top:8px"><button class="btn" onclick="viewState.newOrder=false;render()">閉じる</button></div>') +
+      '<div class="row" style="margin-top:10px"><button class="btn pri" id="noGo" onclick="noSubmit()">'+(editOid?'💾 この内容で上書き保存':'📝 この内容で案件を作成（商談中）')+'</button>' +
+      '<button class="btn" onclick="viewState.newOrder=false;viewState.editOid=null;viewState.noRows=[];render()">閉じる</button></div>'
+      : '<div class="row" style="margin-top:8px"><button class="btn" onclick="viewState.newOrder=false;viewState.editOid=null;render()">閉じる</button></div>') +
     '</div>';
 }
 function noExpand(){
@@ -2119,23 +2128,49 @@ async function noSubmit(){
   if(noRate){ toast('掛け率が空の明細があります（'+noRate+'件）。掛け率を入れてください', true); return; }
   const skipped = (viewState.noRows||[]).filter(r=>!r.pid).length;
   if(skipped && !confirm('未登録JANが'+skipped+'件あります。除外して登録しますか？')) return;
-  const btn = document.getElementById('noGo'); btn.disabled = true; btn.textContent = '登録中…';
+  const editOid = viewState.editOid||null;   // ✏️編集モード（2026-07-21）: 同じグリッドで updateOrder に切り替える
+  const btn = document.getElementById('noGo'); btn.disabled = true; btn.textContent = editOid?'保存中…':'登録中…';
   try{
-    const r = await apiPost('createOrder', {
+    const payload = {
       '受注日': document.getElementById('noDate').value,
       '卸先ID': wid, '卸先名': w ? (w['卸先名']||'') : '',
       '支払方式': document.getElementById('noPay').value,
       '仕入れ形態': [...new Set((viewState.noForms&&viewState.noForms.length)?viewState.noForms:['自社サロン'])].join('＋'),   // 全部外したら自社サロン扱い
       [NM.via+'経由']: document.getElementById('noVia').checked,
       items
-    }, ['orderLedger']);   // 新しい案件行を応答に同梱してもらう（往復1回）
-    viewState.newOrder = false; viewState.noRows = []; viewState.noJansTxt=''; viewState.noQtyTxt=''; viewState.noVia=false; viewState.noForms=null;
-    toast('案件 '+r.orderId+' を作成しました（商談中・'+r.lines+'明細）');
+    };
+    if(editOid) payload['受注ID'] = editOid;
+    const r = await apiPost(editOid?'updateOrder':'createOrder', payload, ['orderLedger']);   // 最新の案件行を応答に同梱してもらう（往復1回）
+    viewState.newOrder = false; viewState.editOid = null; viewState.noRows = []; viewState.noJansTxt=''; viewState.noQtyTxt=''; viewState.noVia=false; viewState.noForms=null;
+    toast(editOid ? ('案件 '+r.orderId+' を更新しました（'+r.lines+'明細）') : ('案件 '+r.orderId+' を作成しました（商談中・'+r.lines+'明細）'));
     render();
   }catch(e){
     toast(e.message, true);
-    btn.disabled = false; btn.textContent = '📝 この内容で案件を作成（商談中）';
+    btn.disabled = false; btn.textContent = editOid?'💾 この内容で上書き保存':'📝 この内容で案件を作成（商談中）';
   }
+}
+// ✏️ 案件編集（2026-07-21 ユーザー要望）: 案件作成グリッドを編集モードで開く。
+// 編集できるのは振分前（商談中・半金入金待ち）＋回収未紐づけのみ（サーバー側にも同じガード）
+function editOrderUI(oid){
+  const lines = rows('orderLedger').filter(r=>String(r['受注ID']||'').trim()===oid && String(r['削除']||'').trim()==='');
+  if(!lines.length){ toast('受注 '+oid+' が見つかりません', true); return; }
+  const h = lines[0];
+  viewState.newOrder = true; viewState.editOid = oid; viewState.tab = viewState.tab||'すべて';
+  viewState.noW = String(h['卸先ID']||'').trim();
+  viewState.noDate = String(h['受注日']||'').trim().replace(/\//g,'-');
+  viewState.noPay = String(h['支払方式']||'半金×2').trim();
+  viewState.noForms = String(h['仕入れ形態']||'自社サロン').split('＋').map(s=>s.trim()).filter(Boolean);
+  viewState.noVia = String(h[NM.via+'経由']||'').trim()!=='';
+  viewState.noRows = lines.map(r=>{
+    const pid = String(r['商品ID']||'').trim();
+    const p = product(pid)||{};
+    return {jan: String(p['JANコード']||'').trim()||pid, pid, name: String(r['商品名']||''), size: String(r['容量']||''),
+      list: num(r['定価（税抜）']), rate: String(num(r['掛け率'])||''), qty: String(num(r['個数'])||'')};
+  });
+  // JAN/数量枠にも既存明細を入れておく（商品を追加したいときは枠に足して「③展開」を押し直す）
+  viewState.noJansTxt = viewState.noRows.map(r=>r.jan).join('\n');
+  viewState.noQtyTxt = viewState.noRows.map(r=>r.qty).join('\n');
+  window.scrollTo(0,0); render();
 }
 
 async function saveOrderDate(oid){
