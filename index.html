@@ -819,32 +819,34 @@ function vPayments(){
       const wid = String(w['卸先ID']||'').trim(); const rid = String(w['紹介者']||'').trim();
       const base = String(w['報酬基準']||'利益').trim(); const rateV = num(w['報酬率']); const rate = rateV>1 ? rateV/100 : rateV;
       const byOrder = {};
-      rows('orderLedger').filter(r=>String(r['卸先ID']||'').trim()===wid).forEach(r=>{
+      // 2026-07-23 ユーザー確定: 判定は発注日ベース（入金日ではない）。発注日1〜15日→当月末・16日〜末日→翌月10日。
+      // 卸先からの入金完了は待たない（発注した月末に先方が請求書を作成→入金する運用）
+      rows('orderLedger').filter(r=>String(r['卸先ID']||'').trim()===wid && String(r['削除']||'').trim()==='').forEach(r=>{
         const oid=String(r['受注ID']||'').trim(); if(!oid) return;
-        (byOrder[oid]=byOrder[oid]||{oid, st:String(r['ステータス']||'').trim(), pay2:String(r['入金②日']||'').trim(), sales:0, cost:0});
+        (byOrder[oid]=byOrder[oid]||{oid, ord:String(r['発注日']||'').trim(), sales:0, cost:0});
         byOrder[oid].sales += num(r['小計（税抜）']);
         byOrder[oid].cost += num(r['個数'])*ownCost(String(r['商品ID']||'').trim());
       });
-      Object.values(byOrder).filter(o=>paidDone(o.st) && inMonth(o.pay2)).forEach(o=>{   // 対象月は入金②日基準
+      Object.values(byOrder).filter(o=>o.ord && inMonth(o.ord)).forEach(o=>{   // 対象月は発注日基準（発注日未入力はまだ計上しない）
         const b = base==='売上' ? o.sales : (o.sales-o.cost);
         const fee = Math.round(b*rate);
-        // 入金が15日まで→当月末、16日以降→翌10日
-        const d = new Date(o.pay2.replace(/\//g,'-'));
-        let due = '（入金日なし）';
+        // 発注日が15日まで→当月末、16日以降→翌月10日
+        const d = new Date(o.ord.replace(/\//g,'-'));
+        let due = '（発注日なし）';
         if(!isNaN(d)) due = d.getDate()<=15 ? payFmt(payEom(d.getFullYear(), d.getMonth()))+'（当月末）'
                                             : payFmt(new Date(d.getFullYear(), d.getMonth()+1, 10))+'（翌月10日）';
-        (byRef[rid]=byRef[rid]||[]).push({wname:String(w['卸先名']||''), oid:o.oid, base, rate, b, fee, pay2:o.pay2, due});
+        (byRef[rid]=byRef[rid]||[]).push({wname:String(w['卸先名']||''), oid:o.oid, base, rate, b, fee, ord:o.ord, due});
       });
     });
     Object.keys(byRef).forEach(rid=>{
       const list = byRef[rid]; const total = list.reduce((a,x)=>a+x.fee,0);
       const open = (viewState.aggOpen||{})['pay_ref_'+rid];
-      html += '<div class="card"><div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_ref_'+rid+'\')">'+(open?'▾':'▸')+' <b>🤝 '+esc(salonLabel(sal[rid]||{})||rid)+'（紹介報酬）</b><span class="small muted">紹介卸先の最終入金完了案件 × 報酬率 ／ 入金15日まで→当月末・16日以降→翌10日</span><span class="right"><b>'+yen(total)+'</b></span></div>' +
-        (open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>卸先</th><th>受注</th><th>基準</th><th class="num">対象額</th><th class="num">率</th><th class="num">報酬</th><th>入金日</th><th>支払予定</th></tr>' +
-          list.map(x=>'<tr><td class="small">'+esc(x.wname)+'</td><td class="mono small">'+esc(x.oid)+'</td><td class="small">'+esc(x.base)+'</td><td class="num">'+yen(x.b)+'</td><td class="num">'+(x.rate*100).toFixed(0)+'%</td><td class="num"><b>'+yen(x.fee)+'</b></td><td class="small">'+esc(x.pay2)+'</td><td class="small">'+esc(x.due)+'</td></tr>').join('')+'</table></div>' : '') + '</div>';
+      html += '<div class="card"><div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_ref_'+rid+'\')">'+(open?'▾':'▸')+' <b>🤝 '+esc(salonLabel(sal[rid]||{})||rid)+'（紹介報酬）</b><span class="small muted">紹介卸先の発注済み案件 × 報酬率 ／ <b>発注日</b>1〜15日→当月末・16日〜→翌月10日（発注ベース・入金は待たない）</span><span class="right"><b>'+yen(total)+'</b></span></div>' +
+        (open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>卸先</th><th>受注</th><th>基準</th><th class="num">対象額</th><th class="num">率</th><th class="num">報酬</th><th>発注日</th><th>支払予定</th></tr>' +
+          list.map(x=>'<tr><td class="small">'+esc(x.wname)+'</td><td class="mono small">'+esc(x.oid)+'</td><td class="small">'+esc(x.base)+'</td><td class="num">'+yen(x.b)+'</td><td class="num">'+(x.rate*100).toFixed(0)+'%</td><td class="num"><b>'+yen(x.fee)+'</b></td><td class="small">'+esc(x.ord)+'</td><td class="small">'+esc(x.due)+'</td></tr>').join('')+'</table></div>' : '') + '</div>';
     });
   } else {
-    html += '<div class="card"><b class="small muted">🤝 紹介報酬</b><p class="muted small">卸先マスタの「紹介者」列が入った卸先の最終入金完了案件から自動計算します（今は対象なし。マスタ管理で紹介者・報酬基準・報酬率を記入してください）</p></div>';
+    html += '<div class="card"><b class="small muted">🤝 紹介報酬</b><p class="muted small">卸先マスタの「紹介者」列が入った卸先の発注済み案件（📦発注日ベース）から自動計算します（今は対象なし。マスタ管理で紹介者・報酬基準・報酬率を記入してください）</p></div>';
   }
 
   // ---- 店販請求元（請求書ベース・想定額の参考） ----
@@ -1195,17 +1197,17 @@ function vDashboard(){
       const pr=payPeriod(l.date, String(pureRow['締め日']||''), String(pureRow['支払日']||'')); (per[pr.key]=per[pr.key]||{pr,sub:0}).sub+=l.amt; });
     Object.values(per).forEach(g=>pushOut((salonLabel(brokerRow)||'仲介')+' 2%', Math.round(g.sub*BROKER_RATE), g.pr.pd, 'var(--s4)'));
   })();
-  // 3) 紹介報酬（最終入金完了案件。入金②が15日まで→当月末・16日以降→翌10日）
+  // 3) 紹介報酬（発注済み案件。発注日1〜15日→当月末・16日〜→翌月10日。2026-07-23 発注ベースに訂正・入金は待たない）
   rows('wholesalers').filter(w=>String(w['紹介者']||'').trim()).forEach(w=>{
     const wid=String(w['卸先ID']||'').trim(), rid=String(w['紹介者']||'').trim();
     const base=String(w['報酬基準']||'利益').trim(); const rv=num(w['報酬率']); const rate=rv>1?rv/100:rv;
     const byOrder={};
-    rows('orderLedger').filter(r=>String(r['卸先ID']||'').trim()===wid).forEach(r=>{
+    rows('orderLedger').filter(r=>String(r['卸先ID']||'').trim()===wid && String(r['削除']||'').trim()==='').forEach(r=>{
       const oid=String(r['受注ID']||'').trim(); if(!oid) return;
-      (byOrder[oid]=byOrder[oid]||{st:String(r['ステータス']||'').trim(), pay2:String(r['入金②日']||'').trim(), sales:0, cost:0});
+      (byOrder[oid]=byOrder[oid]||{ord:String(r['発注日']||'').trim(), sales:0, cost:0});
       byOrder[oid].sales+=num(r['小計（税抜）']); byOrder[oid].cost+=num(r['個数'])*ownCost(String(r['商品ID']||'').trim()); });
-    Object.values(byOrder).filter(o=>paidDone(o.st)).forEach(o=>{
-      const d=new Date(o.pay2.replace(/\//g,'-')); if(isNaN(d)) return;
+    Object.values(byOrder).filter(o=>o.ord).forEach(o=>{
+      const d=new Date(o.ord.replace(/\//g,'-')); if(isNaN(d)) return;
       const pd = d.getDate()<=15 ? payEom(d.getFullYear(), d.getMonth()) : new Date(d.getFullYear(), d.getMonth()+1, 10);
       pushOut((salonLabel(csl.sal[rid]||{})||'紹介')+'報酬', Math.round((base==='売上'?o.sales:(o.sales-o.cost))*rate), pd, 'var(--s4)');
     });
