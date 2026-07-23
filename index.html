@@ -737,9 +737,11 @@ function collectSupplierLines(inMonthFn, allMonths){
     const list = num((product(pid)||{})['定価（税抜）']);
     let unit, unitNote='';
     if(rate!=null && supId===PAYIDS.pure){
-      // 口座請求元経由は全ブランド「マスタ率=請求率+仲介2%」の上乗せ済み値（例 41.9%=39.9%+2% / 48%=46%+2%）。
-      // 請求想定はマスタ率−2%の切捨・2%は仲介側へ（2026-07-21 ユーザー確定でブランド限定を撤廃）
-      unit = Math.floor(list*(Math.round((rate-BROKER_RATE)*1000)/1000));
+      // 口座請求元の実請求単価 = サロン仕入価格×57%（円未満切捨）。2026-07-23 実請求書と全明細照合して確定。
+      // サロン価70%商品=定価×39.9%（従来通り）・65%商品=定価×37.05%。仲介2%は別途（定価×2%・🤝カード）
+      const sc = salonCost(pid);
+      if(sc>0){ unit = Math.floor(sc*57/100); }   // ×0.57は浮動小数点誤差で1円ズレるため整数演算（700×0.57=398.99…対策）
+      else { unit = Math.floor(list*(Math.round((rate-BROKER_RATE)*1000)/1000)); unitNote='サロン価未設定→旧式で仮'; }
     } else if(rate!=null){ unit = Math.round(list*rate); }
     else { unit = ownCost(pid); unitNote='率未設定→仕入価格で仮'; }
     // 受注に紐づかない仕入（手動仕入れ・外注一括の旧データ等）は行自体の発注日が計上日なので「仮」にしない
@@ -796,7 +798,7 @@ function vPayments(){
             g.lines.map(l=>'<tr><td class="small">'+esc(l.date)+(l.prov?' <span style="color:var(--s4)">仮</span>':'')+'</td><td class="mono small">'+esc(l.kid)+'</td><td class="mono small">'+esc(l.oids)+'</td><td class="small">'+esc(l.salon)+'</td><td class="small">'+esc(l.brand)+'</td><td class="small">'+esc(l.name)+' '+esc(l.size)+'</td><td class="num">'+l.qty+'</td><td class="num">'+yen(l.unit)+(l.unitNote?'<br><span class="small" style="color:var(--s4)">'+esc(l.unitNote)+'</span>':'')+'</td><td class="num">'+yen(l.amt)+'</td></tr>').join('') +
             '</table></div>' : '') + '</div>';
       }).join('') +
-      (isPure ? '<p class="muted small" style="margin-top:6px">※ 定価×（マスタ率−2%）の切捨で計算（マスタ率は仲介2%上乗せ済み。差の2%は仲介手数料として下の🤝カードに計上）。サロン別口座請求・税は伝票単位切捨のため請求書と数円ズレることがあります。</p>' : '') +
+      (isPure ? '<p class="muted small" style="margin-top:6px">※ 単価 = 商品マスタのサロン仕入価格×57%（円未満切捨・2026-07-23 実請求書と全明細照合済みの計算式）。仲介2%は定価×2%で下の🤝カードに計上。サロン別口座請求・税は伝票単位切捨。</p>' : '') +
       '</div>';
   });
 
