@@ -3207,11 +3207,7 @@ function vAllocation(){
     const ks = new Set(); selOrders.forEach(r=>{ const e=(cov[String(r['受注ID']).trim()]||{})[brand]; if(e) e.kids.forEach(k=>ks.add(k)); });
     html += '<div class="card" style="opacity:.8"><b class="small">✅ '+esc(brand)+' は回収・検品へ入れ込み済みです</b>' +
       '<p class="small" style="margin:6px 0 0"><b>回収ID: '+esc(kFmt(ks)||'—')+'</b>（回収・検品画面で確認できます）</p>' +
-      '<div class="row" style="margin-top:8px"><button class="btn sm" onclick="allocPrintDone(\''+esc(brand)+'\',\''+[...ks].join(',')+'\')">🖨 印刷用を開く（PDF保存）</button>' +
-      // ディーラーごとの確認送付用PDF（2026-07-29 ユーザー要望）
-      (()=>{ const sups=[...new Set(rows('collectionLedger').filter(r=>ks.has(String(r['回収ID']||'').trim())).map(r=>String(r['仕入先名']||'').trim()).filter(Boolean))];
-        return sups.length ? '<span class="muted small">ディーラー別:</span>'+sups.map(sn=>'<button class="btn sm" onclick="allocPrintDone(\''+esc(brand)+'\',\''+[...ks].join(',')+'\',\''+esc(sn)+'\')">🖨 '+esc(sn)+'</button>').join('') : ''; })() +
-      '</div>' +
+      '<div class="row" style="margin-top:8px"><button class="btn sm" onclick="allocPrintDone(\''+esc(brand)+'\',\''+[...ks].join(',')+'\')">🖨 印刷用を開く（PDF保存）</button></div>' +
       '<p class="muted small" style="margin:6px 0 0">やり直す場合は回収・検品側で該当の回収を削除するとここが再び操作できるようになります（一部だけ削除すると数が合わない警告が出ます）</p>' +
       prevHtml + '</div>';
     return html;
@@ -3320,9 +3316,6 @@ function vAllocation(){
     const dealers = rows('salons').filter(s=>String(s['種別']||'').trim()==='外注' && String(s['ストップ']||'').trim()==='' && String(s['サロンID']||'').trim());   // 外注先=種別「外注」（2026-07-17 3値化）
     html += '<div class="card tblwrap"><div class="row"><b class="small">③ '+esc(brand)+' 割り振り結果（対象受注: '+selIds.join(', ')+'）</b>' +
       '<button class="btn sm" onclick="allocPrint()">🖨 印刷用を開く（PDF保存）</button>' +
-      // ディーラーごとの確認送付用に、仕入先別のPDFも出せる（2026-07-29 ユーザー要望）
-      (()=>{ const sups=[...new Set(r.salonIds.map(s=>allocSupOf(r,s)).filter(Boolean))];
-        return sups.length ? '<span class="muted small">ディーラー別:</span>'+sups.map(sid=>'<button class="btn sm" onclick="allocPrint(\''+esc(sid)+'\')">🖨 '+esc(names[sid]||sid)+'</button>').join('') : ''; })() +
       '<button class="btn sm" onclick="allocSaveDraft()">💾 確認待ちで保存</button>' +
       // 余りが残っている間は確定に進めない（2026-07-18 ユーザー要望。押すと理由をトースト表示）
       (shortTotal>0
@@ -3385,22 +3378,21 @@ function vAllocation(){
   }
   return html;
 }
-function allocPrint(filterSup){
+function allocPrint(){
   // サロンごとの商品リスト形式（各サロンが何を何個か一目で分かる。検品時のチェック欄つき）
-  // filterSup（仕入先サロンID）指定時はそのディーラー経由のサロンだけの確認用PDFになる（2026-07-29 ユーザー要望）
+  // 印刷ページ内の「出力範囲」ボタンで 一括／ディーラー別 を切り替えられる（2026-07-29 ユーザー要望）
   const brand = ALLOC.brand, r = ALLOC.result[brand];
   if(!r){ toast('先に割り振りを計算してください', true); return; }
   const selIds = Object.keys(ALLOC.sel).filter(k=>ALLOC.sel[k]);
   const names = {}; rows('salons').forEach(s=>names[String(s['サロンID']).trim()]=salonLabel(s));
-  const sids = filterSup ? r.salonIds.filter(sid=>allocSupOf(r,sid)===String(filterSup)) : r.salonIds;
-  if(filterSup && !sids.length){ toast('このディーラー経由のサロンがありません', true); return; }
+  const sids = r.salonIds;
   const sections = sids.map(sid=>{
     const lines = r.items.map(i=>({i, qty:num((r.m[sid]||{})[i.pid])})).filter(x=>x.qty>0);
     if(!lines.length) return '';
     const totalQty = lines.reduce((a,x)=>a+x.qty,0);
     const totalYen = lines.reduce((a,x)=>a+x.qty*x.i.price,0);
     const supSid = allocSupOf(r, sid);   // サロン別に仕入先を分けている場合は各セクションに明記
-    return '<div class="salon"><h2>'+esc(slotName(names, sid))+' <span class="sub">計 '+totalQty+'点 ／ ¥'+Math.round(totalYen).toLocaleString()+'（サロン価格・税抜）'+(r.supSplit&&supSid?' ／ 仕入先: '+esc(names[supSid]||supSid):'')+'</span></h2>' +
+    return '<div class="salon" data-sup="'+esc(supSid)+'"><h2>'+esc(slotName(names, sid))+' <span class="sub">計 '+totalQty+'点 ／ ¥'+Math.round(totalYen).toLocaleString()+'（サロン価格・税抜）'+(r.supSplit&&supSid?' ／ 仕入先: '+esc(names[supSid]||supSid):'')+'</span></h2>' +
       '<table><tr><th>商品</th><th class="num">個数</th><th class="num">金額</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
       lines.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+(x.i.unit>1?'（'+x.i.unit+'個/箱）':'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*x.i.price).toLocaleString()+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
       '</table></div>';
@@ -3424,55 +3416,86 @@ function allocPrint(filterSup){
     '</table></div>' : '';
   const outQtyOf = pid=>routs.reduce((a,o)=>a+num((o.q||{})[pid]),0);
   const leftovers = r.items.map(i=>({i, left:i.need - r.salonIds.reduce((a,s)=>a+num((r.m[s]||{})[i.pid]),0) - outQtyOf(i.pid)})).filter(x=>x.left>0);
-  // ディーラー別PDF: そのディーラー分の総計を先頭に出す（確認送付用）
-  const dTotQ = sids.reduce((a,sid)=>a+r.items.reduce((b,i)=>b+num((r.m[sid]||{})[i.pid]),0),0);
-  const dTotY = sids.reduce((a,sid)=>a+r.items.reduce((b,i)=>b+num((r.m[sid]||{})[i.pid])*i.price,0),0);
-  const supName = filterSup ? (names[filterSup]||filterSup) : '';
+  // 印刷ページ内切り替え用: 仕入先ディーラー一覧と、ディーラー別の総計（点数・金額）を先に計算して埋め込む
+  const sups = [...new Set(sids.map(s=>allocSupOf(r,s)).filter(Boolean))];
+  const supMap = {}; sups.forEach(sid=>supMap[sid]=names[sid]||sid);
+  const TOT = {}; sups.forEach(sid=>TOT[sid]={q:0,y:0});
+  sids.forEach(sid=>{ const sup=allocSupOf(r,sid); if(!TOT[sup]) return;
+    r.items.forEach(i=>{ const v=num((r.m[sid]||{})[i.pid]); TOT[sup].q+=v; TOT[sup].y+=v*i.price; }); });
+  const toolbar = sups.length ? '<div class="no-print" style="margin:10px 0">出力範囲: ' +
+    '<button class="selbtn" data-s="" onclick="pick(\'\')" style="padding:4px 12px">一括（全体）</button>' +
+    sups.map(sid=>'<button class="selbtn" data-s="'+esc(sid)+'" onclick="pick(\''+esc(sid)+'\')" style="padding:4px 12px">'+esc(supMap[sid])+'</button>').join('') +
+    '<span style="color:#777;font-size:11px;margin-left:6px">ディーラーを選ぶと、その仕入先分だけ表示・印刷されます</span></div>' : '';
+  const pageScript = '<script>var SUPS='+JSON.stringify(supMap)+';var TOT='+JSON.stringify(TOT)+';var BASE=document.title;' +
+    'function pick(s){' +
+    'document.querySelectorAll(".salon").forEach(function(el){el.style.display=(!s||el.getAttribute("data-sup")===s)?"":"none";});' +
+    'document.querySelectorAll(".selbtn").forEach(function(b){var on=b.getAttribute("data-s")===(s||"");b.style.background=on?"#333":"";b.style.color=on?"#fff":"";});' +
+    'var tag=document.getElementById("supTag");if(tag)tag.textContent=s?"（ディーラー: "+SUPS[s]+"）":"";' +
+    'var t=document.getElementById("supTotal");if(t){if(s){t.style.display="";t.innerHTML="<b>"+SUPS[s]+" 経由 計 "+TOT[s].q+"点 ／ ¥"+Math.round(TOT[s].y).toLocaleString()+"（サロン価格・税抜）</b>";}else{t.style.display="none";}}' +
+    'document.title=BASE+(s?"（"+SUPS[s]+"）":"");}' +
+    'pick("");<\/script>';
   const w = window.open('', '_blank');
-  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(brand)+' サロン振り分け'+(filterSup?'（'+esc(supName)+'）':'')+'</title>' +
+  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(brand)+' サロン振り分け</title>' +
     '<style>body{font-family:"Hiragino Sans",sans-serif;font-size:12px;margin:24px}h1{font-size:16px}h2{font-size:14px;margin:18px 0 6px;border-left:4px solid #333;padding-left:8px}h2 .sub{font-size:11px;font-weight:normal;color:#555}' +
     'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:5px 8px;text-align:left}td.num,th.num{text-align:right;white-space:nowrap}td.chk,th.chk{text-align:center;width:40px;padding:5px 3px}th.chk{font-size:10px}th{background:#f2f2f2;white-space:nowrap}' +
-    '.salon{page-break-inside:avoid;margin-bottom:10px}@page{size:A4 portrait;margin:12mm}@media print{button{display:none}}</style></head><body>' +
+    '.salon{page-break-inside:avoid;margin-bottom:10px}@page{size:A4 portrait;margin:12mm}@media print{button,.no-print{display:none}}</style></head><body>' +
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
-    '<h1>'+esc(brand)+' サロン振り分け表'+(filterSup?'（ディーラー: '+esc(supName)+'）':'')+'（'+today()+'）</h1>' +
-    (filterSup
-      ? '<p>対象受注: '+selIds.join(', ')+' ／ '+esc(supName)+' 経由 計 <b>'+dTotQ+'点 ／ ¥'+Math.round(dTotY).toLocaleString()+'</b>（サロン価格・税抜）'+(r.budget?' ／ 1サロン枠: ¥'+Math.round(r.budget).toLocaleString():'')+'</p>'
-      : '<p>対象受注: '+selIds.join(', ')+' ／ 1サロン枠: ¥'+Math.round(r.budget).toLocaleString()+(r.cap?' ／ 同一商品上限: '+r.cap:'')+(r.supSplit?' ／ 仕入先: サロンごと（各欄に記載）':r.supplier?' ／ 仕入先: '+esc(names[r.supplier]||r.supplier):'')+'</p>') +
-    sections + (filterSup ? '' : outSection + stockSection +
+    toolbar +
+    '<h1>'+esc(brand)+' サロン振り分け表<span id="supTag"></span>（'+today()+'）</h1>' +
+    '<p>対象受注: '+selIds.join(', ')+' ／ 1サロン枠: ¥'+Math.round(r.budget).toLocaleString()+(r.cap?' ／ 同一商品上限: '+r.cap:'')+(r.supSplit?' ／ 仕入先: サロンごと（各欄に記載）':r.supplier?' ／ 仕入先: '+esc(names[r.supplier]||r.supplier):'')+'</p>' +
+    '<p id="supTotal" style="display:none"></p>' +
+    sections + outSection + stockSection +
     (leftovers.length ? '<div class="salon"><h2>配りきれなかった分（余り）</h2><table><tr><th>商品</th><th class="num">余り個数</th></tr>' +
-      leftovers.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+'</td><td class="num">'+x.left+'</td></tr>').join('') + '</table></div>' : '')) +
+      leftovers.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+'</td><td class="num">'+x.left+'</td></tr>').join('') + '</table></div>' : '') +
+    pageScript +
     '</body></html>');
   w.document.close();
 }
 // ✅確定後の再印刷: 回収台帳の確定行から振り分け表を再構成する（ALLOC.result が無くても出せる。2026-07-20 ユーザー要望）
 // 金額=サロン仕入価格（税抜）×個数。外注枠・在庫充当分は回収台帳の行として同じ形式で並ぶ
-function allocPrintDone(brand, kidsCsv, filterSup){
+function allocPrintDone(brand, kidsCsv){
   const kidSet = new Set(String(kidsCsv).split(',').map(s=>s.trim()).filter(Boolean));
-  let lines = rows('collectionLedger').filter(r=>kidSet.has(String(r['回収ID']||'').trim()));
-  // filterSup（仕入先名）指定時はそのディーラー経由の回収だけの確認用PDF（2026-07-29 ユーザー要望）
-  if(filterSup) lines = lines.filter(r=>String(r['仕入先名']||'').trim()===String(filterSup));
-  if(!lines.length){ toast(filterSup?'このディーラー経由の回収が見つかりません':'回収台帳に該当の回収が見つかりません', true); return; }
+  const lines = rows('collectionLedger').filter(r=>kidSet.has(String(r['回収ID']||'').trim()));
+  if(!lines.length){ toast('回収台帳に該当の回収が見つかりません', true); return; }
   const byKid = {};
   lines.forEach(r=>{ const k=String(r['回収ID']).trim(); (byKid[k]=byKid[k]||[]).push(r); });
   const orderIds = [...new Set(lines.flatMap(r=>String(r['対象受注']||'').split(',').map(x=>x.trim()).filter(Boolean)))];
+  const TOT = {};   // 仕入先名 → 総計（印刷ページ内のディーラー別切り替え用 2026-07-29）
   const sections = Object.keys(byKid).sort().map(kid=>{
     const rs = byKid[kid];
     const totalQty = rs.reduce((a,r)=>a+num(r['個数']),0);
     const totalYen = rs.reduce((a,r)=>a+num(r['個数'])*salonCost(r['商品ID']),0);
     const sup = String(rs[0]['仕入先名']||'').trim();
-    return '<div class="salon"><h2>'+esc(rs[0]['サロン名']||'')+' <span class="sub">'+esc(kid)+' ／ 計 '+totalQty+'点 ／ ¥'+Math.round(totalYen).toLocaleString()+'（サロン価格・税抜）'+(sup?' ／ 仕入先: '+esc(sup):'')+'</span></h2>' +
+    if(sup){ TOT[sup]=TOT[sup]||{q:0,y:0}; TOT[sup].q+=totalQty; TOT[sup].y+=totalYen; }
+    return '<div class="salon" data-sup="'+esc(sup)+'"><h2>'+esc(rs[0]['サロン名']||'')+' <span class="sub">'+esc(kid)+' ／ 計 '+totalQty+'点 ／ ¥'+Math.round(totalYen).toLocaleString()+'（サロン価格・税抜）'+(sup?' ／ 仕入先: '+esc(sup):'')+'</span></h2>' +
       '<table><tr><th>商品</th><th class="num">個数</th><th class="num">金額</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
       rs.map(r=>'<tr><td>'+esc(r['商品名'])+' '+esc(r['容量']||'')+'</td><td class="num">'+num(r['個数'])+'</td><td class="num">¥'+Math.round(num(r['個数'])*salonCost(r['商品ID'])).toLocaleString()+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
       '</table></div>';
   }).join('');
+  const sups = Object.keys(TOT);
+  const supMap = {}; sups.forEach(sn=>supMap[sn]=sn);
+  const toolbar = sups.length ? '<div class="no-print" style="margin:10px 0">出力範囲: ' +
+    '<button class="selbtn" data-s="" onclick="pick(\'\')" style="padding:4px 12px">一括（全体）</button>' +
+    sups.map(sn=>'<button class="selbtn" data-s="'+esc(sn)+'" onclick="pick(\''+esc(sn)+'\')" style="padding:4px 12px">'+esc(sn)+'</button>').join('') +
+    '<span style="color:#777;font-size:11px;margin-left:6px">ディーラーを選ぶと、その仕入先分だけ表示・印刷されます</span></div>' : '';
+  const pageScript = '<script>var SUPS='+JSON.stringify(supMap)+';var TOT='+JSON.stringify(TOT)+';var BASE=document.title;' +
+    'function pick(s){' +
+    'document.querySelectorAll(".salon").forEach(function(el){el.style.display=(!s||el.getAttribute("data-sup")===s)?"":"none";});' +
+    'document.querySelectorAll(".selbtn").forEach(function(b){var on=b.getAttribute("data-s")===(s||"");b.style.background=on?"#333":"";b.style.color=on?"#fff":"";});' +
+    'var tag=document.getElementById("supTag");if(tag)tag.textContent=s?"（ディーラー: "+SUPS[s]+"）":"";' +
+    'var t=document.getElementById("supTotal");if(t){if(s){t.style.display="";t.innerHTML="<b>"+SUPS[s]+" 経由 計 "+TOT[s].q+"点 ／ ¥"+Math.round(TOT[s].y).toLocaleString()+"（サロン価格・税抜）</b>";}else{t.style.display="none";}}' +
+    'document.title=BASE+(s?"（"+SUPS[s]+"）":"");}' +
+    'pick("");<\/script>';
   const w = window.open('', '_blank');
-  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(brand)+' サロン振り分け'+(filterSup?'（'+esc(filterSup)+'）':'')+'</title>' +
+  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(brand)+' サロン振り分け</title>' +
     '<style>body{font-family:"Hiragino Sans",sans-serif;font-size:12px;margin:24px}h1{font-size:16px}h2{font-size:14px;margin:18px 0 6px;border-left:4px solid #333;padding-left:8px}h2 .sub{font-size:11px;font-weight:normal;color:#555}' +
     'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:5px 8px;text-align:left}td.num,th.num{text-align:right;white-space:nowrap}td.chk,th.chk{text-align:center;width:40px;padding:5px 3px}th.chk{font-size:10px}th{background:#f2f2f2;white-space:nowrap}' +
-    '.salon{page-break-inside:avoid;margin-bottom:10px}@page{size:A4 portrait;margin:12mm}@media print{button{display:none}}</style></head><body>' +
+    '.salon{page-break-inside:avoid;margin-bottom:10px}@page{size:A4 portrait;margin:12mm}@media print{button,.no-print{display:none}}</style></head><body>' +
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
-    '<h1>'+esc(brand)+' サロン振り分け表'+(filterSup?'（ディーラー: '+esc(filterSup)+'）':'')+'（'+today()+'）</h1>' +
-    '<p>対象受注: '+orderIds.join(', ')+' ／ 回収ID: '+esc(kFmt(kidSet))+'（確定済み・回収台帳から作成）'+(filterSup?' ／ '+esc(filterSup)+' 経由分のみ':'')+'</p>' +
+    toolbar +
+    '<h1>'+esc(brand)+' サロン振り分け表<span id="supTag"></span>（'+today()+'）</h1>' +
+    '<p>対象受注: '+orderIds.join(', ')+' ／ 回収ID: '+esc(kFmt(kidSet))+'（確定済み・回収台帳から作成）</p>' +
+    '<p id="supTotal" style="display:none"></p>' +
     sections +
     '</body></html>');
   w.document.close();
