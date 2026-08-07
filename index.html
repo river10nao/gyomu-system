@@ -3490,6 +3490,10 @@ function allocPrint(){
   const selIds = Object.keys(ALLOC.sel).filter(k=>ALLOC.sel[k]);
   const names = {}; rows('salons').forEach(s=>names[String(s['サロンID']).trim()]=salonLabel(s));
   const sids = r.salonIds;
+  // 仕入掛け率（社内用一括にだけ出す。仕入先へ渡す版では隠す＝2026-08-07 ユーザー指定）
+  const buyRateTxt = pid=>{ const list=num((product(pid)||{})['定価（税抜）']);
+    if(!list) return '—';
+    return Math.round(allocBuyUnit(pid)/list*1000)/10 + '%'; };
   const sections = sids.map(sid=>{
     const lines = r.items.map(i=>({i, qty:num((r.m[sid]||{})[i.pid])})).filter(x=>x.qty>0);
     if(!lines.length) return '';
@@ -3497,8 +3501,8 @@ function allocPrint(){
     const totalYen = lines.reduce((a,x)=>a+x.qty*x.i.price,0);
     const supSid = allocSupOf(r, sid);   // サロン別に仕入先を分けている場合は各セクションに明記
     return '<div class="salon" data-sup="'+esc(supSid)+'"><h2>'+esc(slotName(names, sid))+' <span class="sub">計 '+totalQty+'点 ／ ¥'+Math.round(totalYen).toLocaleString()+'（サロン価格・税抜）'+(r.supSplit&&supSid?' ／ 仕入先: '+esc(names[supSid]||supSid):'')+'</span></h2>' +
-      '<table><tr><th>商品</th><th class="num">個数</th><th class="num">金額</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
-      lines.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+(x.i.unit>1?'（'+x.i.unit+'個/箱）':'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*x.i.price).toLocaleString()+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
+      '<table><tr><th>商品</th><th class="num">個数</th><th class="num">金額</th><th class="num intonly">仕入掛け率</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
+      lines.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+(x.i.unit>1?'（'+x.i.unit+'個/箱）':'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*x.i.price).toLocaleString()+'</td><td class="num intonly">'+buyRateTxt(x.i.pid)+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
       '</table></div>';
   }).join('');
   // 🤝外注仕入枠の分は外注先ごとに独立セクションで出す（外注先への共有・検品チェックにも使える。複数外注先対応 2026-07-18）
@@ -3509,8 +3513,8 @@ function allocPrint(){
     const oname = o.sid ? (names[o.sid]||o.sid) : '（外注先未選択）';
     const omoney = ls.reduce((a,x)=>a+x.qty*allocOutUnit(o.sid,x.i.pid),0);
     return '<div class="salon" data-sup="out:'+esc(o.sid||'')+'"><h2>🤝 外注仕入: '+esc(oname)+' <span class="sub">計 '+ls.reduce((a,x)=>a+x.qty,0)+'点 ／ ¥'+Math.round(omoney).toLocaleString()+'（外注先掛け率・税抜）</span></h2>' +
-    '<table><tr><th>商品</th><th class="num">個数</th><th class="num">金額</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
-    ls.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*allocOutUnit(o.sid,x.i.pid)).toLocaleString()+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
+    '<table><tr><th>商品</th><th class="num">個数</th><th class="num">金額</th><th class="num intonly">仕入掛け率</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
+    ls.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*allocOutUnit(o.sid,x.i.pid)).toLocaleString()+'</td><td class="num intonly">'+buyRateTxt(x.i.pid)+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
     '</table></div>'; }).join('');
   // 📦余剰在庫からの充当分（回収・検品はスキップしてロット処理から始まるため、チェック欄はロットのみ 2026-07-18）
   const stocks = r.stock || [];
@@ -3537,18 +3541,27 @@ function allocPrint(){
   });
   if(stocks.length) RANGES.push({k:'stock', label:'📦 余剰在庫', q:stocks.reduce((a,x)=>a+x.qty,0), y:0, note:'仕入れなし'});
   const TOT = {}; RANGES.forEach(x=>TOT[x.k]={q:x.q, y:x.y, label:x.label, note:x.note});
-  const toolbar = RANGES.length>1 ? '<div class="no-print" style="margin:10px 0">出力範囲: ' +
-    '<button class="selbtn" data-s="" onclick="pick(\'\')" style="padding:4px 12px">一括（全体）</button>' +
-    RANGES.map(x=>'<button class="selbtn" data-s="'+esc(x.k)+'" onclick="pick(\''+esc(x.k)+'\')" style="padding:4px 12px">'+esc(x.label)+'</button>').join('') +
-    '<span style="color:#777;font-size:11px;margin-left:6px">仕入先を選ぶと、その分だけ表示・印刷されます</span></div>' : '';
+  // 送付は仕入先別が既定（社内用一括には仕入掛け率が載るので外部に出さない。2026-08-07 ユーザー指定）。
+  // 仕入先別ボタンを目立たせ、社内用一括はグレーで控えめにする
+  const toolbar = RANGES.length ? '<div class="no-print" style="margin:10px 0">' +
+    '<div style="margin-bottom:5px"><b style="font-size:12px">📤 仕入先へ送る（この単位で出力してください）</b></div>' +
+    RANGES.map(x=>'<button class="selbtn" data-s="'+esc(x.k)+'" onclick="pick(\''+esc(x.k)+'\')" style="padding:6px 16px;margin-right:6px;font-size:13px;font-weight:700;border:2px solid #333;border-radius:6px;background:#fff;cursor:pointer">'+esc(x.label)+'</button>').join('') +
+    '<div style="margin-top:8px">' +
+    '<button class="selbtn" data-s="" onclick="pick(\'\')" style="padding:3px 10px;font-size:11px;color:#888;border:1px solid #ccc;border-radius:5px;background:#f7f7f7;cursor:pointer">社内用一括（仕入掛け率あり）</button>' +
+    '<span style="color:#999;font-size:11px;margin-left:8px">社内用は仕入掛け率が入っています。<b style="color:#c33">仕入先へはそのまま送らないでください</b></span></div></div>' : '';
   const pageScript = '<script>var TOT='+JSON.stringify(TOT)+';var BASE=document.title;' +
     'function pick(s){' +
     'document.querySelectorAll(".salon").forEach(function(el){el.style.display=(!s||el.getAttribute("data-sup")===s)?"":"none";});' +
-    'document.querySelectorAll(".selbtn").forEach(function(b){var on=b.getAttribute("data-s")===(s||"");b.style.background=on?"#333":"";b.style.color=on?"#fff":"";});' +
+    'document.querySelectorAll(".selbtn").forEach(function(b){var on=b.getAttribute("data-s")===(s||"");' +
+    'if(b.getAttribute("data-s")){b.style.background=on?"#333":"#fff";b.style.color=on?"#fff":"#333";}' +
+    'else{b.style.background=on?"#666":"#f7f7f7";b.style.color=on?"#fff":"#888";}});' +
+    // 仕入掛け率の列は社内用一括のときだけ表示（仕入先へ渡す版では隠す）
+    'document.querySelectorAll(".intonly").forEach(function(el){el.style.display=s?"none":"";});' +
+    'var w=document.getElementById("intWarn");if(w)w.style.display=s?"none":"";' +
     'var t=TOT[s];' +
-    'var tag=document.getElementById("supTag");if(tag)tag.textContent=t?"（"+t.label+"）":"";' +
+    'var tag=document.getElementById("supTag");if(tag)tag.textContent=t?"（"+t.label+"）":"（社内用）";' +
     'var el=document.getElementById("supTotal");if(el){if(t){el.style.display="";el.innerHTML="<b>"+t.label+" 計 "+t.q+"点"+(t.y?" ／ ¥"+Math.round(t.y).toLocaleString()+"（"+t.note+"）":"（"+t.note+"）")+"</b>";}else{el.style.display="none";}}' +
-    'document.title=BASE+(t?"（"+t.label.replace(/^[^ ]+ /,"")+"）":"");}' +
+    'document.title=BASE+(t?"（"+t.label.replace(/^[^ ]+ /,"")+"）":"（社内用）");}' +
     'pick("");<\/script>';
   const w = window.open('', '_blank');
   w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(brand)+' サロン振り分け</title>' +
@@ -3558,6 +3571,8 @@ function allocPrint(){
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
     toolbar +
     '<h1>'+esc(brand)+' サロン振り分け表<span id="supTag"></span>（'+today()+'）</h1>' +
+    // 社内用（仕入掛け率つき）で印刷したときに、紙・PDFにもその旨が残るようにする
+    '<p id="intWarn" style="display:none;margin:0 0 8px;padding:4px 10px;border-left:4px solid #c33;background:#fdf2f2;color:#c33;font-size:11px"><b>社内用</b>（仕入掛け率を含みます。仕入先への送付には仕入先別で出力してください）</p>' +
     '<p>対象受注: '+selIds.join(', ')+' ／ 1サロン枠: ¥'+Math.round(r.budget).toLocaleString()+(r.cap?' ／ 同一商品上限: '+r.cap:'')+(r.supSplit?' ／ 仕入先: サロンごと（各欄に記載）':r.supplier?' ／ 仕入先: '+esc(names[r.supplier]||r.supplier):'')+'</p>' +
     '<p id="supTotal" style="display:none"></p>' +
     sections + outSection + stockSection +
