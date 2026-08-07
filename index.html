@@ -3548,7 +3548,7 @@ function allocPrint(){
     RANGES.map(x=>'<button class="selbtn" data-s="'+esc(x.k)+'" onclick="pick(\''+esc(x.k)+'\')" style="padding:6px 16px;margin-right:6px;font-size:13px;font-weight:700;border:2px solid #333;border-radius:6px;background:#fff;cursor:pointer">'+esc(x.label)+'</button>').join('') +
     '<div style="margin-top:8px">' +
     '<button class="selbtn" data-s="" onclick="pick(\'\')" style="padding:3px 10px;font-size:11px;color:#888;border:1px solid #ccc;border-radius:5px;background:#f7f7f7;cursor:pointer">社内用一括（仕入掛け率あり）</button>' +
-    '<span style="color:#999;font-size:11px;margin-left:8px">社内用は仕入掛け率が入っています。<b style="color:#c33">仕入先へはそのまま送らないでください</b></span></div></div>' : '';
+    '<span style="color:#999;font-size:11px;margin-left:8px">社内用は仕入掛け率つき・全仕入先まとめて表示されます</span></div></div>' : '';
   const pageScript = '<script>var TOT='+JSON.stringify(TOT)+';var BASE=document.title;' +
     'function pick(s){' +
     'document.querySelectorAll(".salon").forEach(function(el){el.style.display=(!s||el.getAttribute("data-sup")===s)?"":"none";});' +
@@ -3571,8 +3571,8 @@ function allocPrint(){
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
     toolbar +
     '<h1>'+esc(brand)+' サロン振り分け表<span id="supTag"></span>（'+today()+'）</h1>' +
-    // 社内用（仕入掛け率つき）で印刷したときに、紙・PDFにもその旨が残るようにする
-    '<p id="intWarn" style="display:none;margin:0 0 8px;padding:4px 10px;border-left:4px solid #c33;background:#fdf2f2;color:#c33;font-size:11px"><b>社内用</b>（仕入掛け率を含みます。仕入先への送付には仕入先別で出力してください）</p>' +
+    // 社内用（仕入掛け率つき・全仕入先まとめ）で印刷したときに、紙・PDFにもどちらの版か残るようにする
+    '<p id="intWarn" style="display:none;margin:0 0 8px;color:#777;font-size:11px">社内用（仕入掛け率つき・全仕入先まとめ）</p>' +
     '<p>対象受注: '+selIds.join(', ')+' ／ 1サロン枠: ¥'+Math.round(r.budget).toLocaleString()+(r.cap?' ／ 同一商品上限: '+r.cap:'')+(r.supSplit?' ／ 仕入先: サロンごと（各欄に記載）':r.supplier?' ／ 仕入先: '+esc(names[r.supplier]||r.supplier):'')+'</p>' +
     '<p id="supTotal" style="display:none"></p>' +
     sections + outSection + stockSection +
