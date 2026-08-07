@@ -3090,10 +3090,38 @@ function allocBuyRateEdited(supSid){      // 今回だけ上書きされてい�
 }
 // 仕入先 supSid から商品 pid を仕入れるときの単価。率が引けない仕入先は商品マスタのAXIA仕入価格
 function allocBuyUnit(pid, supSid){
+  // 商品単位の上書きが最優先（ポンプのように1品だけ掛け率の構造が違う商品向け。2026-08-07 ユーザー要望）
+  const ov = allocItemUnitOf(pid, supSid);
+  if(ov!=null) return ov;
   const rate = allocBuyRateOf(supSid);
   const list = num((product(pid)||{})['定価（税抜）']);
   if(rate!=null && list) return Math.round(list*rate/100);
   return num((product(pid)||{})['AXIA仕入価格（税抜）']);
+}
+// 商品×仕入先の単価上書き。正本は「単価」で持ち、掛け率は定価から逆算して表示する
+// （率と単価の二重管理を避ける）。conf.buyItem = { '仕入先ID|商品ID': 単価 }
+function allocItemKey_(pid, supSid){ return String(supSid||'')+'|'+String(pid||''); }
+function allocItemUnitOf(pid, supSid){
+  const m = (ALLOC.conf[ALLOC.brand]||{}).buyItem||{};
+  const v = m[allocItemKey_(pid, supSid)];
+  return (v==='' || v==null || isNaN(num(v))) ? null : num(v);
+}
+function allocSetItemUnit(supSid, pid, v){        // 単価を直接入れる
+  const c = ALLOC.conf[ALLOC.brand]=ALLOC.conf[ALLOC.brand]||{};
+  const m = c.buyItem = c.buyItem||{};
+  if(v==='' || v==null) delete m[allocItemKey_(pid,supSid)];
+  else m[allocItemKey_(pid,supSid)] = Math.round(num(v));
+  allocDualInvalidate();
+}
+function allocSetItemRate(supSid, pid, v){        // 掛け率で入れる（定価×率 を単価として保存）
+  const list = num((product(pid)||{})['定価（税抜）']);
+  if(v==='' || v==null || !list) return allocSetItemUnit(supSid, pid, '');
+  allocSetItemUnit(supSid, pid, Math.round(list*num(v)/100));
+}
+function allocItemRateTxt(pid, supSid){           // 表示用の掛け率（%）
+  const list = num((product(pid)||{})['定価（税抜）']);
+  if(!list) return '';
+  return Math.round(allocBuyUnit(pid, supSid)/list*1000)/10;
 }
 // 各グループの仕入先ディーラーを解決する。「（自動判定）」でグループの sup が空のときは
 // allocCalc と同じ規則（ブランドの扱いディーラーをグループ順に割り当て）で補う
@@ -3412,11 +3440,24 @@ function vAllocation(){
             '<td class="num"><input type="number" step="0.1" value="'+esc(rate==null?'':rate)+'" onchange="allocBuyRate(\''+esc(x.sid)+'\',this.value)" placeholder="未設定" style="width:92px;text-align:right"></td>' +
             '<td class="num small">'+yen(sum)+'</td>' +
             '<td class="small">'+(edited?'<button class="btn sm" onclick="allocBuyRate(\''+esc(x.sid)+'\',\'\')">↩ 既定に戻す</button>':'') +
-            // 該当商品は畳まずに出す（title だけだとマウスを乗せないと分からない＝2026-08-07 ユーザー指摘）
-            (under.length?'<div class="small" style="color:var(--s4);margin-top:2px">⚠ この率だとマスタの仕入値を下回ります（率の確認を）</div>' +
-              '<div class="muted small" style="margin-top:1px">' +
-              under.map(i=>esc(i.name)+' '+esc(i.size||'')+'：この率 '+yen(allocBuyUnit(i.pid,x.sid))+' ／ マスタ仕入 '+yen(allocBuyUnder(i.pid,x.sid))).join('<br>') +
-              '</div>':'')+'</td></tr>'; }).join('') +
+            // 該当商品は畳まずに出し、その商品だけ掛け率／単価を直せるようにする（2026-08-07 ユーザー要望）。
+            // 上書きが入っている商品は警告が消えても行を残す（あとから直せるように）
+            (()=>{ const ovIds = Object.keys((conf.buyItem||{}))
+                .filter(k=>k.indexOf(String(x.sid)+'|')===0).map(k=>k.split('|')[1]);
+              const rowsI = items.filter(i=>allocBuyUnder(i.pid,x.sid) || ovIds.indexOf(i.pid)>=0);
+              if(!rowsI.length) return '';
+              return (under.length?'<div class="small" style="color:var(--s4);margin-top:3px">⚠ この率だとマスタの仕入値を下回ります（下で商品ごとに直せます）</div>':'') +
+                '<table style="margin-top:3px;width:auto"><tr><th>商品</th><th class="num">掛け率(%)</th><th class="num">仕入単価</th><th class="num">マスタ仕入</th><th></th></tr>' +
+                rowsI.map(i=>{ const ov=allocItemUnitOf(i.pid,x.sid)!=null; const mst=num((product(i.pid)||{})['AXIA仕入価格（税抜）']);
+                  const bad=allocBuyUnder(i.pid,x.sid);
+                  return '<tr><td class="small">'+esc(i.name)+' '+esc(i.size||'')+'</td>' +
+                    '<td class="num"><input type="number" step="0.1" value="'+esc(allocItemRateTxt(i.pid,x.sid))+'" onchange="allocSetItemRate(\''+esc(x.sid)+'\',\''+esc(i.pid)+'\',this.value)" style="width:78px;text-align:right"></td>' +
+                    '<td class="num"><input type="number" value="'+allocBuyUnit(i.pid,x.sid)+'" onchange="allocSetItemUnit(\''+esc(x.sid)+'\',\''+esc(i.pid)+'\',this.value)" style="width:88px;text-align:right'+(bad?';border-color:var(--s4)':'')+'"></td>' +
+                    '<td class="num small muted">'+yen(mst)+'</td>' +
+                    '<td class="small">'+(ov?'<button class="btn sm" onclick="allocSetItemUnit(\''+esc(x.sid)+'\',\''+esc(i.pid)+'\',\'\')">↩</button>':'')+'</td></tr>'; }).join('') +
+                '</table>' +
+                '<div class="muted small">掛け率か単価のどちらかを入れれば、その商品だけこの仕入先での仕入値になります（今回の振り分けだけ・マスタは変わりません）</div>'; })() +
+            '</td></tr>'; }).join('') +
         '</table>' +
         '<p class="muted small" style="margin:5px 0 0">率が空欄の仕入先は商品マスタのAXIA仕入価格で計算します。'+
         '仕入額はこの率で全量を仕入れた場合の概算（実際の配分での確定値は③）。参考: サロン価の合計 '+yen(salonSum)+'</p>' +
