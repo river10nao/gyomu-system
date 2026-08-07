@@ -3111,7 +3111,9 @@ function allocSetItemUnit(supSid, pid, v){        // 単価を直接入れる
   const m = c.buyItem = c.buyItem||{};
   if(v==='' || v==null) delete m[allocItemKey_(pid,supSid)];
   else m[allocItemKey_(pid,supSid)] = Math.round(num(v));
-  allocDualInvalidate();
+  // 単価の上書きは配る数量を変えない（金額の見え方だけ）ので、計算済みの割り振りは壊さない。
+  // 手で調整した数量を守るため、あえて allocDualInvalidate は呼ばない（2026-08-07 ユーザー要望）
+  render();
 }
 function allocSetItemRate(supSid, pid, v){        // 掛け率で入れる（定価×率 を単価として保存）
   const list = num((product(pid)||{})['定価（税抜）']);
@@ -3141,6 +3143,8 @@ function allocBuyUnder(pid, supSid){
 }
 // 外注先の仕入単価: 外注先の掛け率×定価。率が無いブランドはサロン仕入価格で近似
 function allocOutUnit(sid, pid){
+  const ov = allocItemUnitOf(pid, sid);      // 商品単位の上書きは外注の単価にも効かせる
+  if(ov!=null) return ov;
   const rate = allocBuyRateOf(sid);
   const list = num((product(pid)||{})['定価（税抜）']);
   return (rate!=null && list) ? Math.round(list*rate/100) : salonCost(pid);
@@ -3456,7 +3460,7 @@ function vAllocation(){
                     '<td class="num small muted">'+yen(mst)+'</td>' +
                     '<td class="small">'+(ov?'<button class="btn sm" onclick="allocSetItemUnit(\''+esc(x.sid)+'\',\''+esc(i.pid)+'\',\'\')">↩</button>':'')+'</td></tr>'; }).join('') +
                 '</table>' +
-                '<div class="muted small">掛け率か単価のどちらかを入れれば、その商品だけこの仕入先での仕入値になります（今回の振り分けだけ・マスタは変わりません）</div>'; })() +
+                '<div class="muted small">掛け率か単価のどちらかを入れれば、その商品だけこの仕入先での仕入値になります（今回の振り分けだけ・マスタは変わりません）。金額の計算だけが変わり、割り振り済みの数量はそのままです</div>'; })() +
             '</td></tr>'; }).join('') +
         '</table>' +
         '<p class="muted small" style="margin:5px 0 0">率が空欄の仕入先は商品マスタのAXIA仕入価格で計算します。'+
