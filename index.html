@@ -2905,6 +2905,28 @@ function allocGroups(){
   return ALLOC.groups;
 }
 function allocToggleSalon(gi, id, on){ allocGroups()[gi].sel[id]=on; render(); }
+// 振り分け先サロンの候補（自社サロンのみ・ストップ中は除く）。描画と一括選択で同じ母集団を使う
+function allocSalonPool(){
+  const stopIds = new Set(rows('salons').filter(s=>String(s['ストップ']||'').trim()!=='').map(s=>String(s['サロンID']).trim()));
+  return rows('salons').filter(s=>String(s['サロンID']||'').trim())
+    .filter(s=>['サロン',''].includes(String(s['種別']||'').trim()))
+    .filter(s=>!stopIds.has(String(s['サロンID']).trim()));
+}
+// グループ gi の検索欄で絞り込んだ後の一覧（＝画面に出ているサロン）
+function allocSalonListOf(gi){
+  const q = (ALLOC.qg||{})[gi]||'';
+  return allocSalonPool().filter(s=>!q || (salonLabel(s)+s['サロンID']).includes(q));
+}
+// 表示中のサロンをまとめて選択／解除（2026-08-07 ユーザー要望）。
+// 対象は「今画面に出ている分」だけ＝検索で絞ってから押せば、そのグループだけまとめて選べる。
+// 検索が空なら全サロンが対象（＝純粋な全選択／全解除）
+function allocSelectAll(gi, on){
+  const g = allocGroups()[gi]; if(!g) return;
+  g.sel = g.sel || {};
+  allocSalonListOf(gi).forEach(s=>{ const sid=String(s['サロンID']).trim();
+    if(on) g.sel[sid]=true; else delete g.sel[sid]; });
+  allocDualInvalidate();   // 選択が大きく変わるので計算結果は破棄して押し直してもらう
+}
 function allocGroupSup(gi, v){ allocGroups()[gi].sup=v; render(); }
 function allocGroupAdd(){ allocGroups().push({sup:'', sel:{}}); render(); }
 function allocGroupDel(gi){ allocGroups().splice(gi,1); allocDualInvalidate(); }
@@ -3073,8 +3095,14 @@ function allocBuyUnit(pid, supSid){
   if(rate!=null && list) return Math.round(list*rate/100);
   return num((product(pid)||{})['AXIA仕入価格（税抜）']);
 }
+// 各グループの仕入先ディーラーを解決する。「（自動判定）」でグループの sup が空のときは
+// allocCalc と同じ規則（ブランドの扱いディーラーをグループ順に割り当て）で補う
+function allocResolvedSups(brand){
+  const cands = allocBrandDealers(brand || ALLOC.brand);
+  return allocGroups().map((g, gi)=> String(g.sup||'').trim() || cands[gi] || cands[0] || '');
+}
 // 主たる仕入先（率が引けないときのフォールバック用）= 最初のグループのディーラー
-function allocMainSup(){ return (allocGroups().find(g=>String(g.sup||'').trim())||{}).sup || ''; }
+function allocMainSup(){ return allocResolvedSups(ALLOC.brand).find(Boolean) || ''; }
 // 仕入値割れの検知（価格は変えず警告だけ・2026-08-07 ユーザー指定）:
 // 計算した仕入単価が商品マスタのAXIA仕入価格を下回ったら、率の入れ忘れの可能性が高い
 function allocBuyUnder(pid, supSid){
@@ -3266,9 +3294,8 @@ function vAllocation(){
   // ストップ中のサロンは候補から外す（選択済みに残っていても外す）
   const stopIds = new Set(rows('salons').filter(s=>String(s['ストップ']||'').trim()!=='').map(s=>String(s['サロンID']).trim()));
   allocGroups().forEach(g=>Object.keys(g.sel||{}).forEach(sid=>{ if(stopIds.has(sid)) delete g.sel[sid]; }));
-  const salonPool = rows('salons').filter(s=>String(s['サロンID']||'').trim())
-    .filter(s=>['サロン',''].includes(String(s['種別']||'').trim()))   // 振り分け先は自社サロンのみ（ディーラー/外注は候補に出さない。2026-07-18）
-    .filter(s=>!stopIds.has(String(s['サロンID']).trim()));
+  // 振り分け先の候補は allocSalonPool()（自社サロンのみ・ストップ中は除く）。
+  // 一括選択と同じ母集団を使うため関数側に集約している（2026-08-07）
   const dealerRows = rows('salons').filter(s=>String(s['種別']||'').trim()==='ディーラー' && String(s['サロンID']||'').trim() && String(s['ストップ']||'').trim()==='');
   const brandCands = allocBrandDealers(brand);
   // 連携ディーラーがあるサロンは「サロン名（連携先名）」と表示（マスタ「連携ディーラー」列=紐づく相手のサロンID。2026-07-18 ユーザー要望）
@@ -3335,16 +3362,21 @@ function vAllocation(){
     allocGroups().map((g,gi)=>{
       const selCnt = Object.keys(g.sel||{}).filter(k=>g.sel[k]).length;
       const gq = (ALLOC.qg||{})[gi]||'';
-      const list = salonPool.filter(s=>!gq || (salonLabel(s)+s['サロンID']).includes(gq));
+      const list = allocSalonListOf(gi);
       const multi = allocGroups().length>1;
+      const shownOn = list.filter(s=>(g.sel||{})[String(s['サロンID']).trim()]).length;   // 表示中のうち選択済み
       return '<div style="margin-top:10px;padding:10px 12px;background:var(--wash);border-radius:10px">' +
         '<div class="row" style="align-items:center"><b class="small">割り振り先サロン'+(multi?'（グループ'+(gi+1)+'）':'')+'（'+selCnt+'軒選択中・毎回選ぶ）</b>' +
         '<label class="small">🏭 仕入先ディーラー <select onchange="allocGroupSup('+gi+',this.value)">' +
         '<option value="">（自動判定'+(brandCands.length?': '+esc(brandCands.map(sid=>{const d=dealerRows.find(x=>String(x['サロンID']).trim()===sid);return d?salonLabel(d):sid;})[Math.min(gi,brandCands.length-1)]):'')+'）</option>' +
         dealerRows.map(s=>{ const sid=String(s['サロンID']).trim(); return '<option value="'+sid+'" '+(g.sup===sid?'selected':'')+'>'+esc(salonLabel(s))+'</option>'; }).join('') + '</select></label>' +
         '<input class="search" placeholder="サロン名で絞る" value="'+esc(gq)+'"'+searchAttrs('allocg'+gi)+' style="max-width:200px">' +
+        // 表示中をまとめて選択／解除（検索で絞ってから押せば、その分だけまとめて選べる）
+        '<button class="btn sm" onclick="allocSelectAll('+gi+',true)"'+(shownOn>=list.length&&list.length?' disabled style="opacity:.5"':'')+'>☑ '+(gq?'表示中':'全')+'を選択'+(list.length?'（'+list.length+'軒）':'')+'</button>' +
+        '<button class="btn sm" onclick="allocSelectAll('+gi+',false)"'+(!shownOn?' disabled style="opacity:.5"':'')+'>☐ '+(gq?'表示中を':'')+'解除</button>' +
         (gi>0?'<button class="btn sm" style="margin-left:auto" onclick="allocGroupDel('+gi+')">🗑 このグループを削除</button>':'') +
         '</div>' +
+        (gq?'<div class="muted small" style="margin-top:4px">「'+esc(gq)+'」で絞り込み中（'+list.length+'軒表示・うち'+shownOn+'軒選択済み）。ボタンは表示中のサロンにだけ効きます</div>':'') +
         '<div style="margin-top:6px;max-height:170px;overflow:auto;display:flex;flex-wrap:wrap;gap:4px">' +
         list.map(s=>{ const sid=String(s['サロンID']).trim(); const on=(g.sel||{})[sid];
           return '<label class="pill" style="cursor:pointer;background:'+(on?'color-mix(in srgb,var(--s1) 20%, transparent)':'var(--wash)')+'"><input type="checkbox" '+(on?'checked':'')+' onclick="allocToggleSalon('+gi+',\''+sid+'\',this.checked)" style="width:14px;height:14px;vertical-align:-2px"> '+esc(salonLabel(s))+esc(linkTag(s))+'</label>'; }).join('') +
@@ -3356,11 +3388,15 @@ function vAllocation(){
     // 上書きは今回の振り分けだけに効く（マスタは書き換えない＝入数（箱）と同じ扱い）
     (()=>{ // 仕入先ごとに掛け率が違うので、仕入先（ディーラー＋外注先）を並べてそれぞれ触れるようにする
       const list = [];
-      [...new Set(allocGroups().map(g=>String(g.sup||'').trim()).filter(Boolean))].forEach(sid=>list.push({sid, tag:'🏭'}));
+      // ディーラーは「（自動判定）」のままだと g.sup が空なので、計算時と同じ規則で解決してから並べる
+      // （解決しないと自動判定のディーラーが率の表に出てこない＝2026-08-07 ユーザー指摘）
+      allocResolvedSups(brand).forEach(sid=>{ if(sid && !list.some(x=>x.sid===sid)) list.push({sid, tag:'🏭'}); });
       if(allocMode!=='own') (conf.outs||[]).forEach(o=>{ const sid=String(o.sid||'').trim();
         if(sid && !list.some(x=>x.sid===sid)) list.push({sid, tag:'🤝'}); });
-      if(!list.length) return '';
-      const nameOf = sid=>{ const s=rows('salons').find(x=>String(x['サロンID']).trim()===sid); return s?salonLabel(s):sid; };
+      // 仕入先が1つも決まっていない場合も、どの単価で計算しているかは見せる
+      if(!list.length) list.push({sid:'', tag:'🏭', unset:true});
+      const nameOf = sid=>{ if(!sid) return '（仕入先未選択）';
+        const s=rows('salons').find(x=>String(x['サロンID']).trim()===sid); return s?salonLabel(s):sid; };
       const salonSum = items.reduce((a,i)=>a+i.need*i.price, 0);
       return '<div style="margin-top:10px;padding:10px 12px;background:var(--wash);border-radius:10px">' +
         '<div class="row"><b class="small">💴 仕入掛け率（仕入先ごと）</b>' +
@@ -3376,7 +3412,11 @@ function vAllocation(){
             '<td class="num"><input type="number" step="0.1" value="'+esc(rate==null?'':rate)+'" onchange="allocBuyRate(\''+esc(x.sid)+'\',this.value)" placeholder="未設定" style="width:92px;text-align:right"></td>' +
             '<td class="num small">'+yen(sum)+'</td>' +
             '<td class="small">'+(edited?'<button class="btn sm" onclick="allocBuyRate(\''+esc(x.sid)+'\',\'\')">↩ 既定に戻す</button>':'') +
-            (under.length?'<span style="color:var(--s4)" title="'+esc(under.map(i=>i.name+'（マスタ仕入 '+yen(allocBuyUnder(i.pid,x.sid))+'）').join('／'))+'"> ⚠ '+under.length+'品がマスタの仕入値を下回っています（率の確認を）</span>':'')+'</td></tr>'; }).join('') +
+            // 該当商品は畳まずに出す（title だけだとマウスを乗せないと分からない＝2026-08-07 ユーザー指摘）
+            (under.length?'<div class="small" style="color:var(--s4);margin-top:2px">⚠ この率だとマスタの仕入値を下回ります（率の確認を）</div>' +
+              '<div class="muted small" style="margin-top:1px">' +
+              under.map(i=>esc(i.name)+' '+esc(i.size||'')+'：この率 '+yen(allocBuyUnit(i.pid,x.sid))+' ／ マスタ仕入 '+yen(allocBuyUnder(i.pid,x.sid))).join('<br>') +
+              '</div>':'')+'</td></tr>'; }).join('') +
         '</table>' +
         '<p class="muted small" style="margin:5px 0 0">率が空欄の仕入先は商品マスタのAXIA仕入価格で計算します。'+
         '仕入額はこの率で全量を仕入れた場合の概算（実際の配分での確定値は③）。参考: サロン価の合計 '+yen(salonSum)+'</p>' +
@@ -3420,7 +3460,10 @@ function vAllocation(){
         '<td class="num"><b>'+yen(money)+'</b>'+(num(o.budget)&&money>num(o.budget)?' <span class="small" style="color:var(--crit)">⚠枠超過</span>':'') +
         // 定価×外注率がAXIA仕入値を下回った商品は仕入値を単価に使っている（赤字防止・2026-08-07）
         (()=>{ const un=r.items.filter(i=>num((o.q||{})[i.pid])>0 && allocBuyUnder(i.pid,o.sid));
-          return un.length ? '<br><span class="small" style="color:var(--s4)" title="'+esc(un.map(i=>i.name+'（マスタ仕入 '+yen(allocBuyUnder(i.pid,o.sid))+'）').join('／'))+'">⚠ '+un.length+'品がマスタの仕入値を下回っています（率の確認を）</span>' : ''; })() +
+          return un.length ? '<div class="small" style="color:var(--s4);margin-top:2px">⚠ この率だとマスタの仕入値を下回ります（率の確認を）</div>' +
+            '<div class="muted small">' +
+            un.map(i=>esc(i.name)+' '+esc(i.size||'')+'：この率 '+yen(allocBuyUnit(i.pid,o.sid))+' ／ マスタ仕入 '+yen(allocBuyUnder(i.pid,o.sid))).join('<br>') +
+            '</div>' : ''; })() +
         '</td>' +
         '<td><button class="btn sm" onclick="allocOutFill('+gi+')">🔁 余りをここへ（枠まで）</button></td></tr>'; }).join('') +
       '</table></div>' : '') +
