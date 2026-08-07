@@ -3508,35 +3508,47 @@ function allocPrint(){
     if(!ls.length) return '';
     const oname = o.sid ? (names[o.sid]||o.sid) : '（外注先未選択）';
     const omoney = ls.reduce((a,x)=>a+x.qty*allocOutUnit(o.sid,x.i.pid),0);
-    return '<div class="salon"><h2>🤝 外注仕入: '+esc(oname)+' <span class="sub">計 '+ls.reduce((a,x)=>a+x.qty,0)+'点 ／ ¥'+Math.round(omoney).toLocaleString()+'（外注先掛け率・税抜）</span></h2>' +
+    return '<div class="salon" data-sup="out:'+esc(o.sid||'')+'"><h2>🤝 外注仕入: '+esc(oname)+' <span class="sub">計 '+ls.reduce((a,x)=>a+x.qty,0)+'点 ／ ¥'+Math.round(omoney).toLocaleString()+'（外注先掛け率・税抜）</span></h2>' +
     '<table><tr><th>商品</th><th class="num">個数</th><th class="num">金額</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
     ls.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*allocOutUnit(o.sid,x.i.pid)).toLocaleString()+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
     '</table></div>'; }).join('');
   // 📦余剰在庫からの充当分（回収・検品はスキップしてロット処理から始まるため、チェック欄はロットのみ 2026-07-18）
   const stocks = r.stock || [];
-  const stockSection = stocks.length ? '<div class="salon"><h2>📦 余剰在庫から充当 <span class="sub">計 '+stocks.reduce((a,x)=>a+x.qty,0)+'点（仕入れなし・手元在庫から出荷）</span></h2>' +
+  const stockSection = stocks.length ? '<div class="salon" data-sup="stock"><h2>📦 余剰在庫から充当 <span class="sub">計 '+stocks.reduce((a,x)=>a+x.qty,0)+'点（仕入れなし・手元在庫から出荷）</span></h2>' +
     '<table><tr><th>商品</th><th>引当元ロット</th><th class="num">個数</th><th class="chk">ロット✓</th></tr>' +
     stocks.map(x=>'<tr><td>'+esc(x.name)+' '+esc(x.size||'')+'</td><td>'+esc(x.zid)+'</td><td class="num">'+x.qty+'</td><td class="chk">□</td></tr>').join('') +
     '</table></div>' : '';
   const outQtyOf = pid=>routs.reduce((a,o)=>a+num((o.q||{})[pid]),0);
   const leftovers = r.items.map(i=>({i, left:i.need - r.salonIds.reduce((a,s)=>a+num((r.m[s]||{})[i.pid]),0) - outQtyOf(i.pid)})).filter(x=>x.left>0);
-  // 印刷ページ内切り替え用: 仕入先ディーラー一覧と、ディーラー別の総計（点数・金額）を先に計算して埋め込む
-  const sups = [...new Set(sids.map(s=>allocSupOf(r,s)).filter(Boolean))];
-  const supMap = {}; sups.forEach(sid=>supMap[sid]=names[sid]||sid);
-  const TOT = {}; sups.forEach(sid=>TOT[sid]={q:0,y:0});
-  sids.forEach(sid=>{ const sup=allocSupOf(r,sid); if(!TOT[sup]) return;
-    r.items.forEach(i=>{ const v=num((r.m[sid]||{})[i.pid]); TOT[sup].q+=v; TOT[sup].y+=v*i.price; }); });
-  const toolbar = sups.length ? '<div class="no-print" style="margin:10px 0">出力範囲: ' +
+  // 印刷ページ内切り替え用の「出力範囲」（2026-08-07 ユーザー要望で 仕入先ごと に拡張）。
+  // ディーラー（サロンぶん）だけでなく、外注先・余剰在庫も個別に出せるようにする
+  // （例: 神澤さんの分だけ渡したい）。キー: ディーラー=サロンID / 外注先='out:'+ID / 在庫='stock'
+  const RANGES = [];
+  [...new Set(sids.map(s=>allocSupOf(r,s)).filter(Boolean))].forEach(sid=>{
+    let q=0, y=0;
+    sids.filter(s=>allocSupOf(r,s)===sid).forEach(s=>r.items.forEach(i=>{ const v=num((r.m[s]||{})[i.pid]); q+=v; y+=v*i.price; }));
+    RANGES.push({k:sid, label:(names[sid]||sid), q, y, note:'サロン価格・税抜'});
+  });
+  routs.forEach(o=>{
+    const q = r.items.reduce((a,i)=>a+num((o.q||{})[i.pid]), 0);
+    if(!q) return;
+    const y = r.items.reduce((a,i)=>a+num((o.q||{})[i.pid])*allocOutUnit(o.sid,i.pid), 0);
+    RANGES.push({k:'out:'+(o.sid||''), label:'🤝 '+(o.sid?(names[o.sid]||o.sid):'外注先未選択'), q, y, note:'外注先掛け率・税抜'});
+  });
+  if(stocks.length) RANGES.push({k:'stock', label:'📦 余剰在庫', q:stocks.reduce((a,x)=>a+x.qty,0), y:0, note:'仕入れなし'});
+  const TOT = {}; RANGES.forEach(x=>TOT[x.k]={q:x.q, y:x.y, label:x.label, note:x.note});
+  const toolbar = RANGES.length>1 ? '<div class="no-print" style="margin:10px 0">出力範囲: ' +
     '<button class="selbtn" data-s="" onclick="pick(\'\')" style="padding:4px 12px">一括（全体）</button>' +
-    sups.map(sid=>'<button class="selbtn" data-s="'+esc(sid)+'" onclick="pick(\''+esc(sid)+'\')" style="padding:4px 12px">'+esc(supMap[sid])+'</button>').join('') +
-    '<span style="color:#777;font-size:11px;margin-left:6px">ディーラーを選ぶと、その仕入先分だけ表示・印刷されます</span></div>' : '';
-  const pageScript = '<script>var SUPS='+JSON.stringify(supMap)+';var TOT='+JSON.stringify(TOT)+';var BASE=document.title;' +
+    RANGES.map(x=>'<button class="selbtn" data-s="'+esc(x.k)+'" onclick="pick(\''+esc(x.k)+'\')" style="padding:4px 12px">'+esc(x.label)+'</button>').join('') +
+    '<span style="color:#777;font-size:11px;margin-left:6px">仕入先を選ぶと、その分だけ表示・印刷されます</span></div>' : '';
+  const pageScript = '<script>var TOT='+JSON.stringify(TOT)+';var BASE=document.title;' +
     'function pick(s){' +
     'document.querySelectorAll(".salon").forEach(function(el){el.style.display=(!s||el.getAttribute("data-sup")===s)?"":"none";});' +
     'document.querySelectorAll(".selbtn").forEach(function(b){var on=b.getAttribute("data-s")===(s||"");b.style.background=on?"#333":"";b.style.color=on?"#fff":"";});' +
-    'var tag=document.getElementById("supTag");if(tag)tag.textContent=s?"（ディーラー: "+SUPS[s]+"）":"";' +
-    'var t=document.getElementById("supTotal");if(t){if(s){t.style.display="";t.innerHTML="<b>"+SUPS[s]+" 経由 計 "+TOT[s].q+"点 ／ ¥"+Math.round(TOT[s].y).toLocaleString()+"（サロン価格・税抜）</b>";}else{t.style.display="none";}}' +
-    'document.title=BASE+(s?"（"+SUPS[s]+"）":"");}' +
+    'var t=TOT[s];' +
+    'var tag=document.getElementById("supTag");if(tag)tag.textContent=t?"（"+t.label+"）":"";' +
+    'var el=document.getElementById("supTotal");if(el){if(t){el.style.display="";el.innerHTML="<b>"+t.label+" 計 "+t.q+"点"+(t.y?" ／ ¥"+Math.round(t.y).toLocaleString()+"（"+t.note+"）":"（"+t.note+"）")+"</b>";}else{el.style.display="none";}}' +
+    'document.title=BASE+(t?"（"+t.label.replace(/^[^ ]+ /,"")+"）":"");}' +
     'pick("");<\/script>';
   const w = window.open('', '_blank');
   w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(brand)+' サロン振り分け</title>' +
