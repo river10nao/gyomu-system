@@ -2916,7 +2916,11 @@ function allocStockLots(items){   // このブランドの商品の引き当て�
 }
 function allocConf(k, v){ const c=ALLOC.conf[ALLOC.brand]=ALLOC.conf[ALLOC.brand]||{}; c[k]=v; }
 // 仕入掛け率（%）の上書き。今回の振り分けだけに効く（マスタは書き換えない。2026-08-07 ユーザー指定）
-function allocBuyRate(v){ allocConf('buyRate', v); allocDualInvalidate(); }
+function allocBuyRate(supSid, v){
+  const c = ALLOC.conf[ALLOC.brand]=ALLOC.conf[ALLOC.brand]||{};
+  (c.buyRates=c.buyRates||{})[String(supSid||'')] = v;
+  allocDualInvalidate();
+}
 // 2社仕入れ（2026-07-18 ユーザー要望）: 仕入枠の「1サロン20万」はディーラー1社あたり。
 // 2社使えるブランドは、同じサロンに「2枠目」（別ディーラー経由・枠も別）を作って倍まで仕入れられる。
 // スロットID = サロンID（1枠目）/ サロンID#2（2枠目）。台帳に書くときは #2 を外して同じサロンとして記帳する
@@ -3042,42 +3046,48 @@ function allocOutCell(pid, idx, v){
   if(n>0) o.q[pid]=n; else delete o.q[pid];
   render();
 }
-// 外注先の仕入単価: 外注先の掛け率×定価（支払い画面と同じ payRateOf）。率が無いブランドはサロン仕入価格で近似。
-// 下限=AXIA仕入価格（2026-08-07 ユーザー指定）: 資材のように定価と実勢が乖離する商品だと
-// 「定価×率」がAXIAの仕入値を下回り、外注に出すほど赤字になる（例: ポンプ 仕入80円 vs 90×50%=45円）。
-// サロン側はサロン仕入価格の実値を使うのに外注側だけ定価ベース、という非対称が原因なので下限で揃える。
-function allocOutUnit(sid, pid){
-  const s = rows('salons').find(x=>String(x['サロンID']||'').trim()===String(sid||'').trim());
-  const rate = payRateOf(s, brandOf(pid));
-  const list = num((product(pid)||{})['定価（税抜）']);
-  const byRate = (rate!=null && list) ? Math.round(list*rate) : salonCost(pid);
-  return Math.max(byRate, allocBuyUnit(pid));
-}
-// 外注単価が「定価×率」ではなく仕入値の下限で決まったか（③で⚠を出して理由を分かるようにする）
-function allocOutFloored(sid, pid){
-  const s = rows('salons').find(x=>String(x['サロンID']||'').trim()===String(sid||'').trim());
-  const rate = payRateOf(s, brandOf(pid));
-  const list = num((product(pid)||{})['定価（税抜）']);
-  const byRate = (rate!=null && list) ? Math.round(list*rate) : salonCost(pid);
-  return allocBuyUnit(pid) > byRate;
-}
-// AXIAの仕入単価。②で仕入掛け率を上書きしていればそれを優先（今回の振り分けだけ・マスタは変えない）
-function allocBuyUnit(pid){
+// ===== 仕入掛け率（仕入先ごと）=====
+// 仕入先（ディーラー / 外注先）ごとに率が違うので、率は仕入先ID単位で保持する（2026-08-07 ユーザー要望）。
+// 上書きは今回の振り分けだけに効く（マスタは書き換えない＝入数（箱）と同じ扱い）。conf.buyRates = {仕入先ID: %}
+// 入力した率はそのまま単価に使う（下限で勝手に引き上げない）。マスタの仕入値を下回ったときは警告だけ出す。
+function allocBuyRateOf(supSid){          // 仕入先の掛け率（%）。上書き優先 → 仕入先マスタのブランド率 → null
   const c = ALLOC.conf[ALLOC.brand]||{};
-  const ov = c.buyRate;
+  const ov = (c.buyRates||{})[String(supSid||'')];
+  if(ov!=='' && ov!=null && !isNaN(num(ov))) return num(ov);
+  const s = rows('salons').find(x=>String(x['サロンID']||'').trim()===String(supSid||'').trim());
+  const r = payRateOf(s, ALLOC.brand);
+  return r!=null ? Math.round(r*1000)/10 : null;
+}
+function allocBuyRateEdited(supSid){      // 今回だけ上書きされているか（既定と違う値が入っているか）
+  const c = ALLOC.conf[ALLOC.brand]||{};
+  const ov = (c.buyRates||{})[String(supSid||'')];
+  if(ov==='' || ov==null || isNaN(num(ov))) return false;
+  const s = rows('salons').find(x=>String(x['サロンID']||'').trim()===String(supSid||'').trim());
+  const r = payRateOf(s, ALLOC.brand);
+  return r==null || num(ov)!==Math.round(r*1000)/10;
+}
+// 仕入先 supSid から商品 pid を仕入れるときの単価。率が引けない仕入先は商品マスタのAXIA仕入価格
+function allocBuyUnit(pid, supSid){
+  const rate = allocBuyRateOf(supSid);
   const list = num((product(pid)||{})['定価（税抜）']);
-  if(ov!=='' && ov!=null && !isNaN(num(ov)) && list) return Math.round(list*num(ov)/100);
+  if(rate!=null && list) return Math.round(list*rate/100);
   return num((product(pid)||{})['AXIA仕入価格（税抜）']);
 }
-// ②の「仕入掛け率」欄の既定値（%）: 選んだ仕入先ディーラーのブランド率。無ければ商品マスタのAXIA掛け率
-function allocBuyRateDefault(brand, items){
-  const sup = (allocGroups().find(g=>String(g.sup||'').trim())||{}).sup;
-  const s = sup ? rows('salons').find(x=>String(x['サロンID']||'').trim()===String(sup).trim()) : null;
-  const r = payRateOf(s, brand);
-  if(r!=null) return Math.round(r*1000)/10;
-  const p = items.length ? product(items[0].pid) : null;
-  const ar = p ? num(p['AXIA掛け率']) : 0;
-  return ar ? Math.round(ar*1000)/10 : '';
+// 主たる仕入先（率が引けないときのフォールバック用）= 最初のグループのディーラー
+function allocMainSup(){ return (allocGroups().find(g=>String(g.sup||'').trim())||{}).sup || ''; }
+// 仕入値割れの検知（価格は変えず警告だけ・2026-08-07 ユーザー指定）:
+// 計算した仕入単価が商品マスタのAXIA仕入価格を下回ったら、率の入れ忘れの可能性が高い
+function allocBuyUnder(pid, supSid){
+  const master = num((product(pid)||{})['AXIA仕入価格（税抜）']);
+  if(!master) return 0;
+  const u = allocBuyUnit(pid, supSid);
+  return u < master ? master : 0;   // 0=問題なし / 正数=下回っている（返り値はマスタ仕入値）
+}
+// 外注先の仕入単価: 外注先の掛け率×定価。率が無いブランドはサロン仕入価格で近似
+function allocOutUnit(sid, pid){
+  const rate = allocBuyRateOf(sid);
+  const list = num((product(pid)||{})['定価（税抜）']);
+  return (rate!=null && list) ? Math.round(list*rate/100) : salonCost(pid);
 }
 // 余りをこの外注先へ、金額枠（空欄=無制限・外注先への支払額ベース）まで自動で入れる。箱単位ブランドは箱の倍数で入れる
 function allocOutFill(idx){
@@ -3344,22 +3354,32 @@ function vAllocation(){
     '<span class="muted small" style="margin-left:8px">同じサロンを複数グループで選ぶと、そのサロンは枠が2本（2社仕入れ）になります</span></div>' +
     // 💴 仕入掛け率（AXIAがディーラーから買う率）。仕入先で率が変わるのでその場で触れるようにする（2026-08-07 ユーザー要望）。
     // 上書きは今回の振り分けだけに効く（マスタは書き換えない＝入数（箱）と同じ扱い）
-    (()=>{ const def = allocBuyRateDefault(brand, items);
-      const cur = (conf.buyRate===''||conf.buyRate==null) ? def : conf.buyRate;
-      const buySum = items.reduce((a,i)=>a+i.need*allocBuyUnit(i.pid), 0);
+    (()=>{ // 仕入先ごとに掛け率が違うので、仕入先（ディーラー＋外注先）を並べてそれぞれ触れるようにする
+      const list = [];
+      [...new Set(allocGroups().map(g=>String(g.sup||'').trim()).filter(Boolean))].forEach(sid=>list.push({sid, tag:'🏭'}));
+      if(allocMode!=='own') (conf.outs||[]).forEach(o=>{ const sid=String(o.sid||'').trim();
+        if(sid && !list.some(x=>x.sid===sid)) list.push({sid, tag:'🤝'}); });
+      if(!list.length) return '';
+      const nameOf = sid=>{ const s=rows('salons').find(x=>String(x['サロンID']).trim()===sid); return s?salonLabel(s):sid; };
       const salonSum = items.reduce((a,i)=>a+i.need*i.price, 0);
-      const ovr = (conf.buyRate!=='' && conf.buyRate!=null && num(conf.buyRate)!==num(def));
       return '<div style="margin-top:10px;padding:10px 12px;background:var(--wash);border-radius:10px">' +
-        '<div class="row" style="align-items:flex-end">' +
-        '<label class="small">💴 仕入掛け率（%）<br><input type="number" step="0.1" value="'+esc(cur)+'" onchange="allocBuyRate(this.value)" style="width:110px;text-align:right" title="AXIAがディーラーから仕入れる率。ここで変えても商品マスタ・仕入れマスタは書き換えません（今回の振り分けだけ）"></label>' +
-        (ovr?'<button class="btn sm" onclick="allocBuyRate(\'\')" title="仕入先ディーラーの率に戻す">↩ 既定に戻す</button>':'') +
-        '<span class="small right">仕入額 <b>'+yen(buySum)+'</b>' +
-        '<span class="muted"> ／ サロン価 '+yen(salonSum)+' ／ 粗利 '+yen(salonSum-buySum)+
-        (salonSum?'（'+Math.round((salonSum-buySum)/salonSum*1000)/10+'%）':'')+'</span></span>' +
-        '</div>' +
-        '<p class="muted small" style="margin:5px 0 0">既定は仕入先ディーラーのブランド掛け率'+(def!==''?'（'+def+'%）':'（未設定のため商品マスタのAXIA掛け率）')+'。'+
-        (ovr?'<b style="color:var(--s4)">今回だけ '+esc(conf.buyRate)+'% に上書き中</b>（マスタは変わりません）':'変更は今回の振り分けにだけ効きます')+
-        '　※ 上の金額は全量をこの率で仕入れた場合の概算です（外注先ぶんの実単価は③で確定）</p>' +
+        '<div class="row"><b class="small">💴 仕入掛け率（仕入先ごと）</b>' +
+        '<span class="muted small">変更は今回の振り分けにだけ効きます（商品マスタ・仕入れマスタは書き換えません）</span></div>' +
+        '<table style="margin-top:6px;width:auto"><tr><th>仕入先</th><th class="num">掛け率（%）</th><th class="num">仕入額（全量概算）</th><th></th></tr>' +
+        list.map(x=>{
+          const rate = allocBuyRateOf(x.sid);
+          const edited = allocBuyRateEdited(x.sid);
+          const sum = items.reduce((a,i)=>a+i.need*allocBuyUnit(i.pid, x.sid), 0);
+          // 率の入れ忘れ検知: マスタのAXIA仕入価格を下回る商品があれば知らせる（価格はそのまま・警告のみ）
+          const under = items.filter(i=>allocBuyUnder(i.pid, x.sid));
+          return '<tr><td class="small">'+x.tag+' <b>'+esc(nameOf(x.sid))+'</b></td>' +
+            '<td class="num"><input type="number" step="0.1" value="'+esc(rate==null?'':rate)+'" onchange="allocBuyRate(\''+esc(x.sid)+'\',this.value)" placeholder="未設定" style="width:92px;text-align:right"></td>' +
+            '<td class="num small">'+yen(sum)+'</td>' +
+            '<td class="small">'+(edited?'<button class="btn sm" onclick="allocBuyRate(\''+esc(x.sid)+'\',\'\')">↩ 既定に戻す</button>':'') +
+            (under.length?'<span style="color:var(--s4)" title="'+esc(under.map(i=>i.name+'（マスタ仕入 '+yen(allocBuyUnder(i.pid,x.sid))+'）').join('／'))+'"> ⚠ '+under.length+'品がマスタの仕入値を下回っています（率の確認を）</span>':'')+'</td></tr>'; }).join('') +
+        '</table>' +
+        '<p class="muted small" style="margin:5px 0 0">率が空欄の仕入先は商品マスタのAXIA仕入価格で計算します。'+
+        '仕入額はこの率で全量を仕入れた場合の概算（実際の配分での確定値は③）。参考: サロン価の合計 '+yen(salonSum)+'</p>' +
         '</div>'; })() +
     '<div class="row" style="margin-top:10px"><button class="btn pri" onclick="allocCalc()">🧮 割り振りを計算</button>' +
     '<span class="muted small">計算後も表の数字は自由に手直しできます（ディーラー確認後の増減はここで直してから確定）</span></div></div>';
@@ -3399,8 +3419,8 @@ function vAllocation(){
         '<td class="num"><b>'+cnt+'点</b></td>' +
         '<td class="num"><b>'+yen(money)+'</b>'+(num(o.budget)&&money>num(o.budget)?' <span class="small" style="color:var(--crit)">⚠枠超過</span>':'') +
         // 定価×外注率がAXIA仕入値を下回った商品は仕入値を単価に使っている（赤字防止・2026-08-07）
-        (()=>{ const fl=r.items.filter(i=>num((o.q||{})[i.pid])>0 && allocOutFloored(o.sid,i.pid));
-          return fl.length ? '<br><span class="small muted" title="'+esc(fl.map(i=>i.name).join('／'))+'">'+fl.length+'品は仕入値で計算（定価×率だと赤字のため）</span>' : ''; })() +
+        (()=>{ const un=r.items.filter(i=>num((o.q||{})[i.pid])>0 && allocBuyUnder(i.pid,o.sid));
+          return un.length ? '<br><span class="small" style="color:var(--s4)" title="'+esc(un.map(i=>i.name+'（マスタ仕入 '+yen(allocBuyUnder(i.pid,o.sid))+'）').join('／'))+'">⚠ '+un.length+'品がマスタの仕入値を下回っています（率の確認を）</span>' : ''; })() +
         '</td>' +
         '<td><button class="btn sm" onclick="allocOutFill('+gi+')">🔁 余りをここへ（枠まで）</button></td></tr>'; }).join('') +
       '</table></div>' : '') +
@@ -3416,18 +3436,18 @@ function vAllocation(){
         if(allocMode!=='own') outs.forEach(o=>colorFor(o.sid));
         const legend = Object.keys(supColor).map(sid=>'<span class="step"><span class="dot" style="background:'+supColor[sid]+';border-color:'+supColor[sid]+'"></span>'+esc(names[sid]||sid)+'</span>').join(' ');
         return (legend ? '<div class="row" style="margin-top:8px"><span class="muted small">列の色 = 仕入先:</span><span class="steps small">'+legend+'</span></div>' : '') +
-        '<table style="margin-top:6px"><tr><th>商品</th><th class="num">必要数</th>' +
+        '<table style="margin-top:6px"><tr><th>商品</th><th>容量</th><th class="num">必要数</th>' +
         r.salonIds.map(s=>'<th class="num small" style="'+colBg(salonSup(s))+'">'+esc(names[slotBase(s)]||slotBase(s))+'</th>').join('') +
         (allocMode!=='own' ? outs.map(o=>'<th class="num small" style="'+colBg(o.sid)+'">🤝'+esc(names[o.sid]||'外注')+'</th>').join('') : '')+'<th class="num">割当計</th><th class="num">余り</th></tr>' +
         r.items.map(i=>{
           const asg = assignedOf(i.pid), oq = outQty(i.pid), left = i.need-asg-oq;
-          return '<tr><td class="small">'+esc(i.name)+(i.unit>1?' <span class="muted">［'+i.unit+'個/箱］</span>':'')+'</td><td class="num">'+i.need+'</td>' +
+          return '<tr><td class="small">'+esc(i.name)+(i.unit>1?' <span class="muted">［'+i.unit+'個/箱］</span>':'')+'</td><td class="small">'+esc(i.size||'')+'</td><td class="num">'+i.need+'</td>' +
             r.salonIds.map(s=>{ const v=num((r.m[s]||{})[i.pid]); const bad = i.unit>1 && v%i.unit!==0;
               return '<td class="num" style="'+colBg(salonSup(s))+'"><input type="number" value="'+(v||'')+'" min="0" onchange="allocCell(\''+i.pid+'\',\''+s+'\',this.value)" style="width:64px;text-align:right'+(bad?';border-color:var(--crit)':'')+'"'+(bad?' title="箱の入数（'+i.unit+'）の倍数ではありません"':'')+'></td>'; }).join('') +
             (allocMode!=='own' ? outs.map((o,gi)=>{ const ov=num((o.q||{})[i.pid]); return '<td class="num" style="'+colBg(o.sid)+'"><input type="number" value="'+(ov||'')+'" min="0" onchange="allocOutCell(\''+i.pid+'\','+gi+',this.value)" style="width:64px;text-align:right"></td>'; }).join('') : '') +
             '<td class="num">'+(asg+oq)+'</td><td class="num"'+(left!==0?' style="color:var(--crit);font-weight:700"':'')+'>'+left+'</td></tr>';
         }).join('') +
-        '<tr style="background:var(--wash)"><td><b>合計金額 / 枠 '+yen(r.budget)+'</b></td><td></td>' +
+        '<tr style="background:var(--wash)"><td><b>合計金額 / 枠 '+yen(r.budget)+'</b></td><td></td><td></td>' +
         r.salonIds.map(s=>{ const sp=spentOf(s); const over=sp>r.budget;
           return '<td class="num small"'+(over?' style="color:var(--crit)"':'')+'><b>'+yen(sp)+'</b>'+(over?'<br>⚠枠超過':'')+'</td>'; }).join('');
       })() +
@@ -3443,12 +3463,16 @@ function vAllocation(){
       // 💴 仕入額の合計（2026-08-07 ユーザー要望）: 実際に割り振った数量ベースの確定値。
       // 売上側（サロン価＋外注価）と並べて粗利まで出す
       (()=>{ const asgQty = pid=>assignedOf(pid)+outQty(pid);
-        const buy = r.items.reduce((a,i)=>a+asgQty(i.pid)*allocBuyUnit(i.pid), 0);
+        // サロンぶんは各スロットの仕入先ディーラーの率、外注ぶんはその外注先の率で仕入額を出す
+        let buy = 0;
+        r.salonIds.forEach(s=>{ const sup=allocSupOf(r,s);
+          r.items.forEach(i=>{ buy += num((r.m[s]||{})[i.pid]) * allocBuyUnit(i.pid, sup); }); });
+        if(allocMode!=='own') outs.forEach(o=>r.items.forEach(i=>{ buy += num((o.q||{})[i.pid]) * allocBuyUnit(i.pid, o.sid); }));
         const salonAmt = r.salonIds.reduce((a,s)=>a+spentOf(s), 0);
         const outAmt = (allocMode!=='own' ? outs.reduce((a,o)=>a+r.items.reduce((b,i)=>b+num((o.q||{})[i.pid])*allocOutUnit(o.sid,i.pid),0), 0) : 0);
         const sell = salonAmt + outAmt;
         const qty = r.items.reduce((a,i)=>a+asgQty(i.pid), 0);
-        const rateNote = (conf.buyRate!=='' && conf.buyRate!=null) ? '（仕入掛け率 '+esc(conf.buyRate)+'% で計算）' : '';
+        const rateNote = '（仕入先ごとの掛け率で計算）';
         return '<div style="margin-top:10px;padding:10px 12px;border:1.5px solid var(--line);border-radius:10px">' +
           '<div class="row" style="align-items:baseline;gap:18px">' +
           '<b class="small">💴 仕入額 合計</b>' +
@@ -3463,11 +3487,17 @@ function vAllocation(){
       (()=>{ const pumps = r.items.filter(i=>/ポンプ/.test(String(i.name)));
         if(!pumps.length) return '';
         const asgQty = pid=>assignedOf(pid)+outQty(pid);
+        // 対象商品は「容量が同じ」だけでは広すぎる（シアオイル等の別シリーズまで拾ってしまう）。
+        // ポンプ名の「〇〇150ml用ポンプ」から 商品名の頭（例: エヌドット ポリッシュオイル）を取り出し、
+        // 同じ頭で始まり容量も一致する商品だけを対象にする（CJ等の派生は含む）
+        const norm = s=>String(s||'').replace(/[\s　]/g,'').toLowerCase();
         const msgs = pumps.map(p=>{
           const m = String(p.name).match(/([0-9]+\s*(?:ml|g|mL))\s*用/i);
           if(!m) return '';
-          const size = m[1].replace(/\s/g,'').toLowerCase();
-          const mates = r.items.filter(i=>i.pid!==p.pid && String(i.size||'').replace(/\s/g,'').toLowerCase()===size);
+          const size = norm(m[1]);
+          const prefix = norm(String(p.name).split(/[0-9]+\s*(?:ml|g|mL)\s*用/i)[0]);
+          if(!prefix) return '';
+          const mates = r.items.filter(i=>i.pid!==p.pid && norm(i.size)===size && norm(i.name).indexOf(prefix)===0);
           if(!mates.length) return '';
           const pq = asgQty(p.pid), mq = mates.reduce((a,i)=>a+asgQty(i.pid),0);
           const d = mq - pq;
@@ -3478,7 +3508,7 @@ function vAllocation(){
         return '<div style="margin-top:8px;padding:8px 12px;background:var(--wash);border-radius:10px">' +
           '<b class="small">🔗 セット商品の数量</b>'+msgs.join('') +
           '<div class="muted small" style="margin-top:3px">数が合わないこともあるので警告のみです（確定はできます）。直すときは表のマスで調整してください。</div></div>'; })() +
-      '<p class="muted small" style="margin-top:6px">サロン列の金額=サロン仕入価格（税抜）×個数、外注列の金額=外注先の掛け率×定価×個数（AXIA仕入価格を下回る場合は仕入価格）。</p></div>';
+      '<p class="muted small" style="margin-top:6px">サロン列の金額=サロン仕入価格（税抜）×個数、外注列の金額=外注先の掛け率×定価×個数。仕入額は②で入れた仕入先ごとの掛け率×定価×個数。</p></div>';
   }
   return html;
 }
@@ -3490,10 +3520,14 @@ function allocPrint(){
   const selIds = Object.keys(ALLOC.sel).filter(k=>ALLOC.sel[k]);
   const names = {}; rows('salons').forEach(s=>names[String(s['サロンID']).trim()]=salonLabel(s));
   const sids = r.salonIds;
-  // 仕入掛け率（社内用一括にだけ出す。仕入先へ渡す版では隠す＝2026-08-07 ユーザー指定）
-  const buyRateTxt = pid=>{ const list=num((product(pid)||{})['定価（税抜）']);
+  // 仕入掛け率（社内用一括にだけ出す。仕入先へ渡す版では隠す＝2026-08-07 ユーザー指定）。
+  // 率は仕入先ごとに違うので、そのセクションの仕入先で引く。マスタ仕入値を下回る場合は⚠を添える
+  const buyRateTxt = (pid, supSid)=>{
+    const list = num((product(pid)||{})['定価（税抜）']);
     if(!list) return '—';
-    return Math.round(allocBuyUnit(pid)/list*1000)/10 + '%'; };
+    const txt = Math.round(allocBuyUnit(pid, supSid)/list*1000)/10 + '%';
+    return allocBuyUnder(pid, supSid) ? txt+' <span style="color:#c60">⚠</span>' : txt;
+  };
   const sections = sids.map(sid=>{
     const lines = r.items.map(i=>({i, qty:num((r.m[sid]||{})[i.pid])})).filter(x=>x.qty>0);
     if(!lines.length) return '';
@@ -3502,7 +3536,7 @@ function allocPrint(){
     const supSid = allocSupOf(r, sid);   // サロン別に仕入先を分けている場合は各セクションに明記
     return '<div class="salon" data-sup="'+esc(supSid)+'"><h2>'+esc(slotName(names, sid))+' <span class="sub">計 '+totalQty+'点 ／ ¥'+Math.round(totalYen).toLocaleString()+'（サロン価格・税抜）'+(r.supSplit&&supSid?' ／ 仕入先: '+esc(names[supSid]||supSid):'')+'</span></h2>' +
       '<table><tr><th>商品</th><th class="num">個数</th><th class="num">金額</th><th class="num intonly">仕入掛け率</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
-      lines.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+(x.i.unit>1?'（'+x.i.unit+'個/箱）':'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*x.i.price).toLocaleString()+'</td><td class="num intonly">'+buyRateTxt(x.i.pid)+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
+      lines.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+(x.i.unit>1?'（'+x.i.unit+'個/箱）':'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*x.i.price).toLocaleString()+'</td><td class="num intonly">'+buyRateTxt(x.i.pid, supSid)+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
       '</table></div>';
   }).join('');
   // 🤝外注仕入枠の分は外注先ごとに独立セクションで出す（外注先への共有・検品チェックにも使える。複数外注先対応 2026-07-18）
@@ -3514,7 +3548,7 @@ function allocPrint(){
     const omoney = ls.reduce((a,x)=>a+x.qty*allocOutUnit(o.sid,x.i.pid),0);
     return '<div class="salon" data-sup="out:'+esc(o.sid||'')+'"><h2>🤝 外注仕入: '+esc(oname)+' <span class="sub">計 '+ls.reduce((a,x)=>a+x.qty,0)+'点 ／ ¥'+Math.round(omoney).toLocaleString()+'（外注先掛け率・税抜）</span></h2>' +
     '<table><tr><th>商品</th><th class="num">個数</th><th class="num">金額</th><th class="num intonly">仕入掛け率</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
-    ls.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*allocOutUnit(o.sid,x.i.pid)).toLocaleString()+'</td><td class="num intonly">'+buyRateTxt(x.i.pid)+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
+    ls.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*allocOutUnit(o.sid,x.i.pid)).toLocaleString()+'</td><td class="num intonly">'+buyRateTxt(x.i.pid, o.sid)+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
     '</table></div>'; }).join('');
   // 📦余剰在庫からの充当分（回収・検品はスキップしてロット処理から始まるため、チェック欄はロットのみ 2026-07-18）
   const stocks = r.stock || [];
