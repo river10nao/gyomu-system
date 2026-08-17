@@ -2927,6 +2927,20 @@ function allocSelectAll(gi, on){
     if(on) g.sel[sid]=true; else delete g.sel[sid]; });
   allocDualInvalidate();   // 選択が大きく変わるので計算結果は破棄して押し直してもらう
 }
+// 連携ディーラー別の一括選択（2026-08-17 ユーザー要望）。キー '' = 連携なし（自社サロン）／それ以外 = 連携ディーラーのサロンID。
+// 母集団は allocSelectAll と同じ「今画面に出ている分」＝検索で絞っていればその中だけ
+function allocLinkGroups(gi){
+  const out = {};
+  allocSalonListOf(gi).forEach(s=>{ const k=String(s['連携ディーラー']||'').trim(); (out[k]=out[k]||[]).push(s); });
+  return out;
+}
+// ＋方式: 今の選択に足す（解除は既存の「☐ 解除」でまとめて外す）
+function allocSelectLink(gi, key){
+  const g = allocGroups()[gi]; if(!g) return;
+  g.sel = g.sel || {};
+  (allocLinkGroups(gi)[key]||[]).forEach(s=>{ g.sel[String(s['サロンID']).trim()] = true; });
+  allocDualInvalidate();   // 選択が大きく変わるので計算結果は破棄して押し直してもらう
+}
 function allocGroupSup(gi, v){ allocGroups()[gi].sup=v; render(); }
 function allocGroupAdd(){ allocGroups().push({sup:'', sel:{}}); render(); }
 function allocGroupDel(gi){ allocGroups().splice(gi,1); allocDualInvalidate(); }
@@ -3406,6 +3420,16 @@ function vAllocation(){
         // 表示中をまとめて選択／解除（検索で絞ってから押せば、その分だけまとめて選べる）
         '<button class="btn sm" onclick="allocSelectAll('+gi+',true)"'+(shownOn>=list.length&&list.length?' disabled style="opacity:.5"':'')+'>☑ '+(gq?'表示中':'全')+'を選択'+(list.length?'（'+list.length+'軒）':'')+'</button>' +
         '<button class="btn sm" onclick="allocSelectAll('+gi+',false)"'+(!shownOn?' disabled style="opacity:.5"':'')+'>☐ '+(gq?'表示中を':'')+'解除</button>' +
+        // 連携ディーラー別のまとめ選択（自社サロン／連携先のサロン）。＋方式で今の選択に足す（2026-08-17 ユーザー要望）
+        (()=>{ const lg = allocLinkGroups(gi); const keys = Object.keys(lg);
+          if(keys.length < 2) return '';   // 種類が1つしかないなら「全を選択」と同じなので出さない
+          return keys.sort((a,b)=> a===''?-1 : b===''?1 : a.localeCompare(b)).map(k=>{
+            const label = k ? (linkNameOf[k]||k)+'のサロン' : '自社サロン';
+            const on = lg[k].filter(s=>(g.sel||{})[String(s['サロンID']).trim()]).length;
+            return '<button class="btn sm" onclick="allocSelectLink('+gi+',\''+esc(k)+'\')"'+(on>=lg[k].length?' disabled style="opacity:.5"':'')+
+              ' title="'+esc(label)+'を今の選択に足します">＋'+esc(label)+'（'+lg[k].length+'軒）</button>';
+          }).join('');
+        })() +
         (gi>0?'<button class="btn sm" style="margin-left:auto" onclick="allocGroupDel('+gi+')">🗑 このグループを削除</button>':'') +
         '</div>' +
         (gq?'<div class="muted small" style="margin-top:4px">「'+esc(gq)+'」で絞り込み中（'+list.length+'軒表示・うち'+shownOn+'軒選択済み）。ボタンは表示中のサロンにだけ効きます</div>':'') +
