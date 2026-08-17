@@ -2810,10 +2810,14 @@ let ALLOC = { sel:{}, brand:null, conf:{}, salons:{}, result:{}, q:'', addOut:fa
 function unitOf(pid){ const p=product(pid); const u=p?num(p['入数（箱）']):0; return u>0?u:1; }
 function salonLabel(s){ return String(s['サロン名(ディーラー含む)']||s['サロン名']||s['サロンID']||''); }
 
+// 納品完了（終端）の案件は既定で一覧から隠す（2026-08-17 ユーザー要望）。
+// 過去案件が振り分け画面に居座らないようにする。やり直したいときは「✅ 完了案件も表示」で出せる
+function allocShowDone(on){ ALLOC.showDone=on; render(); }
 function allocOrderGroups(){
   const groups = {};
   rows('orderLedger').forEach(r=>{
     const id = String(r['受注ID']||'').trim(); if(!id) return;
+    if(!ALLOC.showDone && String(r['ステータス']||'').trim()==='納品完了') return;
     if(!groups[id]) groups[id] = {id, st:String(r['ステータス']||'').trim(), w:r['卸先名'], date:r['受注日'], n:0, brands:new Set()};
     groups[id].n++;
     groups[id].brands.add(brandOf(r['商品ID'])||'（不明）');
@@ -3228,7 +3232,10 @@ function vAllocation(){
   const doneOf = g => g.brands.size>0 && [...g.brands].every(b=>{ const e=(cov[g.id]||{})[b]; return e&&e.done; });
   const olist = orderGroups.sort((a,b)=>Number(doneOf(a))-Number(doneOf(b)));
   const firstDoneId = (olist.find(g=>doneOf(g))||{}).id;
-  html += '<div class="card"><b class="small">① 対象の受注を選ぶ（'+selIds.length+'件選択中）</b><p class="muted small" style="margin:4px 0 0">行をクリックすると商品の内訳が開きます</p><div class="tblwrap" style="margin-top:8px;max-height:340px;overflow:auto"><table>' +
+  const doneCnt = new Set(rows('orderLedger').filter(r=>String(r['ステータス']||'').trim()==='納品完了').map(r=>String(r['受注ID']||'').trim()).filter(Boolean)).size;
+  html += '<div class="card"><div class="row" style="align-items:center"><b class="small">① 対象の受注を選ぶ（'+selIds.length+'件選択中）</b>' +
+    (doneCnt ? '<label class="small" style="margin-left:auto"><input type="checkbox" '+(ALLOC.showDone?'checked':'')+' onclick="allocShowDone(this.checked)" style="width:15px;height:15px;vertical-align:-2px"> 納品完了も表示（'+doneCnt+'件）</label>' : '') +
+    '</div><p class="muted small" style="margin:4px 0 0">行をクリックすると商品の内訳が開きます</p><div class="tblwrap" style="margin-top:8px;max-height:340px;overflow:auto"><table>' +
     '<tr><th></th><th>受注ID</th><th>状態</th><th>卸先</th><th>ブランド</th><th>受注日</th><th class="num">明細数</th></tr>' +
     (olist.map(g=>{
       const open = (ALLOC.open||{})[g.id];
