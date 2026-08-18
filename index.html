@@ -2891,6 +2891,7 @@ function allocToggleOrder(id, on){
   if(before!==after){
     ALLOC.addOut=false;   // 別案件へ「外注も使う」のONを持ち越さない
     ALLOC.result={};      // 選択受注が変わったら以前の計算結果は無効
+    ALLOC.dirty={};       // 結果ごと消えるので「要再計算」の印も落とす
     if(on) ALLOC.lastCommit=null;
   }
   render();
@@ -2908,7 +2909,17 @@ function allocGroups(){
   if(!ALLOC.groups || !ALLOC.groups.length) ALLOC.groups = [{sup:'', sel:{...(ALLOC.salons||{})}}];   // 旧下書き（salons平面）からの引き継ぎ
   return ALLOC.groups;
 }
-function allocToggleSalon(gi, id, on){ allocGroups()[gi].sel[id]=on; render(); }
+function allocToggleSalon(gi, id, on){ allocGroups()[gi].sel[id]=on; allocGroupDirty(gi); }
+// 2026-08-18 ユーザー要望: サロン選択を触っても計算結果を捨てない。
+// 以前は選択を変えるたびに全ブランドの結果を破棄していたが、それだと🧮を押し直すことになり、
+// 触っていないグループの数量まで配り直されてしまう（例: ピュア商会の分だけ直したいのに他ディーラー分も動く）。
+// 結果は残したまま「要再計算」の印だけ付けて、🔄 このグループだけ計算し直す を押してもらう。
+function allocDirty(){ return (ALLOC.dirty||{})[ALLOC.brand]||{}; }
+function allocGroupDirty(gi){
+  const brand = ALLOC.brand;
+  if(ALLOC.result[brand]) ((ALLOC.dirty=ALLOC.dirty||{})[brand]=ALLOC.dirty[brand]||{})[gi]=true;
+  render();
+}
 // 振り分け先サロンの候補（自社サロンのみ・ストップ中は除く）。描画と一括選択で同じ母集団を使う
 function allocSalonPool(){
   const stopIds = new Set(rows('salons').filter(s=>String(s['ストップ']||'').trim()!=='').map(s=>String(s['サロンID']).trim()));
@@ -2929,7 +2940,7 @@ function allocSelectAll(gi, on){
   g.sel = g.sel || {};
   allocSalonListOf(gi).forEach(s=>{ const sid=String(s['サロンID']).trim();
     if(on) g.sel[sid]=true; else delete g.sel[sid]; });
-  allocDualInvalidate();   // 選択が大きく変わるので計算結果は破棄して押し直してもらう
+  allocGroupDirty(gi);   // このグループだけ要再計算（他グループの数量は触らない）
 }
 // 連携ディーラー別の一括選択（2026-08-17 ユーザー要望）。キー '' = 連携なし（自社サロン）／それ以外 = 連携ディーラーのサロンID。
 // 母集団は allocSelectAll と同じ「今画面に出ている分」＝検索で絞っていればその中だけ
@@ -2943,11 +2954,12 @@ function allocSelectLink(gi, key){
   const g = allocGroups()[gi]; if(!g) return;
   g.sel = g.sel || {};
   (allocLinkGroups(gi)[key]||[]).forEach(s=>{ g.sel[String(s['サロンID']).trim()] = true; });
-  allocDualInvalidate();   // 選択が大きく変わるので計算結果は破棄して押し直してもらう
+  allocGroupDirty(gi);   // このグループだけ要再計算（他グループの数量は触らない）
 }
 function allocGroupSup(gi, v){ allocGroups()[gi].sup=v; render(); }
 function allocGroupAdd(){ allocGroups().push({sup:'', sel:{}}); render(); }
-function allocGroupDel(gi){ allocGroups().splice(gi,1); allocDualInvalidate(); }
+// グループを消すとグループ番号がずれる（＝スロットIDの意味が変わる）ので、ここは従来どおり全部破棄
+function allocGroupDel(gi){ allocGroups().splice(gi,1); if(ALLOC.dirty) delete ALLOC.dirty[ALLOC.brand]; allocDualInvalidate(); }
 // 📦 余剰在庫からの引き当て（2026-07-18 ユーザー承認設計）: conf.stockUse = {在庫ID: 引当数}
 function allocStockUse(zid, v){ const c=ALLOC.conf[ALLOC.brand]=ALLOC.conf[ALLOC.brand]||{}; const u=c.stockUse=c.stockUse||{}; const n=Math.max(0,Math.round(num(v))); if(n>0) u[zid]=n; else delete u[zid]; render(); }
 function allocStockLots(items){   // このブランドの商品の引き当て可能ロット（区分=卸/空欄・残数>0）
@@ -2965,6 +2977,8 @@ function allocBuyRate(supSid, v){
 // 2社使えるブランドは、同じサロンに「2枠目」（別ディーラー経由・枠も別）を作って倍まで仕入れられる。
 // スロットID = サロンID（1枠目）/ サロンID#2（2枠目）。台帳に書くときは #2 を外して同じサロンとして記帳する
 function slotBase(s){ return String(s).split('#')[0]; }
+// スロットIDから「何番目のグループか」を逆引き（sid=1番目 / sid#2=2番目 …）。グループ単位の再計算で使う
+function slotGroupIdx(s){ const p=String(s).split('#'); return p[1] ? Number(p[1])-1 : 0; }
 function slotName(names, s){ const parts=String(s).split('#'); const n = names[parts[0]]||parts[0]; return parts[1] ? n+'（'+parts[1]+'枠目）' : n; }
 function allocBrandDealers(brand){   // このブランドを扱うディーラー（率列あり・ストップ除外）のサロンID一覧
   return rows('salons').filter(s=>String(s['種別']||'').trim()==='ディーラー' && String(s['サロンID']||'').trim() && String(s['ストップ']||'').trim()==='')
@@ -2978,7 +2992,7 @@ function allocCalc(){
   const budget = num(conf.budget);
   const cap = num(conf.cap)||0;
   // グループ（ディーラー×サロン選択）→ スロット展開。グループ2以降の同一サロンは sid#2, sid#3 …（枠・上限はスロットごと）
-  const groups = allocGroups().map(g=>({sup:String(g.sup||'').trim(), ids:Object.keys(g.sel||{}).filter(k=>g.sel[k])})).filter(g=>g.ids.length);
+  const groups = allocCalcGroups();
   const salonIds = groups.flatMap((g,gi)=>g.ids.map(s=>gi>0 ? s+'#'+(gi+1) : s));
   if(salonIds.length !== new Set(salonIds).size){ toast('同じサロンが同じグループ内で重複しています', true); return; }
   if(salonIds.length && !budget){ toast('1サロンの枠金額（円）を入れてください', true); return; }
@@ -3045,19 +3059,75 @@ function allocCalc(){
     });
   });
   const res = { salonIds, items, m, budget, cap, outs:routs, stock:stockLines };
-  if(groups.length){
-    // 仕入先の既定: グループで選んだディーラー（未選択グループはブランドの扱いディーラー候補をグループ順に）
-    const cands = allocBrandDealers(brand);
-    res.supBy = {};
-    groups.forEach((g,gi)=>{
-      const sup = g.sup || cands[gi] || cands[0] || '';
-      if(sup) g.ids.forEach(s=>{ res.supBy[gi>0 ? s+'#'+(gi+1) : s] = sup; });
-    });
-    res.supplier = groups[0].sup || cands[0] || '';
-    res.supSplit = groups.length>1 || groups.some(g=>g.sup && g.sup!==res.supplier);   // 複数グループ時は③でスロット別に表示
-  }
+  allocApplySups(res, brand);
   ALLOC.result[brand] = res;
+  if(ALLOC.dirty) delete ALLOC.dirty[brand];   // 全体を計算し直したので「要再計算」の印は全部落ちる
   render();
+}
+// 🏭 仕入先の既定を解決してrに書く: グループで選んだディーラー（未選択グループはブランドの扱いディーラー候補をグループ順に）。
+// allocCalc と allocCalcGroup で同じ規則を使うため関数に切り出した（2026-08-18）
+function allocApplySups(r, brand){
+  const groups = allocCalcGroups();
+  if(!groups.length) return;
+  const cands = allocBrandDealers(brand);
+  r.supBy = {};
+  groups.forEach((g,gi)=>{
+    const sup = g.sup || cands[gi] || cands[0] || '';
+    if(sup) g.ids.forEach(s=>{ r.supBy[gi>0 ? s+'#'+(gi+1) : s] = sup; });
+  });
+  r.supplier = groups[0].sup || cands[0] || '';
+  r.supSplit = groups.length>1 || groups.some(g=>g.sup && g.sup!==r.supplier);   // 複数グループ時は③でスロット別に表示
+}
+// 計算に使うグループ（サロンが1軒も選ばれていないグループは番号を詰める）。
+// スロットIDの「#2」はこの詰めたあとの番号なので、②の見た目の並びとズレることがある点に注意
+function allocCalcGroups(){
+  return allocGroups().map((g,i)=>({src:i, sup:String(g.sup||'').trim(), ids:Object.keys(g.sel||{}).filter(k=>g.sel[k])})).filter(g=>g.ids.length);
+}
+// 🔄 グループ単位の再計算（2026-08-18 ユーザー要望）。
+// 「ピュア商会の分だけサロンを入れ替えたい。他ディーラー分の個数はそのままにしたい」というケース用。
+// 他グループ・🤝外注枠・📦在庫引当の数量は固定したまま、残った必要数をこのグループのサロンにだけ配り直す。
+// 必要数の総量は変わらないので、サロンを減らせば1軒あたりが増える（枠に入りきらない分は余りとして残る）。
+function allocCalcGroup(gi){
+  const brand = ALLOC.brand, r = ALLOC.result[brand];
+  if(!r){ toast('先に 🧮 割り振りを計算 を押してください（全体の計算がないとグループ単位では直せません）', true); return; }
+  const conf = ALLOC.conf[brand]||{};
+  const budget = num(conf.budget);
+  if(!budget){ toast('1サロンの枠金額（円）を入れてください', true); return; }
+  const cap = num(conf.cap)||0;
+  const spread = conf.spread!==false;
+  const groups = allocCalcGroups();
+  const fi = groups.findIndex(g=>g.src===gi);   // スロットIDに使う番号（空グループを詰めたあとの位置）
+  if(fi<0){ toast('このグループはサロンが1軒も選ばれていません', true); return; }
+  // 計算時と今とでグループの数が違うと、スロットIDの「#2」が指す先がズレる → 全体計算に戻ってもらう
+  if(groups.length !== new Set(r.salonIds.map(slotGroupIdx)).size){
+    toast('グループの数が変わっています。🧮 割り振りを計算 で全体を計算し直してください', true); return;
+  }
+  const newSlots = groups[fi].ids.map(s=>fi>0 ? s+'#'+(fi+1) : s);
+  if(newSlots.length !== new Set(newSlots).size){ toast('同じサロンが同じグループ内で重複しています', true); return; }
+  // 固定分（このグループ以外のサロン＋🤝外注枠）を必要数から差し引いた残りが、このグループで配る数
+  const rem = {};
+  r.items.forEach(i=>{
+    const others = r.salonIds.reduce((a,s)=> a + (slotGroupIdx(s)===fi ? 0 : num((r.m[s]||{})[i.pid])), 0);
+    const outs = allocOutsOf(r).reduce((a,o)=>a+num((o.q||{})[i.pid]), 0);
+    rem[i.pid] = Math.max(0, i.need - others - outs);
+  });
+  const m2 = allocRun(r.items.map(i=>({...i, need:rem[i.pid]})), newSlots, budget, cap, spread);
+  // 差し替え: このグループの旧スロットを捨て、新スロットを同じ位置に入れる（並び順を保つ）
+  const nextIds = [];
+  for(let j=0; j<groups.length; j++){
+    if(j===fi) nextIds.push(...newSlots);
+    else nextIds.push(...r.salonIds.filter(s=>slotGroupIdx(s)===j));
+  }
+  r.salonIds.forEach(s=>{ if(slotGroupIdx(s)===fi) delete r.m[s]; });
+  newSlots.forEach(s=>{ r.m[s] = m2[s]||{}; });
+  r.salonIds = nextIds;
+  allocApplySups(r, brand);
+  // 枠・上限で入りきらなかった分は余り（確定はブロックされる）
+  const left = r.items.reduce((a,i)=> a + Math.max(0, rem[i.pid] - newSlots.reduce((x,s)=>x+num((r.m[s]||{})[i.pid]),0)), 0);
+  if(ALLOC.dirty && ALLOC.dirty[brand]) delete ALLOC.dirty[brand][gi];
+  render();
+  toast(left ? 'グループ'+(gi+1)+'を計算し直しました。枠・上限に入りきらない '+left+'点が余りに残っています'
+             : 'グループ'+(gi+1)+'だけ計算し直しました（他のグループ・🤝外注・📦在庫の数量はそのままです）', !!left);
 }
 function allocCell(pid, sid, v){
   const r = ALLOC.result[ALLOC.brand]; if(!r) return;
@@ -3414,6 +3484,7 @@ function vAllocation(){
     // 割り振りグループ: ディーラーを選び、その下でそのディーラー分のサロンを選ぶ。＋で別ディーラーのグループを追加（2026-07-18 ユーザー要望のUI）
     allocGroups().map((g,gi)=>{
       const selCnt = Object.keys(g.sel||{}).filter(k=>g.sel[k]).length;
+      const dirtyG = allocDirty();
       const gq = (ALLOC.qg||{})[gi]||'';
       const list = allocSalonListOf(gi);
       const multi = allocGroups().length>1;
@@ -3437,8 +3508,11 @@ function vAllocation(){
               ' title="'+esc(label)+'を今の選択に足します">＋'+esc(label)+'（'+lg[k].length+'軒）</button>';
           }).join('');
         })() +
-        (gi>0?'<button class="btn sm" style="margin-left:auto" onclick="allocGroupDel('+gi+')">🗑 このグループを削除</button>':'') +
+        // 🔄 このグループだけ計算し直す（2026-08-18 ユーザー要望）。他グループ・外注・在庫の数量は固定したまま配り直す
+        (ALLOC.result[brand] ? '<button class="btn sm" style="margin-left:auto'+(dirtyG[gi]?';background:var(--warn);color:#3d2c00;border-color:var(--warn);font-weight:700':'')+'" onclick="allocCalcGroup('+gi+')" title="他のグループ・🤝外注枠・📦在庫引当の数量はそのままで、このグループのサロンにだけ配り直します">🔄 このグループだけ計算し直す</button>' : '') +
+        (gi>0?'<button class="btn sm"'+(ALLOC.result[brand]?'':' style="margin-left:auto"')+' onclick="allocGroupDel('+gi+')">🗑 このグループを削除</button>':'') +
         '</div>' +
+        (dirtyG[gi]?'<div class="small" style="margin-top:4px;color:var(--serious)">⚠ サロン選択を変えました。<b>🔄 このグループだけ計算し直す</b> を押してください（他のグループ・🤝外注・📦在庫の数量はそのままです）</div>':'') +
         (gq?'<div class="muted small" style="margin-top:4px">「'+esc(gq)+'」で絞り込み中（'+list.length+'軒表示・うち'+shownOn+'軒選択済み）。ボタンは表示中のサロンにだけ効きます</div>':'') +
         '<div style="margin-top:6px;max-height:170px;overflow:auto;display:flex;flex-wrap:wrap;gap:4px">' +
         list.map(s=>{ const sid=String(s['サロンID']).trim(); const on=(g.sel||{})[sid];
@@ -3814,6 +3888,9 @@ function allocFormUpdateWarning(res){
 async function allocCommit(){
   const brand = ALLOC.brand, r = ALLOC.result[brand];
   if(!r){ toast('先に割り振りを計算してください', true); return; }
+  // サロン選択を変えたまま計算し直していないグループがあると、画面と結果がズレたまま台帳に入ってしまう（2026-08-18）
+  const dirtyGi = Object.keys(allocDirty()).filter(k=>allocDirty()[k]);
+  if(dirtyGi.length){ toast('サロン選択を変えたグループがあります（グループ'+dirtyGi.map(x=>Number(x)+1).join('・')+'）。🔄 このグループだけ計算し直す を押してから確定してください', true); return; }
   const selIds = Object.keys(ALLOC.sel).filter(k=>ALLOC.sel[k]);
   // スロット（2枠目）は台帳上は同じサロン: salonIdは#2を外して送り、仕入先だけ行ごとに分ける
   const lines = r.salonIds.map(slot=>({ slot, salonId:slotBase(slot),
