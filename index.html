@@ -3489,11 +3489,23 @@ function vAllocation(){
       const list = allocSalonListOf(gi);
       const multi = allocGroups().length>1;
       const shownOn = list.filter(s=>(g.sel||{})[String(s['サロンID']).trim()]).length;   // 表示中のうち選択済み
+      // 2026-08-18 ユーザー要望で2段に整理:
+      //   1段目＝このグループ全体の操作（ディーラー・再計算・削除）／2段目＝サロンの選び方（検索・まとめ選択）
       return '<div style="margin-top:10px;padding:10px 12px;background:var(--wash);border-radius:10px">' +
-        '<div class="row" style="align-items:center"><b class="small">割り振り先サロン'+(multi?'（グループ'+(gi+1)+'）':'')+'（'+selCnt+'軒選択中・毎回選ぶ）</b>' +
+        '<div class="row" style="align-items:center;gap:8px"><b class="small">割り振り先サロン'+(multi?'（グループ'+(gi+1)+'）':'')+'</b>' +
+        '<span class="pill small" style="background:color-mix(in srgb,var(--s1) 20%, transparent)">'+selCnt+'軒選択中</span>' +
         '<label class="small">🏭 仕入先ディーラー <select onchange="allocGroupSup('+gi+',this.value)">' +
         '<option value="">（自動判定'+(brandCands.length?': '+esc(brandCands.map(sid=>{const d=dealerRows.find(x=>String(x['サロンID']).trim()===sid);return d?salonLabel(d):sid;})[Math.min(gi,brandCands.length-1)]):'')+'）</option>' +
         dealerRows.map(s=>{ const sid=String(s['サロンID']).trim(); return '<option value="'+sid+'" '+(g.sup===sid?'selected':'')+'>'+esc(salonLabel(s))+'</option>'; }).join('') + '</select></label>' +
+        // 🔄 このグループだけ計算し直す（2026-08-18 ユーザー要望）。他グループ・外注・在庫の数量は固定したまま配り直す
+        (ALLOC.result[brand] ? '<button class="btn sm" style="margin-left:auto'+(dirtyG[gi]?';background:var(--warn);color:#3d2c00;border-color:var(--warn);font-weight:700':'')+'" onclick="allocCalcGroup('+gi+')" title="他のグループ・🤝外注枠・📦在庫引当の数量はそのままで、このグループのサロンにだけ配り直します">🔄 このグループだけ計算し直す</button>' : '') +
+        // グループの削除はどのグループでも出す（1つしかないときだけ出さない。2026-08-18 ユーザー要望）
+        (multi?'<button class="btn sm"'+(ALLOC.result[brand]?'':' style="margin-left:auto"')+' onclick="allocGroupDel('+gi+')" title="このグループを削除します（計算結果は破棄されるので🧮から計算し直しになります）">🗑 削除</button>':'') +
+        '</div>' +
+        (dirtyG[gi]?'<div class="small" style="margin-top:6px;color:var(--serious)">⚠ サロン選択を変えました。<b>🔄 このグループだけ計算し直す</b> を押してください（他のグループ・🤝外注・📦在庫の数量はそのままです）</div>':'') +
+        // ── サロンの選び方（検索・まとめ選択）
+        '<div class="row" style="align-items:center;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid var(--grid)">' +
+        '<span class="muted small">サロンを選ぶ</span>' +
         '<input class="search" placeholder="サロン名で絞る" value="'+esc(gq)+'"'+searchAttrs('allocg'+gi)+' style="max-width:200px">' +
         // 表示中をまとめて選択／解除（検索で絞ってから押せば、その分だけまとめて選べる）
         '<button class="btn sm" onclick="allocSelectAll('+gi+',true)"'+(shownOn>=list.length&&list.length?' disabled style="opacity:.5"':'')+'>☑ '+(gq?'表示中':'全')+'を選択'+(list.length?'（'+list.length+'軒）':'')+'</button>' +
@@ -3508,13 +3520,9 @@ function vAllocation(){
               ' title="'+esc(label)+'を今の選択に足します">＋'+esc(label)+'（'+lg[k].length+'軒）</button>';
           }).join('');
         })() +
-        // 🔄 このグループだけ計算し直す（2026-08-18 ユーザー要望）。他グループ・外注・在庫の数量は固定したまま配り直す
-        (ALLOC.result[brand] ? '<button class="btn sm" style="margin-left:auto'+(dirtyG[gi]?';background:var(--warn);color:#3d2c00;border-color:var(--warn);font-weight:700':'')+'" onclick="allocCalcGroup('+gi+')" title="他のグループ・🤝外注枠・📦在庫引当の数量はそのままで、このグループのサロンにだけ配り直します">🔄 このグループだけ計算し直す</button>' : '') +
-        (gi>0?'<button class="btn sm"'+(ALLOC.result[brand]?'':' style="margin-left:auto"')+' onclick="allocGroupDel('+gi+')">🗑 このグループを削除</button>':'') +
         '</div>' +
-        (dirtyG[gi]?'<div class="small" style="margin-top:4px;color:var(--serious)">⚠ サロン選択を変えました。<b>🔄 このグループだけ計算し直す</b> を押してください（他のグループ・🤝外注・📦在庫の数量はそのままです）</div>':'') +
-        (gq?'<div class="muted small" style="margin-top:4px">「'+esc(gq)+'」で絞り込み中（'+list.length+'軒表示・うち'+shownOn+'軒選択済み）。ボタンは表示中のサロンにだけ効きます</div>':'') +
-        '<div style="margin-top:6px;max-height:170px;overflow:auto;display:flex;flex-wrap:wrap;gap:4px">' +
+        (gq?'<div class="muted small" style="margin-top:6px">「'+esc(gq)+'」で絞り込み中（'+list.length+'軒表示・うち'+shownOn+'軒選択済み）。ボタンは表示中のサロンにだけ効きます</div>':'') +
+        '<div style="margin-top:8px;max-height:200px;overflow:auto;display:flex;flex-wrap:wrap;gap:4px;padding:6px;background:var(--surface);border:1px solid var(--grid);border-radius:8px">' +
         list.map(s=>{ const sid=String(s['サロンID']).trim(); const on=(g.sel||{})[sid];
           return '<label class="pill" style="cursor:pointer;background:'+(on?'color-mix(in srgb,var(--s1) 20%, transparent)':'var(--wash)')+'"><input type="checkbox" '+(on?'checked':'')+' onclick="allocToggleSalon('+gi+',\''+sid+'\',this.checked)" style="width:14px;height:14px;vertical-align:-2px"> '+esc(salonLabel(s))+esc(linkTag(s))+'</label>'; }).join('') +
         '</div></div>';
