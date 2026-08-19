@@ -405,10 +405,13 @@ function orderPill(st, pay){
   const payT = String(pay||'').trim();
   const lumpPre = payT==='発注時一括請求' || payT==='一括請求';   // 旧表記も発注時扱い
   const lumpPost = payT==='納品前一括請求';
-  if((lumpPre || lumpPost) && (st==='半金入金待ち' || st==='最終入金待ち')){
+  const lumpAfter = payT==='納品後一括請求';
+  if((lumpPre || lumpPost || lumpAfter) && (st==='半金入金待ち' || st==='最終入金待ち')){
     const c2 = STATUS_COLOR[st]||'var(--muted)';
     const label = lumpPre
       ? (st==='半金入金待ち' ? '全額入金待ち' : '最終確認待ち')            // 発注時一括: 入金は最初・後半は確認のみ
+      : lumpAfter
+      ? (st==='半金入金待ち' ? '請求済み（入金は納品後）' : '全額入金待ち（納品後）')   // 納品後一括: 請求は先・入金は最後
       : (st==='半金入金待ち' ? '進行中（請求は納品前）' : '全額入金待ち');  // 納品前一括: 請求・入金は後半
     return '<span class="pill" style="background:color-mix(in srgb,'+c2+' 15%, transparent);color:'+c2+'">'+label+'</span>';
   }
@@ -1103,6 +1106,7 @@ function vDashboard(){
     if(paidDone(st)) return ['全額入金済み','var(--good)'];
     if(i<=0) return ['未請求','var(--muted)'];
     if(NM.credit && String(pay||'').indexOf(NM.credit)===0) return ['全額請求済み・入金待ち','var(--s3)'];
+    if(String(pay||'').trim()==='納品後一括請求') return ['全額請求済み・入金待ち（納品後）','var(--s3)'];
     if(i===1) return ['半金① 請求中','var(--s3)'];
     if(i>=2 && i<=4) return ['半金① 入金済み','var(--s1)'];
     return ['半金② 請求中','var(--s3)'];
@@ -1675,12 +1679,14 @@ function vOrders(){
         // 最終入金完了前は一括系とも全額請求書が必須（サーバー側ガードも同条件・2026-07-23）
         const isLumpPre = gPay==='発注時一括請求' || gPay==='一括請求';
         const isLumpPost = gPay==='納品前一括請求';
-        const needsFullInv = isCreditPay || isLumpPre;
+        // 納品後一括（2026-08-19）: 受注時に全額請求（＝請求書ガードは発注時一括と同条件）。入金だけ納品後
+        const isLumpAfter = gPay==='納品後一括請求';
+        const needsFullInv = isCreditPay || isLumpPre || isLumpAfter;
         const guard =
-          (g.st==='商談中' && !isLumpPost && !activeDocs.some(k=> needsFullInv ? k.indexOf('請求書（全額')>=0 : (k.indexOf('請求書①')>=0 || k.indexOf('請求書（全額')>=0))) ? ['✔ 請求済み（→ '+(isLumpPre?'全額入金待ち':'半金入金待ち')+'）', needsFullInv ? '先に請求書（全額）を発行してください（📄帳票発行から）' : '先に請求書①（前金）を発行してください（📄帳票発行から）'] :
+          (g.st==='商談中' && !isLumpPost && !activeDocs.some(k=> needsFullInv ? k.indexOf('請求書（全額')>=0 : (k.indexOf('請求書①')>=0 || k.indexOf('請求書（全額')>=0))) ? ['✔ 請求済み（→ '+(isLumpPre?'全額入金待ち':isLumpAfter?'進行・入金は納品後':'半金入金待ち')+'）', needsFullInv ? '先に請求書（全額）を発行してください（📄帳票発行から）' : '先に請求書①（前金）を発行してください（📄帳票発行から）'] :
           (g.st==='振分/発注' && !String(g.ord||'').trim()) ? ['✔ 発注済み（→ 回収中）','先に📦発注日を入れてください（実際に発注した日）'] :
-          (g.st==='最終入金待ち' && (isLumpPre||isLumpPost) && !activeDocs.some(k=>k.indexOf('請求書（全額')>=0)) ? ['✔ 入金確認済み（→ 最終入金完了）','先に請求書（全額）を発行してください（📄帳票発行から）'] :
-          (g.st==='最終入金待ち' && !isCreditPay && !isLumpPre && !isLumpPost && !activeDocs.some(k=>k.indexOf('請求書②')>=0||k.indexOf('請求書（全額')>=0)) ? ['✔ 入金確認済み（→ 最終入金完了）','先に請求書②（残金）を発行してください（📄帳票発行から）'] :
+          (g.st==='最終入金待ち' && (isLumpPre||isLumpPost||isLumpAfter) && !activeDocs.some(k=>k.indexOf('請求書（全額')>=0)) ? ['✔ 入金確認済み（→ 最終入金完了）','先に請求書（全額）を発行してください（📄帳票発行から）'] :
+          (g.st==='最終入金待ち' && !isCreditPay && !isLumpPre && !isLumpPost && !isLumpAfter && !activeDocs.some(k=>k.indexOf('請求書②')>=0||k.indexOf('請求書（全額')>=0)) ? ['✔ 入金確認済み（→ 最終入金完了）','先に請求書②（残金）を発行してください（📄帳票発行から）'] :
           (g.st==='最終入金完了' && !ship) ? ['✔ 納品済み（→ 納品完了）','先に🚚出荷を作成してください（出荷が出荷完了になると自動で納品完了へ進みます）'] :
           (g.st==='最終入金完了' && ship && ship['ステータス']!=='出荷完了') ? ['✔ 納品済み（→ 納品完了）','出荷 '+ship['出荷ID']+' が出荷完了になると自動で納品完了へ進みます（現在: '+ship['ステータス']+'）'] : null;
         return guard
@@ -1688,7 +1694,10 @@ function vOrders(){
           : (isLumpPost && g.st==='商談中'
             // 納品前一括の受注時は請求が無いため「請求済み」表記を避ける（ステータス値は既存のまま前進）
             ? '<button class="btn pri sm" onclick="act(\'advanceStatus\',{entity:\'order\',id:\''+g.id+'\'},\''+g.id+' を進行中にしました（請求は納品前）\')">✔ 受注確定（→ 進行・請求は納品前）</button>'
-            : advanceBtn('order', g.id, g.st)); })() +
+            : (isLumpAfter && g.st==='商談中'
+            // 納品後一括は請求済みだが入金はまだ＝「入金待ち」表記を避けて、入金が納品後だと分かる文言にする
+            ? '<button class="btn pri sm" onclick="act(\'advanceStatus\',{entity:\'order\',id:\''+g.id+'\'},\''+g.id+' を進行中にしました（入金は納品後）\')">✔ 請求済み（→ 進行・入金は納品後）</button>'
+            : advanceBtn('order', g.id, g.st))); })() +
       (canShip && !busy('order', g.id) ? '<button class="btn sm" onclick="act(\'createShipment\',{受注ID:\''+g.id+'\'},\'出荷を作成しました\',[\'shipments\'])">🚚 出荷を作成</button>' : '') +
       (ship ? '<span class="small muted">🚚 出荷: '+ship['出荷ID']+' '+pill(ship['ステータス'])+'</span>' : '') +
       // 紐づく回収番号（回収台帳の対象受注から逆引き。2026-07-18 ユーザー要望「それぞれの場所で見れるように」）
@@ -1748,6 +1757,8 @@ function journeyHtml(g, ship){
   const payTj = String(g.pay||'').trim();
   const isLump = payTj==='発注時一括請求' || payTj==='一括請求';
   const isLumpPost = payTj==='納品前一括請求';
+  // 納品後一括（2026-08-19 ユーザー指定）: 見積確定→全額請求→入金を待たずに進行→納品→入金。Paidと同じ並びで入金が最後
+  const isLumpAfter = payTj==='納品後一括請求';
   const invFullDone = docs.some(k=>k.indexOf('請求書（全額')>=0);
   const steps = isCredit ? [
     ['受注', true],
@@ -1771,6 +1782,17 @@ function journeyHtml(g, ship){
     ['最終確認', paidDone(g.st)],   // 入金は全額入金で済んでいるため確認のみ（ステータスは最終入金待ち→完了を踏む）
     ['引去', shipPicked],
     ['出荷', shipDone]
+  ]) : isLumpAfter ? [
+    ['受注', true],
+    ['全額請求'+mf+(g.via?'（'+NM.via+'）':''), oi>=1],
+    ['振分', oi>=3 || allocDone],
+    ['発注', oi>=3 || !!String(g.ord||'').trim()]
+  ].concat(g.via ? [[NM.via+'→'+NM.co+'処理', viaMoneyDone]] : []).concat([
+    ['回収', oi>=4],
+    ['検品/ロット処理', oi>=5],
+    ['引去', shipPicked],
+    ['出荷（納品）', shipDone],
+    ['全額入金（納品後）', paidDone(g.st)]
   ]) : isLumpPost ? [
     ['受注', true],
     ['振分', oi>=3 || allocDone],
@@ -1796,7 +1818,7 @@ function journeyHtml(g, ship){
     ['引去', shipPicked],
     ['出荷', shipDone]
   ]);
-  const flowName = (isCredit ? NM.credit : isLump ? '発注時一括' : isLumpPost ? '納品前一括' : '半金×2') + (g.via ? '・'+NM.via+'経由' : '・直');
+  const flowName = (isCredit ? NM.credit : isLump ? '発注時一括' : isLumpPost ? '納品前一括' : isLumpAfter ? '納品後一括' : '半金×2') + (g.via ? '・'+NM.via+'経由' : '・直');
   let nowMarked = false;
   return '<div class="steps journey"><span class="small muted" style="margin-right:6px">'+esc(flowName)+'：</span>' + steps.map(s=>{
     let cls = 'done';
@@ -2077,7 +2099,7 @@ function newOrderForm(){
     '<div class="row" style="margin-top:10px">' +
     '<label class="small">卸先<br><select id="noW" style="max-width:240px" onchange="viewState.noW=this.value;noApplyRates()"><option value="">選択してください</option>'+wOpts+'</select></label>' +
     '<label class="small">受注日<br><input type="date" id="noDate" value="'+(viewState.noDate||t)+'" onchange="viewState.noDate=this.value"></label>' +
-    '<label class="small">支払方式<br><select id="noPay" onchange="viewState.noPay=this.value"><option '+(viewState.noPay==='半金×2'?'selected':'')+'>半金×2</option><option '+(viewState.noPay===''+NM.credit+'翌月末'?'selected':'')+'>'+NM.credit+'翌月末</option><option '+(viewState.noPay==='発注時一括請求'?'selected':'')+'>発注時一括請求</option><option '+(viewState.noPay==='納品前一括請求'?'selected':'')+'>納品前一括請求</option></select></label>' +
+    '<label class="small">支払方式<br><select id="noPay" onchange="viewState.noPay=this.value"><option '+(viewState.noPay==='半金×2'?'selected':'')+'>半金×2</option><option '+(viewState.noPay===''+NM.credit+'翌月末'?'selected':'')+'>'+NM.credit+'翌月末</option><option '+(viewState.noPay==='発注時一括請求'?'selected':'')+'>発注時一括請求</option><option '+(viewState.noPay==='納品前一括請求'?'selected':'')+'>納品前一括請求</option><option '+(viewState.noPay==='納品後一括請求'?'selected':'')+'>納品後一括請求</option></select></label>' +
     // 仕入れ形態はチェック式ピル（振り分けのサロン選択と同じ操作感の簡易版・2026-07-17 ユーザー案）。
     // 選択肢=「自社サロン」＋種別=外注の実名だけ（マスタの種別はサロン/ディーラー/外注の3値。ディーラーは仕入れ形態に出さない）
     '<label class="small">仕入れ形態（あてはまるものすべてにチェック）<br><span style="display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap;margin-top:2px">' +
