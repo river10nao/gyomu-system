@@ -1564,7 +1564,7 @@ function noticeItem(x){
     '<span class="muted mono">'+esc(x.date)+'</span>' +
     (x.kind ? '<span class="pill" style="background:color-mix(in srgb,'+c+' 15%, transparent);color:'+c+'">'+esc(x.kind)+'</span>' : '') +
     '<b>'+esc(x.title)+'</b>' +
-    (noticeIsNew(x.date) ? '<span class="n hot">NEW</span>' : '') + '</div>' +
+    (noticeIsNew(x.date) ? '<span class="pill" style="background:var(--warn);color:#3d2c00;font-weight:700">NEW</span>' : '') + '</div>' +
     (x.body ? '<div class="small" style="margin-top:3px;color:var(--ink2);white-space:pre-wrap">'+esc(x.body)+'</div>' : '') +
     '</div>';
 }
@@ -1575,7 +1575,7 @@ function noticesHtml(){
   const nNew = list.filter(x=>noticeIsNew(x.date)).length;
   return '<div class="card">' +
     '<div class="row" style="align-items:center"><b class="small">📣 お知らせ</b>' +
-    (nNew ? '<span class="n hot">新着 '+nNew+'</span>' : '') +
+    (nNew ? '<span class="pill" style="background:var(--warn);color:#3d2c00;font-weight:700">新着 '+nNew+'</span>' : '') +
     '<span class="muted small" style="margin-left:auto">スプシ「お知らせ」シートに1行足すと、ここに出ます</span></div>' +
     head.map(noticeItem).join('') +
     (rest.length ? '<details style="margin-top:6px"><summary class="small muted" style="cursor:pointer">過去のお知らせ '+rest.length+'件</summary>' +
