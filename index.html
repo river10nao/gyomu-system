@@ -311,7 +311,7 @@ async function boot(){
 }
 
 // 起動時に全データを並列ロード → 以後の検索・絞込みはブラウザ内で即時
-const SHEETS = ['products','wholesalers','salons','orderLedger','collectionLedger','shipments','hanbaiOrders','stock','stockLog','monthlyGoals','quotaMaster','orders','collection','docLog','alerts','allocDrafts','salonPayLog'];
+const SHEETS = ['products','wholesalers','salons','orderLedger','collectionLedger','shipments','hanbaiOrders','stock','stockLog','monthlyGoals','quotaMaster','orders','collection','docLog','alerts','allocDrafts','salonPayLog','notices'];
 // alerts はGAS側で6シート読む一番重い項目（単体約4秒）なので、起動・全読み直しの完了を待たせず後から差し込む
 const CORE_SHEETS = SHEETS.filter(n => n !== 'alerts');
 let dbFresh = false;   // 保存スナップショットで先に画面を出している間は false（書き込み操作をガード）
@@ -1312,6 +1312,7 @@ function vDashboard(){
   return '<h1>ダッシュボード <button class="btn sm" style="vertical-align:middle;font-weight:normal" onclick="downloadManual()">📖 マニュアル</button></h1>' +
     '<div class="sub">対象月: '+monthPicker()+'</div>' +
   alertsHtml() +
+  noticesHtml() +
   boardHtml +
   '<div class="kpis">' +
     kpi('売上（税抜）', yen(s.sales)) +
@@ -1534,6 +1535,52 @@ async function allocRedo(brand){
   }
   await reload(['collectionLedger']);
   toast('前回の振り分けを削除しました。振り分け直してください'); render();
+}
+
+// 📣 お知らせ（2026-08-21 ユーザー要望）: スプシ「お知らせ」シートに1行足すだけで全員のダッシュボードに出る。
+// 掲載終了日が空なら出しっぱなし・過ぎたら自動で消える。削除列は他の台帳と同じゴミ箱方式（rows()が除外）。
+// 新しい3件は開いた状態、それより前は「過去のお知らせ」で折りたたむ。
+const NOTICE_NEW_DAYS = 7;   // これ以内の日付に NEW バッジ
+function noticeList(){
+  const t = new Date(); t.setHours(0,0,0,0);
+  return rows('notices')
+    .filter(r=>String(r['タイトル']||'').trim())
+    .filter(r=>{ const e=String(r['掲載終了日']||'').trim(); if(!e) return true;
+      const d=new Date(e.replace(/\//g,'-')+'T00:00:00'); return isNaN(d) ? true : d>=t; })
+    .map(r=>({ date:String(r['日付']||'').trim(), kind:String(r['種類']||'').trim(),
+               title:String(r['タイトル']||'').trim(), body:String(r['本文']||'').trim() }))
+    .sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+}
+function noticeIsNew(dateStr){
+  const d = new Date(String(dateStr||'').replace(/\//g,'-')+'T00:00:00');
+  if(isNaN(d)) return false;
+  return (Date.now() - d.getTime()) / 86400000 < NOTICE_NEW_DAYS;
+}
+const NOTICE_COLOR = {'システム更新':'var(--s1)', 'マニュアル':'var(--s2)', '運用連絡':'var(--s5)'};
+function noticeItem(x){
+  const c = NOTICE_COLOR[x.kind] || 'var(--muted)';
+  return '<div style="padding:8px 0;border-top:1px solid var(--grid)">' +
+    '<div class="row small" style="align-items:center;gap:6px">' +
+    '<span class="muted mono">'+esc(x.date)+'</span>' +
+    (x.kind ? '<span class="pill" style="background:color-mix(in srgb,'+c+' 15%, transparent);color:'+c+'">'+esc(x.kind)+'</span>' : '') +
+    '<b>'+esc(x.title)+'</b>' +
+    (noticeIsNew(x.date) ? '<span class="n hot">NEW</span>' : '') + '</div>' +
+    (x.body ? '<div class="small" style="margin-top:3px;color:var(--ink2);white-space:pre-wrap">'+esc(x.body)+'</div>' : '') +
+    '</div>';
+}
+function noticesHtml(){
+  const list = noticeList();
+  if(!list.length) return '';
+  const head = list.slice(0,3), rest = list.slice(3);
+  const nNew = list.filter(x=>noticeIsNew(x.date)).length;
+  return '<div class="card">' +
+    '<div class="row" style="align-items:center"><b class="small">📣 お知らせ</b>' +
+    (nNew ? '<span class="n hot">新着 '+nNew+'</span>' : '') +
+    '<span class="muted small" style="margin-left:auto">スプシ「お知らせ」シートに1行足すと、ここに出ます</span></div>' +
+    head.map(noticeItem).join('') +
+    (rest.length ? '<details style="margin-top:6px"><summary class="small muted" style="cursor:pointer">過去のお知らせ '+rest.length+'件</summary>' +
+      rest.map(noticeItem).join('') + '</details>' : '') +
+    '</div>';
 }
 
 function alertsHtml(){
