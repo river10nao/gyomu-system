@@ -4125,7 +4125,9 @@ function xlSheetXml(sh){
       if(typeof c!=='object') c = {v:c, t: typeof c==='number'?'n':'s'};
       const ref = xlColName(ci+1)+r;
       const st = c.s ? ' s="'+c.s+'"' : '';
-      if(c.f) return '<c r="'+ref+'"'+st+'><f>'+xlEsc(c.f)+'</f></c>';
+      // cv = 計算済みの値。Excelは開いたときに計算し直すが、メールやFinderのプレビューは
+      // 計算しないので、入れておかないと卸値や合計が空欄に見える
+      if(c.f) return '<c r="'+ref+'"'+st+'><f>'+xlEsc(c.f)+'</f>'+(c.cv==null?'':'<v>'+c.cv+'</v>')+'</c>';
       if(c.v==null || c.v==='') return '<c r="'+ref+'"'+st+'/>';
       if(c.t==='n' || (c.t==null && typeof c.v==='number')) return '<c r="'+ref+'"'+st+'><v>'+c.v+'</v></c>';
       return '<c r="'+ref+'"'+st+' t="inlineStr"><is><t xml:space="preserve">'+xlEsc(c.v)+'</t></is></c>';
@@ -4157,7 +4159,8 @@ function xlBuild(sheets){
       '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'},
     {name:'xl/workbook.xml', data:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
-      '<sheets>'+sheets.map((s,i)=>'<sheet name="'+xlEsc(s.name)+'" sheetId="'+(i+1)+'" r:id="rId'+(i+1)+'"/>').join('')+'</sheets></workbook>'},
+      '<sheets>'+sheets.map((s,i)=>'<sheet name="'+xlEsc(s.name)+'" sheetId="'+(i+1)+'" r:id="rId'+(i+1)+'"/>').join('')+'</sheets>' +
+      '<calcPr calcId="0" fullCalcOnLoad="1"/></workbook>'},
     {name:'xl/_rels/workbook.xml.rels', data:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
       sheets.map((s,i)=>'<Relationship Id="rId'+(i+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet'+(i+1)+'.xml"/>').join('') +
@@ -4269,7 +4272,7 @@ function poBuild(wid){
         {v:String(p['JANコード']||''), s:XLS.text},
         {v:num(p['定価（税抜）']), s:XLS.yen},
         {v:rate, s:XLS.pct},
-        {f:'ROUND(D'+r+'*E'+r+',0)', s:XLS.yen}
+        {f:'ROUND(D'+r+'*E'+r+',0)', cv:Math.round(num(p['定価（税抜）'])*rate), s:XLS.yen}
       ];
       if(L.iri) line.push(iri>0 ? {v:iri, s:XLS.num} : {v:null, s:XLS.num});
       line.push({v:null, s:XLS.input});
@@ -4277,11 +4280,14 @@ function poBuild(wid){
       rws.push(line);
     });
     const last = rws.length, totalRow = rws.length+1;
-    const tot = [null,null,null,null,null,null];
-    if(L.iri) tot.push(null);
+    // 合計行は左端の空欄も罫線つきの空セルで埋める。A列から始まらない行を描かないビューアがあるため
+    //（Finderのプレビューで合計行が消えるのを実際に踏んだ）
+    const pad = ()=>({v:null, s:XLS.text});
+    const tot = [pad(),pad(),pad(),pad(),pad(),pad()];
+    if(L.iri) tot.push(pad());
     tot[tot.length-1] = {v:'合計', s:XLS.totalLbl};
-    tot.push({f:'SUM('+L.qty+first+':'+L.qty+last+')', s:XLS.totalNum});
-    tot.push({f:'SUM('+L.amt+first+':'+L.amt+last+')', s:XLS.total});
+    tot.push({f:'SUM('+L.qty+first+':'+L.qty+last+')', cv:0, s:XLS.totalNum});
+    tot.push({f:'SUM('+L.amt+first+':'+L.amt+last+')', cv:0, s:XLS.total});
     rws.push(tot);
     sheets.push({name:nameOf[b], cols:L.colw, rows:rws, freeze:PO_HEADER_ROWS, protect:true});
     info.push({brand:b, sheet:nameOf[b], totalRow:totalRow, count:items.length, qtyCol:L.qty, amtCol:L.amt});
@@ -4299,16 +4305,16 @@ function poBuild(wid){
   const cFirst = c.length+1;
   info.forEach(x=>{
     c.push([{v:x.brand, s:XLS.text},{v:x.count, s:XLS.num},
-      {f:"'"+x.sheet+"'!"+x.qtyCol+x.totalRow, s:XLS.totalNum},
-      {f:"'"+x.sheet+"'!"+x.amtCol+x.totalRow, s:XLS.total}]);
+      {f:"'"+x.sheet+"'!"+x.qtyCol+x.totalRow, cv:0, s:XLS.totalNum},
+      {f:"'"+x.sheet+"'!"+x.amtCol+x.totalRow, cv:0, s:XLS.total}]);
   });
   const cLast = c.length;
-  c.push([{v:'合計', s:XLS.totalLbl},{v:null, s:XLS.num},
-    {f:'SUM(C'+cFirst+':C'+cLast+')', s:XLS.totalNum},
-    {f:'SUM(D'+cFirst+':D'+cLast+')', s:XLS.total}]);
+  c.push([{v:'合計', s:XLS.totalLbl},{v:null, s:XLS.text},
+    {f:'SUM(C'+cFirst+':C'+cLast+')', cv:0, s:XLS.totalNum},
+    {f:'SUM(D'+cFirst+':D'+cLast+')', cv:0, s:XLS.total}]);
   c.push([]);
   c.push([{v:'※ 各ブランドのタブで「希望数量」をご入力ください。この表紙の合計は自動で更新されます。', s:XLS.note}]);
-  sheets.unshift({name:'表紙', cols:[26,10,12,18], rows:c});
+  sheets.unshift({name:'表紙', cols:[26,10,14,20], rows:c});
 
   const fname = ('発注書_'+wname+'_'+issued.replace(/\//g,'-')).replace(/[\\\/:*?"<>|]/g,'-') + '.xlsx';
   return { bytes: xlBuild(sheets), filename: fname, brands: info };
