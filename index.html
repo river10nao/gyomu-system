@@ -81,7 +81,11 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 .tblwrap.sticky{max-height:72vh;overflow:auto;padding-top:0}  /* 上paddingを消してヘッダーを容器の最上端に密着させる */
 .tblwrap.sticky th{position:sticky;top:0;background:var(--surface);z-index:2;box-shadow:0 1px 0 var(--grid);padding-top:14px}
 .tblwrap.sticky td{white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
-.vline{border-left:1px solid var(--grid)}   /* 掛け率などの列を縦罫線で区切る */
+.vline{border-left:1px solid var(--grid)}
+/* 発注書の卸先・ブランド選択チップ */
+.pochips{display:flex;flex-wrap:wrap;gap:6px;max-height:240px;overflow:auto;padding:8px;border:1px solid var(--grid);border-radius:8px;background:var(--surface)}
+.pochip{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:4px 10px;border:1px solid var(--grid);border-radius:14px;background:var(--page);cursor:pointer;white-space:nowrap}
+.pochip.on{border-color:var(--accent);background:var(--wash);color:var(--accent);font-weight:600}   /* 掛け率などの列を縦罫線で区切る */
 .pill{display:inline-block;border-radius:20px;padding:2px 10px;font-size:11.5px;font-weight:600;white-space:nowrap}
 .kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:14px}
 .kpi{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:14px 16px}
@@ -518,7 +522,7 @@ function exportTable(name, sheetName, filter){
 // ===== ナビ =====
 // ナビは関数で組む（サロン支払のラベルにサーバーから受け取る名称を使うため、ログイン後に評価する）
 const NAVS = ()=>[
-  ['dashboard','📊 ダッシュボード'], ['orders','📋 受注'], ['allocation','🧮 振り分け'],
+  ['dashboard','📊 ダッシュボード'], ['orders','📋 受注'], ['poform','📄 発注書'], ['allocation','🧮 振り分け'],
   ['collection','📦 回収・検品'],
   ['stock','🏷 在庫'], ['shipments','🚚 出荷'], ['hanbai','🛍 店販/EC'],
   ['payments','💰 '+NM.co+'支払い'],
@@ -658,7 +662,7 @@ function render(){
   renderNav();   // 操作のたびに左ナビのバッジ数も更新
   const fn = {dashboard:vDashboard, orders:vOrders, collection:vCollection, stock:vStock,
               shipments:vShipments, hanbai:vHanbai, payments:vPayments, salonpay:vSalonPay, quota:vQuota, masters:vMasters,
-              opslog:vOpsLog, allocation:vAllocation}[view];
+              opslog:vOpsLog, allocation:vAllocation, poform:vPoForm}[view];
   // 検索欄に入力中の再描画でカーソルが外れないように、描き直し後にフォーカスと位置を戻す
   const ae = document.activeElement;
   const keepSearch = ae && ae.classList && ae.classList.contains('search');
@@ -4038,6 +4042,395 @@ function allocResumeDraft(id){
 async function allocDeleteDraft(id){
   if(!confirm('この下書きを削除しますか？（保存した振り分け内容が消えます）')) return;
   await act('deleteAllocDraft', {id}, '下書きを削除しました', ['allocDrafts']);
+}
+
+// ===== 最小xlsxビルダー（外部ライブラリなし。発注書Excel専用・2026-08-24） =====
+// xlsx = XMLを詰めたZIP。ZIPは無圧縮(stored)で書く（Excelは無圧縮でも普通に開ける）。
+// 必要なものだけに絞ってある: 複数シート／数式／¥・％の表示形式／入力欄だけロック解除／ウィンドウ枠固定。
+let XL_CRCT = null;
+function xlCrc32(bytes){
+  if(!XL_CRCT){ XL_CRCT = new Int32Array(256);
+    for(let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c = (c&1) ? (0xEDB88320 ^ (c>>>1)) : (c>>>1); XL_CRCT[n]=c; } }
+  let c = -1;
+  for(let i=0;i<bytes.length;i++) c = XL_CRCT[(c ^ bytes[i]) & 0xFF] ^ (c>>>8);
+  return (c ^ -1) >>> 0;
+}
+function xlUtf8(s){ return new TextEncoder().encode(s); }
+function xlEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function xlZip(files){
+  const chunks=[], central=[]; let off=0;
+  const u16=n=>[n&255,(n>>8)&255], u32=n=>[n&255,(n>>8)&255,(n>>16)&255,(n>>24)&255];
+  files.forEach(f=>{
+    const name=xlUtf8(f.name), data=xlUtf8(f.data), crc=xlCrc32(data);
+    // 0x0800 = ファイル名がUTF-8であることの印（日本語シート名は使わないが念のため）
+    const head=[0x50,0x4b,0x03,0x04,20,0,...u16(0x0800),...u16(0),...u16(0),...u16(0),
+                ...u32(crc),...u32(data.length),...u32(data.length),...u16(name.length),...u16(0)];
+    chunks.push(new Uint8Array(head), name, data);
+    central.push([0x50,0x4b,0x01,0x02,20,0,20,0,...u16(0x0800),...u16(0),...u16(0),...u16(0),
+                  ...u32(crc),...u32(data.length),...u32(data.length),
+                  ...u16(name.length),...u16(0),...u16(0),...u16(0),...u16(0),...u32(0),...u32(off),
+                  ...name]);
+    off += head.length + name.length + data.length;
+  });
+  const cdArr = new Uint8Array(central.flat());
+  const end = new Uint8Array([0x50,0x4b,0x05,0x06,...u16(0),...u16(0),...u16(files.length),...u16(files.length),
+                              ...u32(cdArr.length),...u32(off),...u16(0)]);
+  const out = new Uint8Array(off + cdArr.length + end.length); let p=0;
+  chunks.forEach(c=>{ out.set(c,p); p+=c.length; });
+  out.set(cdArr,p); p+=cdArr.length; out.set(end,p);
+  return out;
+}
+// セルに指定するスタイル番号。下の XL_STYLES の cellXfs の並び順と一致させること
+const XLS = { def:0, title:1, label:2, thead:3, text:4, yen:5, pct:6, input:7, total:8, num:9, totalLbl:10, note:11, totalNum:12 };
+const XL_STYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+'<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+'<numFmts count="2"><numFmt numFmtId="180" formatCode="&quot;¥&quot;#,##0"/><numFmt numFmtId="181" formatCode="0.0%"/></numFmts>' +
+'<fonts count="5">' +
+'<font><sz val="10"/><name val="ＭＳ Ｐゴシック"/></font>' +
+'<font><b/><sz val="16"/><name val="ＭＳ Ｐゴシック"/></font>' +
+'<font><b/><sz val="10"/><name val="ＭＳ Ｐゴシック"/></font>' +
+'<font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="ＭＳ Ｐゴシック"/></font>' +
+'<font><sz val="9"/><color rgb="FF777777"/><name val="ＭＳ Ｐゴシック"/></font>' +
+'</fonts>' +
+'<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
+'<fill><patternFill patternType="solid"><fgColor rgb="FF2F4858"/><bgColor indexed="64"/></patternFill></fill>' +
+'<fill><patternFill patternType="solid"><fgColor rgb="FFFFF3C4"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+'<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>' +
+'<border><left style="thin"><color rgb="FFBBBBBB"/></left><right style="thin"><color rgb="FFBBBBBB"/></right><top style="thin"><color rgb="FFBBBBBB"/></top><bottom style="thin"><color rgb="FFBBBBBB"/></bottom><diagonal/></border></borders>' +
+'<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+'<cellXfs count="13">' +
+'<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+'<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/>' +
+'<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/>' +
+'<xf numFmtId="0" fontId="3" fillId="2" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' +
+'<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>' +
+'<xf numFmtId="180" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>' +
+'<xf numFmtId="181" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>' +
+'<xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyProtection="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/><protection locked="0"/></xf>' +
+'<xf numFmtId="180" fontId="2" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1"/>' +
+'<xf numFmtId="3" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>' +
+'<xf numFmtId="0" fontId="2" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right" vertical="center"/></xf>' +
+'<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0"/>' +
+'<xf numFmtId="3" fontId="2" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1"/>' +
+'</cellXfs>' +
+'<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+'</styleSheet>';
+function xlColName(n){ let s=''; while(n>0){ const m=(n-1)%26; s=String.fromCharCode(65+m)+s; n=(n-1-m)/26; } return s; }
+// rows: [[cell|null, ...], ...]   cell = 素の値 or {v, f(数式), s(スタイル番号), t:'s'|'n'}
+function xlSheetXml(sh){
+  const rowsXml = sh.rows.map((cells,ri)=>{
+    const r = ri+1;
+    const cx = cells.map((c,ci)=>{
+      if(c==null || c==='') return '';
+      if(typeof c!=='object') c = {v:c, t: typeof c==='number'?'n':'s'};
+      const ref = xlColName(ci+1)+r;
+      const st = c.s ? ' s="'+c.s+'"' : '';
+      if(c.f) return '<c r="'+ref+'"'+st+'><f>'+xlEsc(c.f)+'</f></c>';
+      if(c.v==null || c.v==='') return '<c r="'+ref+'"'+st+'/>';
+      if(c.t==='n' || (c.t==null && typeof c.v==='number')) return '<c r="'+ref+'"'+st+'><v>'+c.v+'</v></c>';
+      return '<c r="'+ref+'"'+st+' t="inlineStr"><is><t xml:space="preserve">'+xlEsc(c.v)+'</t></is></c>';
+    }).join('');
+    return cx ? '<row r="'+r+'">'+cx+'</row>' : '';
+  }).join('');
+  const cols = (sh.cols&&sh.cols.length)
+    ? '<cols>'+sh.cols.map((w,i)=>'<col min="'+(i+1)+'" max="'+(i+1)+'" width="'+w+'" customWidth="1"/>').join('')+'</cols>' : '';
+  // シート保護。パスワードは付けない（相手が必要なら外せる方が親切）。ロック解除したセル＝希望数量だけ触れる
+  const prot = sh.protect ? '<sheetProtection sheet="1" objects="1" scenarios="1" selectLockedCells="1" selectUnlockedCells="1"/>' : '';
+  const frz = sh.freeze
+    ? '<sheetView workbookViewId="0"><pane ySplit="'+sh.freeze+'" topLeftCell="A'+(sh.freeze+1)+'" activePane="bottomLeft" state="frozen"/></sheetView>'
+    : '<sheetView workbookViewId="0"/>';
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<sheetViews>'+frz+'</sheetViews>'+cols+'<sheetData>'+rowsXml+'</sheetData>'+prot+'</worksheet>';
+}
+function xlBuild(sheets){
+  const files = [
+    {name:'[Content_Types].xml', data:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+      '<Default Extension="xml" ContentType="application/xml"/>' +
+      '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+      sheets.map((s,i)=>'<Override PartName="/xl/worksheets/sheet'+(i+1)+'.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>').join('') +
+      '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'},
+    {name:'_rels/.rels', data:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'},
+    {name:'xl/workbook.xml', data:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+      '<sheets>'+sheets.map((s,i)=>'<sheet name="'+xlEsc(s.name)+'" sheetId="'+(i+1)+'" r:id="rId'+(i+1)+'"/>').join('')+'</sheets></workbook>'},
+    {name:'xl/_rels/workbook.xml.rels', data:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      sheets.map((s,i)=>'<Relationship Id="rId'+(i+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet'+(i+1)+'.xml"/>').join('') +
+      '<Relationship Id="rId'+(sheets.length+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'},
+    {name:'xl/styles.xml', data:XL_STYLES}
+  ];
+  sheets.forEach((s,i)=>files.push({name:'xl/worksheets/sheet'+(i+1)+'.xml', data:xlSheetXml(s)}));
+  return xlZip(files);
+}
+
+// ===== 画面: 📄 発注書（卸先へ送るExcelを作る。2026-08-24） =====
+// 商品マスタと直結: ブランド（カテゴリー）を選ぶと、その時点のマスタの中身がそのままExcelになる。
+//   → マスタに商品を足せば、次に発行した発注書には自動で載る（雛形の作り直しは不要）
+// 単価 = 定価 × 卸先ごとの掛け率。掛け率は卸先マスタから引き、空の組み合わせはこの画面で入れてもらう。
+// Excelは「卸先ごとに1ファイル・ブランドごとにタブ」。zipにはまとめず1件ずつ落とす（2026-08-24 ユーザー指定）。
+const PO_HEADER_ROWS = 8;   // タイトル〜表ヘッダーまでの行数（明細はこの次の行から）
+// 明細の列構成はブランドごとに決める。入数（箱）がマスタに1件も入っていないブランドでは
+// 空の列を送りつけないよう、列ごと省く（そのぶん希望数量・金額の列位置がずれるので数式は L から引く）
+function poLayout(items){
+  const iri = items.some(p=>num(p['入数（箱）'])>0);
+  return {
+    iri: iri,
+    head: ['商品名','容量','JANコード','定価（税抜）','掛け率','卸値（税抜）'].concat(iri?['入数（箱）']:[]).concat(['希望数量','金額（税抜）']),
+    colw: [40,10,16,13,9,13].concat(iri?[10]:[]).concat([11,14]),
+    qty:  iri?'H':'G',    // 希望数量の列
+    amt:  iri?'I':'H'     // 金額の列
+  };
+}
+// 希望納期は <input type="date"> の 2026-09-05 で入ってくるので、発行日と同じ 2026/09/05 表記に揃える
+function poDue(){ const d = poS().due; return d ? String(d).replace(/-/g,'/') : '（未指定）'; }
+
+function poS(){
+  if(!viewState.po) viewState.po = {w:{}, b:{}, due:'', rate:{}};
+  return viewState.po;
+}
+// 発注書に載せるブランド（=商品マスタのカテゴリー）。定価が入っている商品だけ数える
+function poBrands(){
+  const n = {};
+  rows('products').forEach(p=>{
+    const c = String(p['カテゴリー']||'').trim();
+    if(c && num(p['定価（税抜）'])>0 && !String(p['ストップ']||'').trim()) n[c]=(n[c]||0)+1;
+  });
+  return Object.keys(n).sort((a,b)=>n[b]-n[a]).map(k=>({name:k, n:n[k]}));
+}
+function poItems(brand){
+  return rows('products').filter(p=>String(p['カテゴリー']||'').trim()===brand
+    && num(p['定価（税抜）'])>0 && !String(p['ストップ']||'').trim());
+}
+function poSelW(){ const s=poS(); return rows('wholesalers').filter(w=>s.w[String(w['卸先ID']||'').trim()]); }
+function poSelB(){ const s=poS(); return poBrands().map(b=>b.name).filter(x=>s.b[x]); }
+function poKey(wid,brand){ return wid+'|'+brand; }
+// 掛け率(%)の表示値。この画面で手入力していればそれ、無ければ卸先マスタから引いた率
+function poRate(wid,brand){
+  const s=poS(), k=poKey(wid,brand);
+  if(s.rate[k]!==undefined) return s.rate[k];
+  const r = rateFor(wid,brand);
+  return r==='' ? '' : String(Math.round(num(r)*1000)/10);
+}
+function poRateNum(wid,brand){ const v=poRate(wid,brand); return String(v).trim()==='' ? null : num(v)/100; }
+function poMissing(){   // 掛け率が未入力の 卸先×ブランド
+    const out=[];
+    poSelW().forEach(w=>{ const wid=String(w['卸先ID']||'').trim();
+      poSelB().forEach(b=>{ if(!(poRateNum(wid,b)>0)) out.push({wid, wname:String(w['卸先名']||''), brand:b}); }); });
+    return out;
+}
+function poToggleW(id,on){ const s=poS(); if(on) s.w[id]=true; else delete s.w[id]; render(); }
+function poToggleB(n,on){ const s=poS(); if(on) s.b[n]=true; else delete s.b[n]; render(); }
+function poAllW(on){ const s=poS(); s.w={}; if(on) rows('wholesalers').forEach(w=>{ const id=String(w['卸先ID']||'').trim(); if(id) s.w[id]=true; }); render(); }
+function poSetRate(wid,brand,v){ poS().rate[poKey(wid,brand)] = String(v).trim(); }   // 入力中は再描画しない（カーソルが飛ぶため）
+function poSetDue(v){ poS().due = String(v||'').trim(); }
+
+// 卸先1社分のブックを組み立てて Uint8Array で返す
+function poBuild(wid){
+  const w = rows('wholesalers').find(x=>String(x['卸先ID']||'').trim()===wid);
+  if(!w) throw new Error('卸先が見つかりません: '+wid);
+  const wname = String(w['卸先名']||'').trim() || wid;
+  const brands = poSelB().filter(b=>poItems(b).length);
+  if(!brands.length) throw new Error('商品が1件もありません（ブランドを選び直してください）');
+  const issued = today(), due = poDue();
+
+  // シート名を先に確定させる（表紙から '<ブランド>'!I99 の形で参照するため）
+  const used = ['表紙'];
+  const nameOf = {};
+  brands.forEach(b=>{
+    let n = String(b).replace(/[\\\/\?\*\[\]:']/g,'-').slice(0,31) || 'ブランド';
+    let base=n, i=2; while(used.indexOf(n)>=0){ n = base.slice(0,28)+'('+i+')'; i++; }
+    used.push(n); nameOf[b]=n;
+  });
+
+  const sheets = [], info = [];
+  brands.forEach(b=>{
+    const items = poItems(b), rate = poRateNum(wid,b), L = poLayout(items);
+    const rws = [];
+    rws.push([{v:'発 注 書', s:XLS.title}]);
+    rws.push([{v:wname+' 御中', s:XLS.label}]);
+    rws.push([{v:'ブランド', s:XLS.label},{v:b}]);
+    rws.push([{v:'発行日', s:XLS.label},{v:issued}]);
+    rws.push([{v:'希望納期', s:XLS.label},{v:due}]);
+    rws.push([]);
+    rws.push([{v:'※ 黄色の「希望数量」の欄だけご入力ください。卸値・金額・合計は自動で計算されます。', s:XLS.note}]);
+    rws.push(L.head.map(h=>({v:h, s:XLS.thead})));
+    const first = rws.length+1;
+    items.forEach(p=>{
+      const r = rws.length+1;
+      const iri = num(p['入数（箱）']);
+      const line = [
+        {v:String(p['商品名']||''), s:XLS.text},
+        {v:String(p['容量']||''), s:XLS.text},
+        {v:String(p['JANコード']||''), s:XLS.text},
+        {v:num(p['定価（税抜）']), s:XLS.yen},
+        {v:rate, s:XLS.pct},
+        {f:'ROUND(D'+r+'*E'+r+',0)', s:XLS.yen}
+      ];
+      if(L.iri) line.push(iri>0 ? {v:iri, s:XLS.num} : {v:null, s:XLS.num});
+      line.push({v:null, s:XLS.input});
+      line.push({f:'IF('+L.qty+r+'="","",F'+r+'*'+L.qty+r+')', s:XLS.yen});
+      rws.push(line);
+    });
+    const last = rws.length, totalRow = rws.length+1;
+    const tot = [null,null,null,null,null,null];
+    if(L.iri) tot.push(null);
+    tot[tot.length-1] = {v:'合計', s:XLS.totalLbl};
+    tot.push({f:'SUM('+L.qty+first+':'+L.qty+last+')', s:XLS.totalNum});
+    tot.push({f:'SUM('+L.amt+first+':'+L.amt+last+')', s:XLS.total});
+    rws.push(tot);
+    sheets.push({name:nameOf[b], cols:L.colw, rows:rws, freeze:PO_HEADER_ROWS, protect:true});
+    info.push({brand:b, sheet:nameOf[b], totalRow:totalRow, count:items.length, qtyCol:L.qty, amtCol:L.amt});
+  });
+
+  // 表紙: 宛先・希望納期と、ブランドごとの合計（明細タブの合計行を参照＝入力すると自動で動く）
+  const c = [];
+  c.push([{v:'発 注 書', s:XLS.title}]);
+  c.push([]);
+  c.push([{v:'卸先', s:XLS.label},{v:wname+' 御中'}]);
+  c.push([{v:'発行日', s:XLS.label},{v:issued}]);
+  c.push([{v:'希望納期', s:XLS.label},{v:due}]);
+  c.push([]);
+  c.push([{v:'ブランド', s:XLS.thead},{v:'品目数', s:XLS.thead},{v:'数量合計', s:XLS.thead},{v:'金額合計（税抜）', s:XLS.thead}]);
+  const cFirst = c.length+1;
+  info.forEach(x=>{
+    c.push([{v:x.brand, s:XLS.text},{v:x.count, s:XLS.num},
+      {f:"'"+x.sheet+"'!"+x.qtyCol+x.totalRow, s:XLS.totalNum},
+      {f:"'"+x.sheet+"'!"+x.amtCol+x.totalRow, s:XLS.total}]);
+  });
+  const cLast = c.length;
+  c.push([{v:'合計', s:XLS.totalLbl},{v:null, s:XLS.num},
+    {f:'SUM(C'+cFirst+':C'+cLast+')', s:XLS.totalNum},
+    {f:'SUM(D'+cFirst+':D'+cLast+')', s:XLS.total}]);
+  c.push([]);
+  c.push([{v:'※ 各ブランドのタブで「希望数量」をご入力ください。この表紙の合計は自動で更新されます。', s:XLS.note}]);
+  sheets.unshift({name:'表紙', cols:[26,10,12,18], rows:c});
+
+  const fname = ('発注書_'+wname+'_'+issued.replace(/\//g,'-')).replace(/[\\\/:*?"<>|]/g,'-') + '.xlsx';
+  return { bytes: xlBuild(sheets), filename: fname, brands: info };
+}
+
+function poDownload(wid){
+  try{
+    const miss = poMissing().filter(m=>m.wid===wid);
+    if(miss.length){ toast('掛け率が未入力です（'+miss.map(m=>m.brand).join('・')+'）。④で入れてください', true); return; }
+    const r = poBuild(wid);
+    const url = URL.createObjectURL(new Blob([r.bytes],
+      {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+    const a = document.createElement('a');
+    a.href = url; a.download = r.filename; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  }catch(e){ toast(e.message, true); }
+}
+function poDownloadAll(){
+  const list = poSelW();
+  if(!list.length){ toast('卸先を選んでください', true); return; }
+  if(poMissing().length){ toast('掛け率が未入力の組み合わせがあります。④で入れてください', true); return; }
+  // zipにはまとめず1件ずつ落とす（2026-08-24 ユーザー指定）。連続ダウンロードがブラウザに弾かれないよう間隔を空ける
+  list.forEach((w,i)=>setTimeout(()=>poDownload(String(w['卸先ID']||'').trim()), i*600));
+}
+async function poSaveRates(){
+  const cells = [];
+  poSelW().forEach(w=>{
+    const wid = String(w['卸先ID']||'').trim();
+    poSelB().forEach(b=>{
+      const r = poRateNum(wid,b);
+      // マスタと同じ値なら送らない（無駄な書き込みと列追加を避ける）
+      if(r>0 && Math.abs(num(rateFor(wid,b)) - r) > 1e-9) cells.push({wid, brand:b, rate:r});
+    });
+  });
+  if(!cells.length){ toast('マスタと違う掛け率はありません'); return; }
+  try{
+    const d = await apiPost('saveRateCells', {cells}, ['wholesalers']);
+    poS().rate = {};   // マスタが正になったので手入力の上書きは捨てる
+    toast('掛け率を'+d.saved+'件保存しました' + (d.addedColumns&&d.addedColumns.length ? '（新しい列: '+d.addedColumns.join('・')+'）' : ''));
+    render();
+  }catch(e){ toast(e.message, true); }
+}
+
+// 定価が空の商品は単価が出せないので発注書に載せられない。黙って落とすと数が合わなくなるので画面に出す
+function poSkipNote(){
+  const sel = poSelB();
+  if(!sel.length) return '';
+  const bad = sel.map(b=>{
+    const n = rows('products').filter(p=>String(p['カテゴリー']||'').trim()===b
+      && !(num(p['定価（税抜）'])>0) && !String(p['ストップ']||'').trim()).length;
+    return n ? b+' '+n+'件' : '';
+  }).filter(Boolean);
+  return bad.length
+    ? '<p class="small" style="color:var(--serious)">⚠ 定価（税抜）が空のため発注書に載らない商品があります: '+bad.map(esc).join('／')+'。マスタに定価を入れると載ります。</p>'
+    : '';
+}
+function vPoForm(){
+  const s = poS();
+  const brands = poBrands();
+  const selW = poSelW(), selB = poSelB();
+  const q = String(viewState.poQ||'').toLowerCase();
+  const wlist = rows('wholesalers').filter(w=>String(w['卸先ID']||'').trim())
+    .filter(w=>!q || (String(w['卸先名'])+String(w['略称']||'')).toLowerCase().includes(q));
+
+  const wChips = wlist.map(w=>{
+    const id = String(w['卸先ID']||'').trim();
+    return '<label class="pochip'+(s.w[id]?' on':'')+'"><input type="checkbox" '+(s.w[id]?'checked':'')+
+      ' onchange="poToggleW(\''+esc(id)+'\',this.checked)"> '+esc(w['卸先名'])+'</label>';
+  }).join('');
+  const bChips = brands.map(b=>
+    '<label class="pochip'+(s.b[b.name]?' on':'')+'"><input type="checkbox" '+(s.b[b.name]?'checked':'')+
+    ' onchange="poToggleB(\''+esc(b.name)+'\',this.checked)"> '+esc(b.name)+' <span class="muted small">'+b.n+'</span></label>').join('');
+
+  // ④掛け率: 選んだ卸先×ブランドを1マスずつ触れるようにする。空欄があると発行できない
+  let rateTbl = '<p class="muted small">卸先とブランドを選ぶと、ここに掛け率が出ます。</p>';
+  const miss = poMissing();
+  if(selW.length && selB.length){
+    rateTbl = '<div class="tblwrap"><table><tr><th>卸先</th>'+selB.map(b=>'<th class="num">'+esc(b)+'</th>').join('')+'</tr>' +
+      selW.map(w=>{
+        const wid = String(w['卸先ID']||'').trim();
+        return '<tr><td class="small">'+esc(w['卸先名'])+'</td>' + selB.map(b=>{
+          const v = poRate(wid,b), empty = String(v).trim()==='';
+          const fromMaster = s.rate[poKey(wid,b)]===undefined && !empty;
+          return '<td class="num"><input value="'+esc(v)+'" placeholder="—" title="'+(fromMaster?'卸先マスタの掛け率':'この画面で入力')+'"'+
+            ' style="width:64px;padding:4px 6px;text-align:right'+(empty?';border:1.5px solid var(--crit);background:color-mix(in srgb,var(--crit) 8%,transparent)':'')+'"'+
+            ' oninput="poSetRate(\''+esc(wid)+'\',\''+esc(b)+'\',this.value)" onchange="render()"><span class="muted small">%</span></td>';
+        }).join('') + '</tr>';
+      }).join('') + '</table></div>' +
+      '<p class="muted small" style="margin-top:6px">白＝卸先マスタの掛け率／赤枠＝マスタに無いので入力が必要です。ここで入れた率はこの発注書にだけ効きます（「マスタに保存」を押すとマスタにも入り、次回から自動で出ます）。</p>' +
+      '<button class="btn sm" onclick="poSaveRates()">この掛け率を卸先マスタに保存する</button>';
+  }
+
+  const dlRows = selW.map(w=>{
+    const wid = String(w['卸先ID']||'').trim();
+    const n = selB.reduce((a,b)=>a+poItems(b).length, 0);
+    const bad = miss.filter(m=>m.wid===wid);
+    return '<tr><td>'+esc(w['卸先名'])+'</td><td class="small">'+selB.map(esc).join('・')+'</td><td class="num">'+n+'</td>' +
+      '<td>'+(bad.length
+        ? '<span class="small" style="color:var(--crit)">掛け率が未入力（'+bad.map(m=>esc(m.brand)).join('・')+'）</span>'
+        : '<button class="btn sm" onclick="poDownload(\''+esc(wid)+'\')">⬇ Excel</button>')+'</td></tr>';
+  }).join('');
+
+  return '<h1>📄 発注書</h1>' +
+    '<div class="sub">卸先に送るExcelを作ります。中身は商品マスタと直結（マスタに商品を足せば次の発注書から自動で載ります）。卸先ごとに1ファイル・ブランドごとにタブ。</div>' +
+    '<div class="card"><b class="small">① 卸先を選ぶ</b>' +
+      '<div class="row" style="margin:8px 0"><input class="search" placeholder="卸先名で絞り込み" value="'+esc(viewState.poQ||'')+'" oninput="viewState.poQ=this.value;render()">' +
+      '<button class="btn sm" onclick="poAllW(true)">全選択</button><button class="btn sm" onclick="poAllW(false)">全解除</button></div>' +
+      '<div class="pochips">'+wChips+'</div></div>' +
+    '<div class="card"><b class="small">② ブランドを選ぶ（商品マスタのカテゴリー）</b>' +
+      '<div class="pochips" style="margin-top:8px">'+bChips+'</div>' +
+      '<p class="muted small">1ファイルに複数ブランドを入れられます（タブで分かれます）。数字は載る品目数です。</p>' + poSkipNote() + '</div>' +
+    '<div class="card"><b class="small">③ 希望納期</b>' +
+      '<div class="row" style="margin-top:8px"><input type="date" value="'+esc(s.due)+'" onchange="poSetDue(this.value);render()">' +
+      '<span class="muted small">Excelの表紙と各タブに入ります（空でも作れます）</span></div></div>' +
+    '<div class="card"><b class="small">④ 掛け率の確認（単価＝定価×掛け率）</b><div style="margin-top:8px">'+rateTbl+'</div></div>' +
+    '<div class="card"><b class="small">⑤ ダウンロード</b>' +
+      (dlRows
+        ? '<div class="tblwrap" style="margin-top:8px"><table><tr><th>卸先</th><th>ブランド</th><th class="num">品目数</th><th></th></tr>'+dlRows+'</table></div>' +
+          '<div class="row" style="margin-top:8px"><button class="btn" onclick="poDownloadAll()">⬇ 選んだ卸先ぶんをまとめて落とす</button>' +
+          '<span class="muted small">zipにはしません。1社1ファイルで順番に落ちます（ブラウザが「複数ファイルのダウンロード」を聞いてきたら許可してください）</span></div>'
+        : '<p class="muted small" style="margin-top:8px">卸先とブランドを選ぶとここにダウンロードボタンが出ます。</p>') +
+    '</div>';
 }
 
 // ===== 画面: マスタ管理（admin） =====
