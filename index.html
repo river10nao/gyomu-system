@@ -3211,6 +3211,57 @@ function allocCell(pid, sid, v){
 // 🤝外注仕入枠の操作（複数外注先・金額枠つき。2026-07-18 ユーザー要望「A社30万分・B社50万分」のような割り方に対応）
 function allocOutsOf(r){ if(!r.outs){ r.outs = r.out ? [r.out] : []; delete r.out; } return r.outs; }   // 旧下書き（単一外注枠）互換
 // このスロットの卸行の仕入先を解決（②のグループで決まる: スロット別指定 > ブランド既定）
+// ===== 割り振り結果の列を直接いじる（再計算なし・2026-08-26 ユーザー要望） =====
+// 「サロンだけ差し替えたい」「あとから1サロン足して手打ちしたい」の2つ。どちらも他のサロンの数量には触らない。
+// スロットに紐づくのは salonIds（列の並び）／m（割当）／supBy（仕入先）／groups[gi].sel（選択状態）の4つだけなので、
+// この4つを揃えて付け替えれば結果は壊れない。dirty は立てない（＝計算し直しを要求しない）。
+function allocSlotOf(sid, gi){ return gi>0 ? sid+'#'+(gi+1) : sid; }
+// その列に入れられるサロン（自社サロン・ストップ除く）。同じグループに既にいるサロンは出さない
+function allocSwapCands(r, gi, keepSlot){
+  const used = new Set(r.salonIds.filter(x=>x!==keepSlot));
+  return allocSalonPool().filter(x=>!used.has(allocSlotOf(String(x['サロンID']).trim(), gi)));
+}
+function allocSwapSalon(slot, newSid){
+  newSid = String(newSid||'').trim();
+  if(!newSid){ toast('サロンを選んでください', true); return; }
+  const r = ALLOC.result[ALLOC.brand]; if(!r) return;
+  const gi = slotGroupIdx(slot), newSlot = allocSlotOf(newSid, gi);
+  if(newSlot!==slot && r.salonIds.includes(newSlot)){ toast('そのサロンはこの割り振りに既に入っています', true); return; }
+  if(newSlot===slot){ viewState.swapSlot=null; render(); return; }
+  const names = {}; rows('salons').forEach(x=>names[String(x['サロンID']).trim()]=salonLabel(x));
+  // 中身（割当・仕入先）をそのまま新しいスロットへ移し、列の位置は動かさない
+  r.salonIds = r.salonIds.map(x=>x===slot ? newSlot : x);
+  r.m[newSlot] = r.m[slot] || {}; delete r.m[slot];
+  if(r.supBy){ if(r.supBy[slot]!==undefined) r.supBy[newSlot] = r.supBy[slot]; delete r.supBy[slot]; }
+  const g = allocGroups()[gi];
+  if(g && g.sel){ g.sel[slotBase(slot)] = false; g.sel[newSid] = true; }
+  viewState.swapSlot = null;
+  // 枠は止めない（差し替えは意図的な操作なので）。超えるときだけ知らせる
+  const spent = r.items.reduce((a,i)=>a+num((r.m[newSlot]||{})[i.pid])*i.price, 0);
+  if(r.budget && spent > r.budget)
+    toast(names[newSid]+' に移しましたが、枠 '+yen(r.budget)+' に対して '+yen(spent)+' で超過しています', true);
+  else
+    toast(names[slotBase(slot)]+' → '+names[newSid]+' に差し替えました（数量はそのまま）');
+  render();
+}
+function allocAddSalon(gi, sid){
+  sid = String(sid||'').trim();
+  if(!sid){ toast('サロンを選んでください', true); return; }
+  const r = ALLOC.result[ALLOC.brand]; if(!r) return;
+  gi = Number(gi)||0;
+  const slot = allocSlotOf(sid, gi);
+  if(r.salonIds.includes(slot)){ toast('そのサロンはこの割り振りに既に入っています', true); return; }
+  r.salonIds = r.salonIds.concat([slot]);
+  r.m[slot] = {};                                   // 空の列として足す。数量は表に直接打ってもらう
+  const g = allocGroups()[gi];
+  const sup = g ? String(g.sup||'').trim() : '';
+  if(sup) (r.supBy = r.supBy||{})[slot] = sup;      // 仕入先はそのグループのものを引き継ぐ
+  if(g && g.sel) g.sel[sid] = true;
+  viewState.addSalon = null;
+  const names = {}; rows('salons').forEach(x=>names[String(x['サロンID']).trim()]=salonLabel(x));
+  toast(names[sid]+' の列を足しました。数量を直接入力してください');
+  render();
+}
 function allocSupOf(r,sid){ return String(((r.supSplit&&r.supBy)?r.supBy[sid]:'')||r.supplier||'').trim(); }
 // ②の外注仕入枠（計算前の設定。ALLOC.conf[brand].outs = [{sid, budget}]。2026-07-18「計算の前に枠を入れる」方式へ変更）
 function allocCOuts(){ const c=ALLOC.conf[ALLOC.brand]=ALLOC.conf[ALLOC.brand]||{}; return c.outs=c.outs||[]; }
@@ -3666,6 +3717,8 @@ function vAllocation(){
     const outQty = pid=>outs.reduce((a,o)=>a+num((o.q||{})[pid]),0);
     const outTotal = r.items.reduce((a,i)=>a+outQty(i.pid),0);
     const shortTotal = r.items.reduce((a,i)=>a+Math.max(0, i.need-assignedOf(i.pid)-outQty(i.pid)),0);
+    // 配りすぎ（受注数より多く割り振っている）。手打ちで増やせるぶん起こりうるので確定前に止める（2026-08-26）
+    const overTotal  = r.items.reduce((a,i)=>a+Math.max(0, assignedOf(i.pid)+outQty(i.pid)-i.need),0);
     const dealers = rows('salons').filter(s=>String(s['種別']||'').trim()==='外注' && String(s['ストップ']||'').trim()==='' && String(s['サロンID']||'').trim());   // 外注先=種別「外注」（2026-07-17 3値化）
     html += '<div class="card tblwrap"><div class="row"><b class="small">③ '+esc(brand)+' 割り振り結果（対象受注: '+selIds.join(', ')+'）</b>' +
       '<button class="btn sm" onclick="allocPrint()">🖨 印刷用を開く（PDF保存）</button>' +
@@ -3673,6 +3726,8 @@ function vAllocation(){
       // 余りが残っている間は確定に進めない（2026-07-18 ユーザー要望。押すと理由をトースト表示）
       (shortTotal>0
         ? '<button class="btn sm right" style="opacity:.55" onclick="toast(\'余りが '+shortTotal+'点 残っています。全て割り振ってから確定してください\', true)">✅ 確定して回収データを作成</button>'
+        : overTotal>0
+        ? '<button class="btn sm right" style="opacity:.55" onclick="toast(\'受注数より '+overTotal+'点 多く割り振っています。減らしてから確定してください\', true)">✅ 確定して回収データを作成</button>'
         : '<button class="btn pri sm right" onclick="allocCommit()">✅ 確定して回収データを作成</button>')+'</div>' +
       // 外注枠のサマリー（枠の指定は②で。ここは結果確認＋🔁での手直し。表形式で整列・自社サロンのみモードでは出さない）
       (allocMode!=='own' && outs.length ? '<div style="margin-top:8px;padding:10px 12px;background:var(--wash);border-radius:10px">' +
@@ -3711,19 +3766,49 @@ function vAllocation(){
         const legend = Object.keys(supColor).map(sid=>'<span class="step"><span class="dot" style="background:'+supColor[sid]+';border-color:'+supColor[sid]+'"></span>'+esc(names[sid]||sid)+'</span>').join(' ');
         return (legend ? '<div class="row" style="margin-top:8px"><span class="muted small">列の色 = 仕入先:</span><span class="steps small">'+legend+'</span></div>' : '') +
         '<table style="margin-top:6px"><tr><th>商品</th><th>容量</th><th class="num">必要数</th>' +
-        r.salonIds.map(s=>'<th class="num small" style="'+colBg(salonSup(s))+'">'+esc(names[slotBase(s)]||slotBase(s))+'</th>').join('') +
+        r.salonIds.map(s=>{
+          // ↔ = サロンだけ差し替え（数量はそのまま）。押した列だけ選択欄に変わる
+          if(viewState.swapSlot===s){
+            const cands = allocSwapCands(r, slotGroupIdx(s), s);
+            return '<th class="small" style="'+colBg(salonSup(s))+'"><select id="swapSel" style="width:150px;padding:3px 6px;font-weight:normal">' +
+              '<option value="">サロンを選ぶ…</option>' +
+              cands.map(x=>'<option value="'+esc(String(x['サロンID']).trim())+'">'+esc(salonLabel(x))+'</option>').join('') +
+              '</select><div class="row" style="gap:4px;margin-top:4px;justify-content:center">' +
+              '<button class="btn pri sm" onclick="allocSwapSalon(\''+esc(s)+'\', document.getElementById(\'swapSel\').value)">変更</button>' +
+              '<button class="btn sm" onclick="viewState.swapSlot=null;render()">やめる</button></div></th>';
+          }
+          return '<th class="num small" style="'+colBg(salonSup(s))+'">'+esc(names[slotBase(s)]||slotBase(s)) +
+            ' <button class="btn sm" title="このサロンを別のサロンに差し替える（数量はそのまま）" style="padding:1px 6px;font-weight:normal" onclick="viewState.swapSlot=\''+esc(s)+'\';render()">↔</button></th>';
+        }).join('') +
+        // ＋ = 空の列を足して数量を手打ちする（再計算しない）
+        (()=>{ const gs = allocGroups();
+          if(viewState.addSalon==null)
+            return '<th class="small"><button class="btn sm" title="サロンの列を足して数量を手入力する" style="padding:2px 8px;font-weight:normal" onclick="viewState.addSalon={gi:0};render()">＋ サロン</button></th>';
+          const gi = Number(viewState.addSalon.gi)||0;
+          const cands = allocSwapCands(r, gi, null);
+          return '<th class="small" style="min-width:170px">' +
+            (gs.length>1 ? '<select style="width:158px;padding:3px 6px;font-weight:normal;margin-bottom:4px" onchange="viewState.addSalon={gi:Number(this.value)};render()">' +
+              gs.map((g,i)=>'<option value="'+i+'" '+(i===gi?'selected':'')+'>グループ'+(i+1)+'（'+esc(names[String(g.sup||'').trim()]||'仕入先未選択')+'）</option>').join('') + '</select>' : '') +
+            '<select id="addSel" style="width:158px;padding:3px 6px;font-weight:normal">' +
+            '<option value="">サロンを選ぶ…</option>' +
+            cands.map(x=>'<option value="'+esc(String(x['サロンID']).trim())+'">'+esc(salonLabel(x))+'</option>').join('') +
+            '</select><div class="row" style="gap:4px;margin-top:4px;justify-content:center">' +
+            '<button class="btn pri sm" onclick="allocAddSalon('+gi+', document.getElementById(\'addSel\').value)">追加</button>' +
+            '<button class="btn sm" onclick="viewState.addSalon=null;render()">やめる</button></div></th>';
+        })() +
         (allocMode!=='own' ? outs.map(o=>'<th class="num small" style="'+colBg(o.sid)+'">🤝'+esc(names[o.sid]||'外注')+'</th>').join('') : '')+'<th class="num">割当計</th><th class="num">余り</th></tr>' +
         r.items.map(i=>{
           const asg = assignedOf(i.pid), oq = outQty(i.pid), left = i.need-asg-oq;
           return '<tr><td class="small">'+esc(i.name)+(i.unit>1?' <span class="muted">［'+i.unit+'個/箱］</span>':'')+'</td><td class="small">'+esc(i.size||'')+'</td><td class="num">'+i.need+'</td>' +
             r.salonIds.map(s=>{ const v=num((r.m[s]||{})[i.pid]); const bad = i.unit>1 && v%i.unit!==0;
               return '<td class="num" style="'+colBg(salonSup(s))+'"><input type="number" value="'+(v||'')+'" min="0" onchange="allocCell(\''+i.pid+'\',\''+s+'\',this.value)" style="width:64px;text-align:right'+(bad?';border-color:var(--crit)':'')+'"'+(bad?' title="箱の入数（'+i.unit+'）の倍数ではありません"':'')+'></td>'; }).join('') +
+            '<td></td>' +   // ＋列ぶんの空セル（見出しに追加ボタンがあるので列数を合わせる）
             (allocMode!=='own' ? outs.map((o,gi)=>{ const ov=num((o.q||{})[i.pid]); return '<td class="num" style="'+colBg(o.sid)+'"><input type="number" value="'+(ov||'')+'" min="0" onchange="allocOutCell(\''+i.pid+'\','+gi+',this.value)" style="width:64px;text-align:right"></td>'; }).join('') : '') +
             '<td class="num">'+(asg+oq)+'</td><td class="num"'+(left!==0?' style="color:var(--crit);font-weight:700"':'')+'>'+left+'</td></tr>';
         }).join('') +
         '<tr style="background:var(--wash)"><td><b>合計金額 / 枠 '+yen(r.budget)+'</b></td><td></td><td></td>' +
         r.salonIds.map(s=>{ const sp=spentOf(s); const over=sp>r.budget;
-          return '<td class="num small"'+(over?' style="color:var(--crit)"':'')+'><b>'+yen(sp)+'</b>'+(over?'<br>⚠枠超過':'')+'</td>'; }).join('');
+          return '<td class="num small"'+(over?' style="color:var(--crit)"':'')+'><b>'+yen(sp)+'</b>'+(over?'<br>⚠枠超過':'')+'</td>'; }).join('') + '<td></td>';
       })() +
       (allocMode!=='own' ? outs.map(o=>{ const money=r.items.reduce((a,i)=>a+num((o.q||{})[i.pid])*allocOutUnit(o.sid,i.pid),0);
         return '<td class="num small"><b>'+yen(money)+'</b>'+(num(o.budget)&&money>num(o.budget)?'<br>⚠枠超過':'')+'</td>'; }).join('') : '') +
@@ -3734,6 +3819,11 @@ function vAllocation(){
         '<div class="small" style="margin-top:4px;color:var(--crit)">' +
         r.items.map(i=>{ const left=i.need-assignedOf(i.pid)-outQty(i.pid); return left>0 ? esc(i.name)+' '+esc(i.size||'')+' × <b>'+left+'</b>' : ''; }).filter(Boolean).join('　／　') +
         '</div><div class="muted small" style="margin-top:4px">サロンを増やす・枠金額/上限をゆるめる・外注枠に入れる、のいずれかで割り切ってください（表のマスは直接手直しできます）</div></div>' : '') +
+      (overTotal>0 ? '<div style="margin-top:8px;padding:10px 12px;border:1.5px solid var(--crit);border-radius:10px;background:color-mix(in srgb,var(--crit) 6%,transparent)">' +
+        '<b class="small" style="color:var(--crit)">⚠ 受注数より '+overTotal+'点 多く割り振っています — 減らすまで確定できません</b>' +
+        '<div class="small" style="margin-top:4px;color:var(--crit)">' +
+        r.items.map(i=>{ const ov=assignedOf(i.pid)+outQty(i.pid)-i.need; return ov>0 ? esc(i.name)+' '+esc(i.size||'')+' × <b>+'+ov+'</b>' : ''; }).filter(Boolean).join('　／　') +
+        '</div><div class="muted small" style="margin-top:4px">どこかのマスを減らしてください（サロンの列を足したときに入れすぎているとここに出ます）</div></div>' : '') +
       // 💴 仕入額の合計（2026-08-07 ユーザー要望）: 実際に割り振った数量ベースの確定値。
       // 売上側（サロン価＋外注価）と並べて粗利まで出す
       (()=>{ const asgQty = pid=>assignedOf(pid)+outQty(pid);
@@ -4000,6 +4090,12 @@ async function allocCommit(){
     return a + Math.max(0, i.need-asg-oq);
   },0);
   if(shortLeft>0){ toast('余りが '+shortLeft+'点 残っています。全て割り振ってから確定してください', true); return; }
+  const overLeft = r.items.reduce((a,i)=>{
+    const asg = r.salonIds.reduce((x,s)=>x+num((r.m[s]||{})[i.pid]),0);
+    const oq = allocOutsOf(r).reduce((x,o)=>x+num((o.q||{})[i.pid]),0);
+    return a + Math.max(0, asg+oq-i.need);
+  },0);
+  if(overLeft>0){ toast('受注数より '+overLeft+'点 多く割り振っています。減らしてから確定してください', true); return; }
   // 🏭 仕入先（支払い集計用）: 卸行があるときは全行の解決が必須（スロット別指定 > ブランド既定。2026-07-18）
   const hasWholesale = lines.some(l=>!l.out);
   const supLabelOf = sid=>{ const row=rows('salons').find(s=>String(s['サロンID']).trim()===sid); return row?salonLabel(row):sid; };
