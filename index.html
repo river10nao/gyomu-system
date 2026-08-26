@@ -222,7 +222,9 @@ async function apiGet(action, params){
 }
 async function apiPost(action, payload, refresh){
   // 起動直後の裏読み込み中（スナップショット表示中）は書き込みさせない（古いデータを見たまま操作する事故防止）
-  if(!dbFresh) throw new Error('最新データを読み込み中です。数秒待ってからもう一度お試しください');
+  if(!dbFresh) throw new Error(dbLoadState==='fail'
+    ? '最新データを読み込めていないため保存できません。画面上部の「🔄 データ更新」を押してください'
+    : '最新データを読み込み中です。数秒待ってからもう一度お試しください');
   // Content-Type を text/plain にして CORS プリフライトを回避（GAS は OPTIONS を扱えない）
   // refresh: 指定したシートの最新データを応答に同梱してもらう（書き込み→読み直しを1往復にする高速化）
   const res = await fetch(GAS_URL, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
@@ -301,7 +303,7 @@ async function boot(){
       document.getElementById('app').style.display='block';
       renderNav(); render();
       loadAll().then(()=>{ renderNav(); render(); })
-        .catch(()=>toast('最新データの取得に失敗しました。「🔄 データ更新」を押してください', true));
+        .catch(()=>{ render(); toast('最新データの取得に失敗しました。画面上部の「🔄 データ更新」を押してください', true); });
     }else{
       await loadAll();
       document.getElementById('app').style.display='block';
@@ -319,17 +321,56 @@ const SHEETS = ['products','wholesalers','salons','orderLedger','collectionLedge
 // alerts はGAS側で6シート読む一番重い項目（単体約4秒）なので、起動・全読み直しの完了を待たせず後から差し込む
 const CORE_SHEETS = SHEETS.filter(n => n !== 'alerts');
 let dbFresh = false;   // 保存スナップショットで先に画面を出している間は false（書き込み操作をガード）
+// 読み込みの状態。'loading'=取得中 / 'ok'=最新 / 'fail'=取れなかった。
+// fail のまま放置されると保存だけできない状態になるので、画面上部にバナーを出して復帰手段を示す（2026-08-26）
+let dbLoadState = 'loading';
 
+// 取得のリトライ。GASは時々エラーHTMLを返すことがあり、1回こけただけで
+// 起動が失敗扱いになっていた（＝保存できなくなる）ので、少し待って取り直す
+async function apiGetRetry(action, params, tries){
+  const n = tries || 3;
+  let last;
+  for(let i=0; i<n; i++){
+    try{ return await apiGet(action, params); }
+    catch(e){ last = e; if(i < n-1) await new Promise(r=>setTimeout(r, 800*(i+1))); }
+  }
+  throw last;
+}
+// 起動・全読み直しは bulk で1リクエストにまとめる。
+// 以前は17本を並列で投げていて、1本でも失敗すると全体が失敗＝保存ロックが解けなかった（2026-08-26）
+async function loadCore(list){
+  const got = await apiGetRetry('bulk', {names: list.join(',')});
+  const missing = list.filter(n=>!got[n]);
+  if(missing.length) throw new Error('読み込めなかったデータ: ' + missing.join(', '));
+  list.forEach(n=>{ DB[n] = got[n]; });
+}
 async function loadAll(){
-  await Promise.all(CORE_SHEETS.map(async name => { DB[name] = await apiGet(name); }));
-  dbFresh = true;
+  dbLoadState = 'loading';
+  try{ await loadCore(CORE_SHEETS); }
+  catch(e){ dbLoadState = 'fail'; throw e; }
+  dbFresh = true; dbLoadState = 'ok';
   refreshAlerts();
   saveSnap();
 }
 async function reload(names){
-  await Promise.all((names||CORE_SHEETS).map(async n => { DB[n] = await apiGet(n); }));
-  if(!names) refreshAlerts();
+  const list = names || CORE_SHEETS;
+  if(!names) dbLoadState = 'loading';
+  try{ await loadCore(list); }
+  catch(e){ if(!names) dbLoadState = 'fail'; render(); throw e; }
+  // 全部読み直したときだけロックを解除する（一部だけの読み直しでは解除しない）
+  if(!names){ dbFresh = true; dbLoadState = 'ok'; refreshAlerts(); }
   saveSnap(); render();
+}
+// ロック中・読み込み中に画面の一番上へ出す帯。以前は起動時の一瞬のトーストだけで気づけなかった
+function dbBanner(){
+  if(dbLoadState==='loading')
+    return '<div class="card" style="margin-bottom:12px;background:var(--wash)"><b class="small">⏳ 最新データを読み込んでいます…</b>' +
+      '<span class="muted small" style="margin-left:8px">表示は前回のデータです。読み込みが終わるまで保存はできません（10〜30秒ほど）</span></div>';
+  return '<div class="card" style="margin-bottom:12px;border:1.5px solid var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent)">' +
+    '<b class="small">⚠ 最新データを読み込めていないため、いまは保存できません</b>' +
+    '<div class="small" style="margin-top:6px">表示は前回のデータです。' +
+    '<button class="btn sm" style="margin-left:6px" onclick="reload().then(()=>toast(\'最新データを読み込みました\')).catch(e=>toast(e.message, true))">🔄 データ更新</button>' +
+    '<span class="muted" style="margin-left:8px">これでも直らないときはページを再読み込みしてください</span></div></div>';
 }
 // 要対応（alerts）は待たずに裏で更新して、届いたら画面に反映
 let alertsBusy = false;
@@ -663,15 +704,37 @@ function render(){
   const fn = {dashboard:vDashboard, orders:vOrders, collection:vCollection, stock:vStock,
               shipments:vShipments, hanbai:vHanbai, payments:vPayments, salonpay:vSalonPay, quota:vQuota, masters:vMasters,
               opslog:vOpsLog, allocation:vAllocation, poform:vPoForm}[view];
-  // 検索欄に入力中の再描画でカーソルが外れないように、描き直し後にフォーカスと位置を戻す
+  // 画面はボタン1つ・数量1マスごとに丸ごと作り直している。そのままだと横スクロール位置・
+  // 読んでいた縦位置・入力中のマスが毎回リセットされる（振り分けの表が左端に飛ぶ）ので、
+  // 描く前に控えて描いた直後に戻す（2026-08-26 ユーザー要望）
+  const main = document.getElementById('main');
+  const boxes = Array.from(main.querySelectorAll('.tblwrap')).map(el=>[el.scrollLeft, el.scrollTop]);
+  const pageX = window.scrollX, pageY = window.scrollY;
   const ae = document.activeElement;
   const keepSearch = ae && ae.classList && ae.classList.contains('search');
-  const caret = keepSearch ? ae.selectionStart : 0;
-  document.getElementById('main').innerHTML = fn ? fn() : '';
+  const keepCell = (!keepSearch && ae && ae.dataset && ae.dataset.cell) ? String(ae.dataset.cell) : '';
+  const caret = (keepSearch && ae.selectionStart!=null) ? ae.selectionStart : 0;
+
+  main.innerHTML = (dbLoadState==='ok' ? '' : dbBanner()) + (fn ? fn() : '');
+
+  // 先にフォーカスを戻す。preventScroll を付けないと、そのマスを見せようとブラウザが
+  // 勝手にスクロールして、下で戻した位置を上書きしてしまう
   if(keepSearch){
-    const el = document.querySelector('#main .search');
-    if(el){ el.focus(); try{ el.setSelectionRange(caret, caret); }catch(e){} }
+    const el = main.querySelector('.search');
+    if(el){ try{ el.focus({preventScroll:true}); }catch(e){ el.focus(); }
+            try{ el.setSelectionRange(caret, caret); }catch(e){} }
+  }else if(keepCell){
+    const el = main.querySelector('[data-cell="'+keepCell.replace(/["\\]/g,'')+'"]');
+    if(el){ try{ el.focus({preventScroll:true}); }catch(e){ el.focus(); }
+            try{ el.select(); }catch(e){} }
   }
+  // スクロールは最後に戻す。.tblwrap は「同じ画面なら並び順が変わらない」ので出現順で対応づける
+  Array.from(main.querySelectorAll('.tblwrap')).forEach((el,i)=>{
+    const p = boxes[i]; if(!p) return;
+    void el.scrollWidth;                       // 位置を入れる前にレイアウトを確定させる
+    el.scrollLeft = p[0]; el.scrollTop = p[1];
+  });
+  window.scrollTo(pageX, pageY);
   renderNav();
 }
 
@@ -3801,9 +3864,9 @@ function vAllocation(){
           const asg = assignedOf(i.pid), oq = outQty(i.pid), left = i.need-asg-oq;
           return '<tr><td class="small">'+esc(i.name)+(i.unit>1?' <span class="muted">［'+i.unit+'個/箱］</span>':'')+'</td><td class="small">'+esc(i.size||'')+'</td><td class="num">'+i.need+'</td>' +
             r.salonIds.map(s=>{ const v=num((r.m[s]||{})[i.pid]); const bad = i.unit>1 && v%i.unit!==0;
-              return '<td class="num" style="'+colBg(salonSup(s))+'"><input type="number" value="'+(v||'')+'" min="0" onchange="allocCell(\''+i.pid+'\',\''+s+'\',this.value)" style="width:64px;text-align:right'+(bad?';border-color:var(--crit)':'')+'"'+(bad?' title="箱の入数（'+i.unit+'）の倍数ではありません"':'')+'></td>'; }).join('') +
+              return '<td class="num" style="'+colBg(salonSup(s))+'"><input type="number" data-cell="al|'+i.pid+'|'+s+'" value="'+(v||'')+'" min="0" onchange="allocCell(\''+i.pid+'\',\''+s+'\',this.value)" style="width:64px;text-align:right'+(bad?';border-color:var(--crit)':'')+'"'+(bad?' title="箱の入数（'+i.unit+'）の倍数ではありません"':'')+'></td>'; }).join('') +
             '<td></td>' +   // ＋列ぶんの空セル（見出しに追加ボタンがあるので列数を合わせる）
-            (allocMode!=='own' ? outs.map((o,gi)=>{ const ov=num((o.q||{})[i.pid]); return '<td class="num" style="'+colBg(o.sid)+'"><input type="number" value="'+(ov||'')+'" min="0" onchange="allocOutCell(\''+i.pid+'\','+gi+',this.value)" style="width:64px;text-align:right"></td>'; }).join('') : '') +
+            (allocMode!=='own' ? outs.map((o,gi)=>{ const ov=num((o.q||{})[i.pid]); return '<td class="num" style="'+colBg(o.sid)+'"><input type="number" data-cell="out|'+i.pid+'|'+gi+'" value="'+(ov||'')+'" min="0" onchange="allocOutCell(\''+i.pid+'\','+gi+',this.value)" style="width:64px;text-align:right"></td>'; }).join('') : '') +
             '<td class="num">'+(asg+oq)+'</td><td class="num"'+(left!==0?' style="color:var(--crit);font-weight:700"':'')+'>'+left+'</td></tr>';
         }).join('') +
         '<tr style="background:var(--wash)"><td><b>合計金額 / 枠 '+yen(r.budget)+'</b></td><td></td><td></td>' +
@@ -4494,7 +4557,7 @@ function vPoForm(){
         return '<tr><td class="small">'+esc(w['卸先名'])+'</td>' + selB.map(b=>{
           const v = poRate(wid,b), empty = String(v).trim()==='';
           const fromMaster = s.rate[poKey(wid,b)]===undefined && !empty;
-          return '<td class="num"><input value="'+esc(v)+'" placeholder="—" title="'+(fromMaster?'卸先マスタの掛け率':'この画面で入力')+'"'+
+          return '<td class="num"><input data-cell="po|'+esc(wid)+'|'+esc(b)+'" value="'+esc(v)+'" placeholder="—" title="'+(fromMaster?'卸先マスタの掛け率':'この画面で入力')+'"'+
             ' style="width:64px;padding:4px 6px;text-align:right'+(empty?';border:1.5px solid var(--crit);background:color-mix(in srgb,var(--crit) 8%,transparent)':'')+'"'+
             ' oninput="poSetRate(\''+esc(wid)+'\',\''+esc(b)+'\',this.value)" onchange="render()"><span class="muted small">%</span></td>';
         }).join('') + '</tr>';
