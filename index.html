@@ -1025,13 +1025,16 @@ function calcSales(month){
   let sales=0, cost=0; const byW={}, byB={};
   rows('orderLedger').forEach(r=>{
     if(monthOf(r['受注日'])!==month) return;
-    const sub=num(r['小計（税抜）']), qty=num(r['個数']), pid=r['商品ID'];
-    sales+=sub; cost+=ownCost(pid)*qty;
+    const sub=num(r['小計（税抜）']), pid=r['商品ID'];
+    sales+=sub;
     const w=String(r['卸先名']||'').trim(); if(w) byW[w]=(byW[w]||0)+sub;
     const b=brandOf(pid); if(b) byB[b]=(byB[b]||0)+sub;
   });
+  // 仕入は案件別収支と同じ実額（仕入先の掛け率ベース）。KPIと下の表で数字が食い違わないように揃える（2026-08-28）
+  let prov=0;
+  calcAnbetsu(month).forEach(l=>{ cost+=l.cost; prov+=l.prov; });
   const goal = rows('monthlyGoals').find(g=>monthOf(g['月'])===month);
-  return {sales, cost, profit:sales-cost, byW, byB,
+  return {sales, cost, prov, profit:sales-cost, byW, byB,
     goal: goal?{sales:num(goal['売上目標（税抜）']),profit:num(goal['利益目標（税抜）']),buy:num(goal['仕入目標（税抜）'])}:null};
 }
 function calcSalonPay(month){
@@ -1383,7 +1386,7 @@ function vDashboard(){
   boardHtml +
   '<div class="kpis">' +
     kpi('売上（税抜）', yen(s.sales)) +
-    kpi('仕入れ額（税抜）', yen(s.cost)) +
+    kpi('仕入れ額（税抜）', yen(s.cost), s.prov ? '内 '+yen(s.prov)+' は未振分のため仮' : '実額（仕入先の掛け率ベース）') +
     kpi('利益（概算）', yen(s.profit), s.sales>0 ? '利益率 '+Math.round(s.profit/s.sales*100)+'%' : '') +
     // 目標達成率 = 売上実績 ÷「月次目標」シートの売上目標。利益目標も入っていれば添える（2026-07-18 ユーザー要望）
     (()=>{ const g=s.goal||{};
@@ -1404,21 +1407,124 @@ function vDashboard(){
   pendHtml +
   anbetsuHtml(m) + '</div>';
 }
+// ===== 案件ごとの「実際の仕入」を仕入先別に割り出す（2026-08-28 ユーザー要望） =====
+// 商品マスタの仕入価格は仕入先が違っても同じ値なので、実額にならない（同じ商品でもコスモ49%・ロイヤル45.5%等）。
+// 実額は回収台帳（どのサロンぶんをどの仕入先から入れたか）＋仕入先マスタの掛け率から出す。支払い画面と同じ計算。
+//
+// 面倒なのは、回収台帳の1行が「対象受注」に複数の受注を持つこと（同時に確定した受注はまとめて1行になる）。
+// そのまま各受注に足すと二重計上になるので、商品IDごとに受注の必要数へ受注ID順で充当して分ける。
+let _supMemo = {a:null, b:null, val:null};
+function anbetsuSupplyMemo(){
+  if(_supMemo.a!==DB.collectionLedger || _supMemo.b!==DB.orderLedger){
+    _supMemo = {a:DB.collectionLedger, b:DB.orderLedger, val:anbetsuSupply()};
+  }
+  return _supMemo.val;
+}
+function anbetsuSupply(){
+  const sal = {}; rows('salons').forEach(s=>{ const sid=String(s['サロンID']||'').trim(); if(sid) sal[sid]=s; });
+  // 受注ごとの必要数（商品ID単位）
+  const need = {};   // 受注ID → { 商品ID: 残り必要数 }
+  rows('orderLedger').forEach(r=>{
+    const oid = String(r['受注ID']||'').trim(); const pid = String(r['商品ID']||'').trim();
+    if(!oid || !pid) return;
+    (need[oid]=need[oid]||{})[pid] = (need[oid][pid]||0) + num(r['個数']);
+  });
+  const got = {};    // 受注ID|ブランド → { 仕入先ID: {qty, amt, listAmt} }
+  const add = (oid, pid, supId, qty)=>{
+    if(qty<=0) return;
+    const brand = brandOf(pid) || '（メーカー不明）';
+    const list = num((product(pid)||{})['定価（税抜）']);
+    const rate = payRateOf(sal[supId], brand);
+    let unit;
+    if(rate!=null && supId===PAYIDS.pure){
+      // 口座請求元の実請求単価（支払い画面と同じ式）。サロン価未設定なら旧式で仮
+      const sc = salonCost(pid);
+      unit = sc>0 ? Math.floor(sc*57/100) : Math.floor(list*(Math.round((rate-BROKER_RATE)*1000)/1000));
+    } else if(rate!=null){ unit = Math.round(list*rate); }
+    else { unit = ownCost(pid); }   // 掛け率が引けない仕入先は商品マスタで仮
+    const k = oid+'|'+brand;
+    const g = (got[k]=got[k]||{});
+    const e = g[supId] = g[supId] || {qty:0, amt:0, listAmt:0, noRate:(rate==null)};
+    e.qty += qty; e.amt += unit*qty; e.listAmt += list*qty;
+  };
+  // 回収IDの若い順に、対象受注の若い順で充当する（振り分けが受注の必要数を埋めていく順番と同じ）
+  const cls = rows('collectionLedger').filter(r=>String(r['区分']||'').trim()!=='在庫')   // 在庫充当は仕入れていない
+    .sort((a,b)=>String(a['回収ID']||'').localeCompare(String(b['回収ID']||'')));
+  cls.forEach(r=>{
+    let left = num(r['個数']); if(left<=0) return;
+    const pid = String(r['商品ID']||'').trim(); if(!pid) return;
+    const supId = String(r['仕入先ID']||'').trim();
+    const oids = String(r['対象受注']||'').split(',').map(x=>x.trim()).filter(x=>x && need[x]);
+    if(!oids.length) return;   // 受注に紐づかない仕入（手動仕入れ等）は案件別収支の対象外
+    oids.sort();
+    oids.forEach(oid=>{
+      if(left<=0) return;
+      const t = Math.min(left, need[oid][pid]||0);
+      if(t<=0) return;
+      add(oid, pid, supId, t); need[oid][pid] -= t; left -= t;
+    });
+    // どの受注も満ちていた分（数量を減らした後などに出る）は先頭の受注に寄せて取りこぼさない
+    if(left>0) add(oids[0], pid, supId, left);
+  });
+  return {got, left:need};   // left = 充当しきれず残った必要数（＝まだ振り分けていない分）
+}
+// 仕入形態の文中に出てくる仕入先名へ種別を添える（例: 神澤さん → 神澤さん（外注））。
+// 同じ名前がサロンにも仕入先にも見えて紛らわしい、というユーザー指摘への対応（2026-08-28）
+// 経由ディーラーまで入れた仕入形態の文字列（印刷・CSV用。画面はグレー装飾を挟むので別実装）
+function anbetsuFormFull(l){
+  const via = l.sups.filter(s=>s.kind!=='外注').map(s=>s.name.replace(/株式会社|合同会社/g,'').trim()).filter(Boolean);
+  const txt = anbetsuFormText(l.form);
+  if(!via.length) return txt;
+  const note = '（'+via.join('・')+'経由）';
+  return txt.indexOf('自社サロン')>=0 ? txt.replace('自社サロン', '自社サロン'+note) : txt+note;
+}
+function anbetsuFormText(txt){
+  let t = String(txt||''); if(!t) return t;
+  const kind = {};
+  rows('salons').forEach(s=>{ const k=String(s['種別']||'').trim();
+    if(k==='外注'||k==='ディーラー'){ const n=salonLabel(s).trim(); if(n) kind[n]=k; } });
+  // 長い名前から先に当てる（「株式会社LOYAL」より先に「LOYAL」を当ててしまわないように）
+  Object.keys(kind).sort((a,b)=>b.length-a.length).forEach(n=>{
+    if(t.indexOf(n)>=0 && t.indexOf(n+'（')<0) t = t.replace(n, n+'（'+kind[n]+'）');
+  });
+  return t;
+}
 // 案件別収支（旧・売り上げ管理シートの形式）。行 = 受注×メーカー。受注を取り込んだ瞬間に自動で出る
 function calcAnbetsu(month){
   const map = {};
+  const sup = anbetsuSupplyMemo();
   rows('orderLedger').forEach(r=>{
     if(monthOf(r['受注日'])!==month) return;
     const oid = String(r['受注ID']||'').trim(); if(!oid) return;
     const brand = brandOf(r['商品ID']) || '（メーカー不明）';
     const key = oid+'|'+brand;
-    if(!map[key]) map[key] = {oid, brand, w:r['卸先名'], date:r['受注日'], st:r['ステータス'], form:r['仕入れ形態'], sales:0, list:0, cost:0, via:0};
+    if(!map[key]) map[key] = {oid, brand, w:r['卸先名'], date:r['受注日'], st:r['ステータス'], form:r['仕入れ形態'],
+      sales:0, list:0, cost:0, sups:[], prov:0, provQty:0};
     const sub = num(r['小計（税抜）']);
     map[key].sales += sub;
     map[key].list  += num(r['定価（税抜）'])*num(r['個数']);
-    map[key].cost  += ownCost(r['商品ID'])*num(r['個数']);
-    // 経由案件（受注台帳の経由列に印）: 経由先利益=卸値の3%。自社の利益はその分減る（=卸値97%−仕入）
-    if(String(r[NM.via+'経由']||'').trim()!=='') map[key].via += Math.round(sub*0.03);
+  });
+  // 仕入は「振り分け済み＝仕入先の実額」「未振分＝商品マスタの仕入価格で仮置き」の合算。
+  // 振り分けを確定すると次の描画から自動で実額に入れ替わる（手で更新する必要はない）
+  const salName = {}; rows('salons').forEach(s=>{ const sid=String(s['サロンID']||'').trim(); if(sid) salName[sid]=s; });
+  Object.keys(map).forEach(key=>{
+    const l = map[key];
+    const g = sup.got[key] || {};
+    Object.keys(g).forEach(supId=>{
+      const e = g[supId], s = salName[supId] || {};
+      l.sups.push({id:supId, name:salonLabel(s)||supId||'（仕入先未記録）', kind:String(s['種別']||'').trim(),
+        qty:e.qty, amt:e.amt, rate:e.listAmt>0?e.amt/e.listAmt:null, noRate:e.noRate});
+      l.cost += e.amt;
+    });
+    l.sups.sort((a,b)=>b.amt-a.amt);
+    // 未振分（回収台帳に無い分）は商品マスタの仕入価格で仮計上する
+    const restPid = sup.left[l.oid] || {};
+    Object.keys(restPid).forEach(pid=>{
+      const q = restPid[pid]; if(q<=0) return;
+      if((brandOf(pid)||'（メーカー不明）') !== l.brand) return;
+      l.prov += ownCost(pid)*q; l.provQty += q;
+    });
+    l.cost += l.prov;
   });
   return Object.values(map).sort((a,b)=>String(b.oid).localeCompare(String(a.oid)));
 }
@@ -1430,11 +1536,11 @@ function anbetsuHtml(m){
   lines.forEach(l=>{ const b=l.brand||'（メーカー不明）'; (byBrand[b]=byBrand[b]||[]).push(l); });
   const groups = Object.entries(byBrand).map(([brand,ls])=>({
     brand, ls: ls.sort((a,b)=>b.sales-a.sales),
-    sales: ls.reduce((a,x)=>a+x.sales,0), cost: ls.reduce((a,x)=>a+x.cost,0), via: ls.reduce((a,x)=>a+x.via,0)
+    sales: ls.reduce((a,x)=>a+x.sales,0), cost: ls.reduce((a,x)=>a+x.cost,0)
   })).sort((a,b)=>b.sales-a.sales);
-  const t = {sales:0, cost:0, via:0};
-  groups.forEach(g=>{ t.sales+=g.sales; t.cost+=g.cost; t.via+=g.via; });
-  const profit = x=>x.sales-x.cost-x.via;   // 自社の利益。経由分は卸値3%を渡すぶん減る
+  const t = {sales:0, cost:0};
+  groups.forEach(g=>{ t.sales+=g.sales; t.cost+=g.cost; });
+  const profit = x=>x.sales-x.cost;
 
   // ブランドごとの仕入枠消化（サロン×ブランドの枠を合算。ブランド小計行に表示）
   const quotaByBrand = {};
@@ -1445,34 +1551,76 @@ function anbetsuHtml(m){
     return '<span class="small" style="color:'+(rate>=90?'var(--crit)':rate>=70?'var(--warn)':'var(--muted)')+'">枠消化 '+rate+'%（'+yen(q.used)+'／'+yen(q.quota)+'）</span>';
   };
 
-  // ブランド列はスプシのセル結合の見た目（rowspan）。ブランド小計行は出さず、枠消化だけブランドセル内に表示（2026-07-14 指定）
-  const body = groups.map(g=>
-    g.ls.map((l,i)=>{
-      const qc = quotaCell(g.brand);
-      const brandCell = i===0 ? '<td rowspan="'+g.ls.length+'" style="vertical-align:middle;background:var(--wash);border-right:1px solid var(--grid)"><b>'+esc(g.brand)+'</b>'+(qc?'<div style="margin-top:4px">'+qc+'</div>':'')+'</td>' : '';
-      return '<tr>'+brandCell+'<td class="small">'+esc(l.w)+'</td>' +
-      '<td class="num">'+yen(l.sales)+'</td><td class="num">'+pct(l.list>0?l.cost/l.list:null)+'</td><td class="num">'+pct(l.list>0?l.sales/l.list:null)+'</td>' +
-      '<td class="num">'+yen(l.cost)+'</td>' +
-      '<td class="num">'+yen(profit(l))+'</td><td class="num">'+pct(l.sales>0?profit(l)/l.sales:null)+'</td>' +
-      '<td class="num">'+(l.via?yen(l.via):'')+'</td>' +
-      '<td class="small">'+esc(l.form||'')+'</td><td>'+pill(l.st)+'</td><td class="mono small">'+l.oid+'</td></tr>';
-    }).join('')
-  ).join('');
+  // 仕入形態の「自社サロン」に、実際に通したディーラーを添える（例: 自社サロン（COSMO経由））。2026-08-28 ユーザー要望
+  const formCell = l=>{
+    const via = l.sups.filter(s=>s.kind!=='外注').map(s=>s.name.replace(/株式会社|合同会社/g,'').trim()).filter(Boolean);
+    const txt = esc(anbetsuFormText(l.form));
+    if(!via.length) return txt;
+    const note = '<span class="muted">（'+esc(via.join('・'))+'経由）</span>';
+    // 「自社サロン」の直後に入れる。その書き方が無ければ末尾に足す
+    return txt.indexOf('自社サロン')>=0 ? txt.replace('自社サロン', '自社サロン'+note) : txt+note;
+  };
+  // 振り分け表（サロンごとの内訳）へのリンク。確定済みの回収があるブランドだけ出す
+  const cov = allocCoverageMemo();
+  const allocBtn = l=>{
+    const e = (cov[l.oid]||{})[l.brand];
+    if(!e || !e.kids || !e.kids.size) return '';
+    return ' <button class="btn sm" style="white-space:nowrap" title="どのサロンに何を振ったかの表を開く（'+esc(l.brand)+'）" onclick="event.stopPropagation();allocPrintDone(\''+esc(l.brand)+'\',\''+[...e.kids].join(',')+'\')">📋 振分表</button>';
+  };
 
+  // ブランド列はスプシのセル結合の見た目（rowspan）。ブランド小計行は出さず、枠消化だけブランドセル内に表示（2026-07-14 指定）
+  const NCOL = 11;
+  const okeyOf = l=>'anb_'+l.oid+'_'+l.brand;
+  const detailOf = l=>l.sups.length>0 || l.prov>0;
+  const openOf = l=>!!(viewState.aggOpen||{})[okeyOf(l)] && detailOf(l);
+  const body = groups.map(g=>{
+    // rowspan は内訳の展開行も数える。ここを 1行=1件 のままにすると開いた瞬間に列がズレる
+    const span = g.ls.reduce((a,l)=>a+1+(openOf(l)?1:0), 0);
+    return g.ls.map((l,i)=>{
+      const qc = quotaCell(g.brand);
+      const brandCell = i===0 ? '<td rowspan="'+span+'" style="vertical-align:middle;background:var(--wash);border-right:1px solid var(--grid)"><b>'+esc(g.brand)+'</b>'+(qc?'<div style="margin-top:4px">'+qc+'</div>':'')+'</td>' : '';
+      const okey = okeyOf(l);
+      const open = openOf(l);
+      const hasDetail = detailOf(l);
+      return '<tr'+(hasDetail?' style="cursor:pointer" onclick="aggToggle(\''+esc(okey)+'\')"':'')+'>'+brandCell+'<td class="small">'+(hasDetail?(open?'▾ ':'▸ '):'')+esc(l.w)+'</td>' +
+      '<td class="num">'+yen(l.sales)+'</td><td class="num">'+pct(l.list>0?l.cost/l.list:null)+'</td><td class="num">'+pct(l.list>0?l.sales/l.list:null)+'</td>' +
+      '<td class="num">'+yen(l.cost)+(l.prov?' <span class="small" style="color:var(--s4)">仮</span>':'')+'</td>' +
+      '<td class="num">'+yen(profit(l))+'</td><td class="num">'+pct(l.sales>0?profit(l)/l.sales:null)+'</td>' +
+      '<td class="small">'+formCell(l)+'</td><td>'+pill(l.st)+'</td><td class="mono small">'+l.oid+allocBtn(l)+'</td></tr>' +
+      // 仕入先ごとの内訳（実額・掛け率）。振り分け前の分は「未振分（仮）」としてまとめて出す
+      (open ? '<tr><td colspan="'+(NCOL-1)+'" style="background:var(--wash);padding:6px 10px">' +
+        '<table style="margin:0"><tr><th>仕入先</th><th class="num">点数</th><th class="num">仕入額</th><th class="num">仕入掛け率</th></tr>' +
+        l.sups.map(s=>'<tr><td class="small">'+(s.kind==='外注'?'🤝 ':'🏭 ')+esc(s.name)+'<span class="muted">（'+esc(s.kind||'仕入先')+'）</span></td>' +
+          '<td class="num">'+s.qty+'</td><td class="num">'+yen(s.amt)+'</td>' +
+          '<td class="num">'+(s.noRate?'<span class="small" style="color:var(--s4)">率未設定（仕入価格で仮）</span>':pct(s.rate))+'</td></tr>').join('') +
+        (l.prov?'<tr><td class="small" style="color:var(--s4)">⏳ 未振分（商品マスタの仕入価格で仮置き）</td><td class="num">'+l.provQty+'</td><td class="num">'+yen(l.prov)+'</td><td class="num">—</td></tr>':'') +
+        '</table></td></tr>' : '');
+    }).join('');
+  }).join('');
+
+  const provTotal = groups.reduce((a,g)=>a+g.ls.reduce((b,l)=>b+l.prov,0),0);
   return '<div class="card tblwrap"><div class="row"><b class="small">案件別収支（'+m+'）</b>' +
     '<button class="btn sm right" onclick="exportAnbetsu()">CSV出力</button>' +
     '<button class="btn sm" onclick="printAnbetsu()">🖨 PDF出力</button></div>' +
-    '<table style="margin-top:8px"><tr><th>メーカー</th><th>卸先</th><th class="num">売上（卸値税抜）</th><th class="num">掛率(A)</th><th class="num">掛率(卸)</th><th class="num">'+NM.co+'仕入</th><th class="num">利益額</th><th class="num">利益率</th><th class="num">'+NM.via+'利益</th><th>仕入形態</th><th>状態</th><th>受注ID</th></tr>' +
-    (body || '<tr><td colspan="12" class="muted">この月の受注はまだありません</td></tr>') +
-    (groups.length ? '<tr><td colspan="2"><b>合計</b></td><td class="num"><b>'+yen(t.sales)+'</b></td><td></td><td></td><td class="num"><b>'+yen(t.cost)+'</b></td><td class="num"><b>'+yen(profit(t))+'</b></td><td class="num"><b>'+pct(t.sales>0?profit(t)/t.sales:null)+'</b></td><td class="num">'+(t.via?'<b>'+yen(t.via)+'</b>':'')+'</td><td colspan="3"></td></tr>' : '') +
-    '</table><p class="muted small" style="margin-top:6px">掛率(A)='+NM.co+'仕入÷定価、掛率(卸)=卸値÷定価。'+NM.via+'利益=卸値の3%（受注台帳「'+NM.via+'経由」列に印がある案件のみ。利益額はその分を引いた後）。受注台帳から自動集計されます</p></div>';
+    '<table style="margin-top:8px"><tr><th>メーカー</th><th>卸先</th><th class="num">売上（卸値税抜）</th><th class="num">掛率（仕入）</th><th class="num">掛率(卸)</th><th class="num">'+NM.co+'仕入</th><th class="num">利益額</th><th class="num">利益率</th><th>仕入形態</th><th>状態</th><th>受注ID</th></tr>' +
+    (body || '<tr><td colspan="'+NCOL+'" class="muted">この月の受注はまだありません</td></tr>') +
+    (groups.length ? '<tr><td colspan="2"><b>合計</b></td><td class="num"><b>'+yen(t.sales)+'</b></td><td class="num"><b>'+pct(groups.reduce((a,g)=>a+g.ls.reduce((b,l)=>b+l.list,0),0)>0?t.cost/groups.reduce((a,g)=>a+g.ls.reduce((b,l)=>b+l.list,0),0):null)+'</b></td><td></td><td class="num"><b>'+yen(t.cost)+'</b></td><td class="num"><b>'+yen(profit(t))+'</b></td><td class="num"><b>'+pct(t.sales>0?profit(t)/t.sales:null)+'</b></td><td colspan="3"></td></tr>' : '') +
+    '</table><p class="muted small" style="margin-top:6px">仕入額は<b>実額</b>（回収台帳の仕入先×仕入先マスタの掛け率。支払い画面と同じ計算）。まだ振り分けていない分だけ商品マスタの仕入価格で仮置きし「仮」と出します（振り分けを確定すると自動で実額に入れ替わります' +
+    (provTotal?'。今月の仮置き '+yen(provTotal):'') + '）。掛率（仕入）='+NM.co+'仕入÷定価、掛率(卸)=卸値÷定価。卸先の行をクリックすると仕入先ごとの内訳が開きます</p></div>';
 }
 function exportAnbetsu(){
   const lines = calcAnbetsu(selMonth);
+  // 案件の行のあとに、その案件の仕入先内訳を字下げして並べる（1枚で根拠まで追えるように）
+  const out = [];
+  lines.forEach(l=>{
+    out.push([l.brand, l.w, l.sales, l.list>0?(l.cost/l.list).toFixed(3):'', l.list>0?(l.sales/l.list).toFixed(3):'',
+      l.cost, l.sales-l.cost, l.sales>0?((l.sales-l.cost)/l.sales).toFixed(3):'', anbetsuFormFull(l), l.st, l.oid, '', '']);
+    l.sups.forEach(s=>out.push(['', '　└ 仕入先: '+s.name+'（'+(s.kind||'仕入先')+'）', '', s.rate!=null&&!s.noRate?s.rate.toFixed(3):'', '',
+      s.amt, '', '', '', '', l.oid, s.qty, s.noRate?'率未設定（仕入価格で仮）':'']));
+    if(l.prov) out.push(['', '　└ 未振分（仮）', '', '', '', l.prov, '', '', '', '', l.oid, l.provQty, '商品マスタの仕入価格で仮置き']);
+  });
   exportCsv('案件別収支_'+selMonth.replace('/','-'),
-    ['メーカー','卸先','売上(卸値税抜)','掛率(A)','掛率(卸)',''+NM.co+'仕入','利益額','利益率',''+NM.via+'利益','仕入形態','状態','受注ID'],
-    lines.map(l=>[l.brand, l.w, l.sales, l.list>0?(l.cost/l.list).toFixed(3):'', l.list>0?(l.sales/l.list).toFixed(3):'',
-      l.cost, l.sales-l.cost-l.via, l.sales>0?((l.sales-l.cost-l.via)/l.sales).toFixed(3):'', l.via||'', l.form||'', l.st, l.oid]));
+    ['メーカー','卸先','売上(卸値税抜)','掛率（仕入）','掛率(卸)',''+NM.co+'仕入','利益額','利益率','仕入形態','状態','受注ID','点数','備考'], out);
 }
 function printAnbetsu(){
   // 画面と同じ「メーカー小計 → 卸先明細」の形をそのまま印刷用に組む（PDF保存はブラウザの印刷から）
@@ -1484,21 +1632,24 @@ function printAnbetsu(){
   lines.forEach(l=>{ const b=l.brand||'（メーカー不明）'; (byBrand[b]=byBrand[b]||[]).push(l); });
   const groups = Object.entries(byBrand).map(([brand,ls])=>({
     brand, ls: ls.sort((a,b)=>b.sales-a.sales),
-    sales: ls.reduce((a,x)=>a+x.sales,0), cost: ls.reduce((a,x)=>a+x.cost,0), via: ls.reduce((a,x)=>a+x.via,0)
+    sales: ls.reduce((a,x)=>a+x.sales,0), cost: ls.reduce((a,x)=>a+x.cost,0)
   })).sort((a,b)=>b.sales-a.sales);
-  const t = {sales:0, cost:0, via:0};
-  groups.forEach(g=>{ t.sales+=g.sales; t.cost+=g.cost; t.via+=g.via; });
-  const profit = x=>x.sales-x.cost-x.via;
+  const t = {sales:0, cost:0, list:0};
+  groups.forEach(g=>{ t.sales+=g.sales; t.cost+=g.cost; g.ls.forEach(l=>t.list+=l.list); });
+  const profit = x=>x.sales-x.cost;
+  // 紙でも「どの仕入先からいくらで入れたか」を追えるように、案件行の下に内訳行を挟む
   // 画面と同じ「ブランド列をセル結合（rowspan）」の形。ブランド小計行なし
   const body = groups.map(g=>
     g.ls.map((l,i)=>{
-      const brandCell = i===0 ? '<td rowspan="'+g.ls.length+'" class="brandcell"><b>'+esc(g.brand)+'</b></td>' : '';
+      const sub = l.sups.map(s=>'<tr class="sub"><td colspan="2">'+(s.kind==='外注'?'\u{1F91D} ':'\u{1F3ED} ')+esc(s.name)+'（'+esc(s.kind||'仕入先')+'）／ '+s.qty+'点</td>' +
+        '<td class="num">'+(s.noRate?'率未設定':pct(s.rate))+'</td><td></td><td class="num">'+y(s.amt)+'</td><td colspan="5"></td></tr>').join('') +
+        (l.prov?'<tr class="sub"><td colspan="2">\u23F3 未振分（仮）／ '+l.provQty+'点</td><td class="num">—</td><td></td><td class="num">'+y(l.prov)+'</td><td colspan="5"></td></tr>':'');
+      const brandCell = i===0 ? '<td rowspan="'+g.ls.reduce((a,x)=>a+1+x.sups.length+(x.prov?1:0),0)+'" class="brandcell"><b>'+esc(g.brand)+'</b></td>' : '';
       return '<tr>'+brandCell+'<td>'+esc(l.w)+'</td>' +
       '<td class="num">'+y(l.sales)+'</td><td class="num">'+pct(l.list>0?l.cost/l.list:null)+'</td><td class="num">'+pct(l.list>0?l.sales/l.list:null)+'</td>' +
-      '<td class="num">'+y(l.cost)+'</td>' +
+      '<td class="num">'+y(l.cost)+(l.prov?' 仮':'')+'</td>' +
       '<td class="num">'+y(profit(l))+'</td><td class="num">'+pct(l.sales>0?profit(l)/l.sales:null)+'</td>' +
-      '<td class="num">'+(l.via?y(l.via):'')+'</td>' +
-      '<td class="small">'+esc(l.form||'')+'</td><td class="small">'+esc(l.st||'')+'</td><td class="small">'+l.oid+'</td></tr>';
+      '<td class="small">'+esc(anbetsuFormFull(l))+'</td><td class="small">'+esc(l.st||'')+'</td><td class="small">'+l.oid+'</td></tr>' + sub;
     }).join('')
   ).join('');
   const w = window.open('', '_blank');
@@ -1506,14 +1657,15 @@ function printAnbetsu(){
     '<style>body{font-family:"Hiragino Sans",sans-serif;font-size:11px;margin:24px}h1{font-size:16px}' +
     'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:4px 7px;text-align:left}td.num,th.num{text-align:right}th{background:#f2f2f2}' +
     'tr.brand td{background:#eef1f5}td.brandcell{background:#eef1f5;vertical-align:middle}td.indent{padding-left:22px}.small{font-size:10px;color:#555}' +
+    'tr.sub td{background:#fafafa;color:#555;font-size:10px}' +
     'tr{page-break-inside:avoid}@media print{button{display:none}}</style></head><body>' +
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
     '<h1>案件別収支（'+esc(m)+'）</h1>' +
-    '<table><tr><th>メーカー</th><th>卸先</th><th class="num">売上（卸値税抜）</th><th class="num">掛率(A)</th><th class="num">掛率(卸)</th><th class="num">'+NM.co+'仕入</th><th class="num">利益額</th><th class="num">利益率</th><th class="num">'+NM.via+'利益</th><th>仕入形態</th><th>状態</th><th>受注ID</th></tr>' +
+    '<table><tr><th>メーカー</th><th>卸先</th><th class="num">売上（卸値税抜）</th><th class="num">掛率（仕入）</th><th class="num">掛率(卸)</th><th class="num">'+NM.co+'仕入</th><th class="num">利益額</th><th class="num">利益率</th><th>仕入形態</th><th>状態</th><th>受注ID</th></tr>' +
     body +
-    '<tr class="brand"><td colspan="2"><b>合計</b></td><td class="num"><b>'+y(t.sales)+'</b></td><td></td><td></td><td class="num"><b>'+y(t.cost)+'</b></td><td class="num"><b>'+y(profit(t))+'</b></td><td class="num"><b>'+pct(t.sales>0?profit(t)/t.sales:null)+'</b></td><td class="num">'+(t.via?y(t.via):'')+'</td><td colspan="3"></td></tr>' +
+    '<tr class="brand"><td colspan="2"><b>合計</b></td><td class="num"><b>'+y(t.sales)+'</b></td><td class="num"><b>'+pct(t.list>0?t.cost/t.list:null)+'</b></td><td></td><td class="num"><b>'+y(t.cost)+'</b></td><td class="num"><b>'+y(profit(t))+'</b></td><td class="num"><b>'+pct(t.sales>0?profit(t)/t.sales:null)+'</b></td><td colspan="3"></td></tr>' +
     '</table>' +
-    '<p class="small">掛率(A)='+NM.co+'仕入÷定価、掛率(卸)=卸値÷定価。'+NM.via+'利益=卸値の3%（'+NM.via+'経由の案件のみ。利益額は差引後）。受注台帳から自動集計（出力日: '+today()+'）</p>' +
+    '<p class="small">仕入額は実額（回収台帳の仕入先×仕入先マスタの掛け率）。まだ振り分けていない分だけ商品マスタの仕入価格で仮置きし「仮」と表示。掛率（仕入）='+NM.co+'仕入÷定価、掛率(卸)=卸値÷定価（出力日: '+today()+'）</p>' +
     '</body></html>');
   w.document.close();
 }
@@ -4089,6 +4241,7 @@ function allocPrintDone(brand, kidsCsv){
     '<p>対象受注: '+orderIds.join(', ')+' ／ 回収ID: '+esc(kFmt(kidSet))+'（確定済み・回収台帳から作成）</p>' +
     '<p id="supTotal" style="display:none"></p>' +
     sections +
+    pageScript +   // ← これを入れ忘れていて pick() が定義されず、出力範囲のボタンが無反応だった（2026-08-28 修正）
     '</body></html>');
   w.document.close();
 }
