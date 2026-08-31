@@ -1932,7 +1932,7 @@ function vOrders(){
         const isLumpAfter = gPay==='納品後一括請求';
         const needsFullInv = isCreditPay || isLumpPre || isLumpAfter;
         const guard =
-          (g.st==='商談中' && !isLumpPost && !activeDocs.some(k=> needsFullInv ? k.indexOf('請求書（全額')>=0 : (k.indexOf('請求書①')>=0 || k.indexOf('請求書（全額')>=0))) ? ['✔ 請求済み（→ '+(isLumpPre?'全額入金待ち':isLumpAfter?'進行・入金は納品後':'半金入金待ち')+'）', needsFullInv ? '先に請求書（全額）を発行してください（📄帳票発行から）' : '先に請求書①（前金）を発行してください（📄帳票発行から）'] :
+          (g.st==='商談中' && !isLumpPost && !activeDocs.some(k=> needsFullInv ? k.indexOf('請求書（全額')>=0 : (k.indexOf('請求書①')>=0 || k.indexOf('請求書（全額')>=0))) ? ['✔ 請求済み（→ '+(isLumpPre?'全額入金待ち':isLumpAfter?'振分/発注・入金は納品後':'半金入金待ち')+'）', needsFullInv ? '先に請求書（全額）を発行してください（📄帳票発行から）' : '先に請求書①（前金）を発行してください（📄帳票発行から）'] :
           (g.st==='振分/発注' && !String(g.ord||'').trim()) ? ['✔ 発注済み（→ 回収中）','先に📦発注日を入れてください（実際に発注した日）'] :
           (g.st==='最終入金待ち' && (isLumpPre||isLumpPost||isLumpAfter) && !activeDocs.some(k=>k.indexOf('請求書（全額')>=0)) ? ['✔ 入金確認済み（→ 最終入金完了）','先に請求書（全額）を発行してください（📄帳票発行から）'] :
           (g.st==='最終入金待ち' && !isCreditPay && !isLumpPre && !isLumpPost && !isLumpAfter && !activeDocs.some(k=>k.indexOf('請求書②')>=0||k.indexOf('請求書（全額')>=0)) ? ['✔ 入金確認済み（→ 最終入金完了）','先に請求書②（残金）を発行してください（📄帳票発行から）'] :
@@ -1941,11 +1941,10 @@ function vOrders(){
         return guard
           ? '<button class="btn sm" onclick="toast(\''+guard[1]+'\', true)" style="opacity:.55">'+guard[0]+'</button>'
           : (isLumpPost && g.st==='商談中'
-            // 納品前一括の受注時は請求が無いため「請求済み」表記を避ける（ステータス値は既存のまま前進）
-            ? '<button class="btn pri sm" onclick="act(\'advanceStatus\',{entity:\'order\',id:\''+g.id+'\'},\''+g.id+' を進行中にしました（請求は納品前）\')">✔ 受注確定（→ 進行・請求は納品前）</button>'
+            // 納品前一括・納品後一括は「半金入金待ち」を使わないので、商談中から振分/発注へ飛ばす（2026-08-31 ユーザー指定）
+            ? '<button class="btn pri sm" onclick="act(\'advanceStatus\',{entity:\'order\',id:\''+g.id+'\'},\''+g.id+' を振分/発注にしました（請求は納品前）\')">✔ 受注確定（→ 振分/発注・請求は納品前）</button>'
             : (isLumpAfter && g.st==='商談中'
-            // 納品後一括は請求済みだが入金はまだ＝「入金待ち」表記を避けて、入金が納品後だと分かる文言にする
-            ? '<button class="btn pri sm" onclick="act(\'advanceStatus\',{entity:\'order\',id:\''+g.id+'\'},\''+g.id+' を進行中にしました（入金は納品後）\')">✔ 請求済み（→ 進行・入金は納品後）</button>'
+            ? '<button class="btn pri sm" onclick="act(\'advanceStatus\',{entity:\'order\',id:\''+g.id+'\'},\''+g.id+' を振分/発注にしました（入金は納品後）\')">✔ 請求済み（→ 振分/発注・入金は納品後）</button>'
             : advanceBtn('order', g.id, g.st))); })() +
       (canShip && !busy('order', g.id) ? '<button class="btn sm" onclick="act(\'createShipment\',{受注ID:\''+g.id+'\'},\'出荷を作成しました\',[\'shipments\'])">🚚 出荷を作成</button>' : '') +
       (ship ? '<span class="small muted">🚚 出荷: '+ship['出荷ID']+' '+pill(ship['ステータス'])+'</span>' : '') +
@@ -1956,7 +1955,7 @@ function vOrders(){
       (['商談中','半金入金待ち'].includes(g.st) && !Object.keys(collsByOrder[String(g.id).trim()]||{}).length
         ? '<button class="btn sm" onclick="editOrderUI(\''+g.id+'\')">✏️ 編集</button>' : '') +
       '<button class="btn sm" onclick="viewState.docFor=(viewState.docFor===\''+g.id+'\'?null:\''+g.id+'\');render()">📄 帳票発行</button>' +
-      rollbackBtn('order', g.id, g.st) +
+      rollbackBtn('order', g.id, g.st, null, g.pay) +
       deleteBtn('order', g.id) +
       '</div>' +
       docFormHtml(g.id) +
@@ -2102,9 +2101,19 @@ function advanceBtn(entity, id, st, flowOv){
   const label = actName ? '✔ '+actName+(actName===next?'':'（→ '+next+'）') : '→ '+next;
   return '<button class="btn pri sm" onclick="act(\'advanceStatus\',{entity:\''+entity+'\',id:\''+id+'\'},\''+id+' を「'+next+'」にしました\')">'+label+'</button>';
 }
-function rollbackBtn(entity, id, st, flowOv){
+// 半金入金待ちを使わない支払方式（Paid・納品前一括・納品後一括）。巻き戻し先もこれに合わせる
+const PAY_SKIP_HALF = ['納品前一括請求','納品後一括請求'];
+function paySkipsHalf(pay){
+  const v = String(pay||'').trim();
+  return (NM.credit && v.indexOf(NM.credit)===0) || PAY_SKIP_HALF.indexOf(v)>=0;
+}
+function rollbackBtn(entity, id, st, flowOv, pay){
   if(busy(entity, id)) return '';
   const flow = flowOv||FLOW[entity], i = flow.indexOf(st);
+  // 半金入金待ちを飛ばして入ってきたので、戻り先も飛ばす（振分/発注 → 商談中）
+  if(entity==='order' && st==='振分/発注' && paySkipsHalf(pay)){
+    return '<button class="btn sm right" onclick="if(confirm(\''+id+' を「商談中」に巻き戻しますか？\'))act(\'setStatus\',{entity:\'order\',id:\''+id+'\',to:\'商談中\'},\'巻き戻しました\')">↩ 巻き戻し</button>';
+  }
   // 巻き戻しが無いステータスでも、直後の🗑削除が常に右端に揃うようスペーサーを返す（2026-07-18 ユーザー指定）
   if(i<=0) return '<span class="right"></span>';
   return '<button class="btn sm right" onclick="if(confirm(\''+id+' を「'+flow[i-1]+'」に巻き戻しますか？\'))act(\'setStatus\',{entity:\''+entity+'\',id:\''+id+'\',to:\''+flow[i-1]+'\'},\'巻き戻しました\')">↩ 巻き戻し</button>';
