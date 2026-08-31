@@ -154,6 +154,20 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 }
 .supgrid{display:grid;grid-template-columns:minmax(0,1fr) max-content max-content;gap:1px 12px;margin-top:3px;
   padding-top:3px;border-top:1px dashed var(--grid);color:var(--muted);font-size:11px;line-height:1.5}
+/* 振り分け結果の表: 左3列（商品・容量・必要数）と見出し行（サロン名）を固定して追従させる
+   （2026-08-31 ユーザー要望。横に送っても何の商品か・縦に送ってもどのサロンかを見失わないため） */
+.allocsticky{max-height:70vh;overflow:auto}
+.allocsticky table{border-collapse:separate;border-spacing:0}
+.allocsticky th{position:sticky;top:0;background:var(--surface);z-index:2;box-shadow:0 1px 0 var(--grid)}
+.allocsticky th:nth-child(-n+3),.allocsticky td:nth-child(-n+3){position:sticky;background:var(--surface);z-index:1;overflow:hidden}
+.allocsticky th:nth-child(-n+3){z-index:3}                      /* 左上の交差部分は最前面 */
+.allocsticky th:nth-child(1),.allocsticky td:nth-child(1){left:0;width:220px;min-width:220px}
+.allocsticky th:nth-child(2),.allocsticky td:nth-child(2){left:220px;width:70px;min-width:70px}
+.allocsticky th:nth-child(3),.allocsticky td:nth-child(3){left:290px;width:64px;min-width:64px;
+  box-shadow:1px 0 0 var(--grid)}                               /* 固定列の右端に境界線 */
+/* 合計行は行の色に合わせる。--wash は半透明なので、下に不透明な surface を敷かないと
+   固定列の裏を流れる数字が透けて重なって見える（実際に踏んだ） */
+.allocsticky tr.alloctot td:nth-child(-n+3){background:linear-gradient(var(--wash),var(--wash)),var(--surface)}
 </style>
 </head>
 <body>
@@ -3972,7 +3986,7 @@ function vAllocation(){
         if(allocMode!=='own') outs.forEach(o=>colorFor(o.sid));
         const legend = Object.keys(supColor).map(sid=>'<span class="step"><span class="dot" style="background:'+supColor[sid]+';border-color:'+supColor[sid]+'"></span>'+esc(names[sid]||sid)+'</span>').join(' ');
         return (legend ? '<div class="row" style="margin-top:8px"><span class="muted small">列の色 = 仕入先:</span><span class="steps small">'+legend+'</span></div>' : '') +
-        '<table style="margin-top:6px"><tr><th>商品</th><th>容量</th><th class="num">必要数</th>' +
+        '<div class="tblwrap allocsticky" style="margin-top:6px"><table><tr><th>商品</th><th>容量</th><th class="num">必要数</th>' +
         r.salonIds.map(s=>{
           // ↔ = サロンだけ差し替え（数量はそのまま）。押した列だけ選択欄に変わる
           if(viewState.swapSlot===s){
@@ -4013,13 +4027,13 @@ function vAllocation(){
             (allocMode!=='own' ? outs.map((o,gi)=>{ const ov=num((o.q||{})[i.pid]); return '<td class="num" style="'+colBg(o.sid)+'"><input type="number" data-cell="out|'+i.pid+'|'+gi+'" value="'+(ov||'')+'" min="0" onchange="allocOutCell(\''+i.pid+'\','+gi+',this.value)" style="width:64px;text-align:right"></td>'; }).join('') : '') +
             '<td class="num">'+(asg+oq)+'</td><td class="num"'+(left!==0?' style="color:var(--crit);font-weight:700"':'')+'>'+left+'</td></tr>';
         }).join('') +
-        '<tr style="background:var(--wash)"><td><b>合計金額 / 枠 '+yen(r.budget)+'</b></td><td></td><td></td>' +
+        '<tr class="alloctot" style="background:var(--wash)"><td><b>合計金額</b></td><td class="small">枠</td><td class="num small">'+yen(r.budget)+'</td>' +
         r.salonIds.map(s=>{ const sp=spentOf(s); const over=sp>r.budget;
           return '<td class="num small"'+(over?' style="color:var(--crit)"':'')+'><b>'+yen(sp)+'</b>'+(over?'<br>⚠枠超過':'')+'</td>'; }).join('') + '<td></td>';
       })() +
       (allocMode!=='own' ? outs.map(o=>{ const money=r.items.reduce((a,i)=>a+num((o.q||{})[i.pid])*allocOutUnit(o.sid,i.pid),0);
         return '<td class="num small"><b>'+yen(money)+'</b>'+(num(o.budget)&&money>num(o.budget)?'<br>⚠枠超過':'')+'</td>'; }).join('') : '') +
-      '<td colspan="2"></td></tr></table>' +
+      '<td colspan="2"></td></tr></table></div>' +
       // 余りの一覧（目立たせる・2026-07-18 ユーザー要望）。余りが0になるまで✅確定はできない
       (shortTotal>0 ? '<div style="margin-top:8px;padding:10px 12px;border:1.5px solid var(--crit);border-radius:10px;background:color-mix(in srgb,var(--crit) 6%,transparent)">' +
         '<b class="small" style="color:var(--crit)">⚠ 余りが '+shortTotal+'点 あります — 全て割り振るまで確定できません</b>' +
@@ -4523,12 +4537,31 @@ function poRate(wid,brand){
   const r = rateFor(wid,brand);
   return r==='' ? '' : String(Math.round(num(r)*1000)/10);
 }
+// ポンプ等の付属品は掛け率で計算すると仕入額を下回るため、商品マスタの「定価売り」に印がある商品は
+// 定価をそのまま卸値にする（2026-08-31 ユーザー指定）。列が無い環境では常に false
+function poFixed(p){ return String((p||{})['定価売り']||'').trim()!==''; }
 function poRateNum(wid,brand){ const v=poRate(wid,brand); return String(v).trim()==='' ? null : num(v)/100; }
 function poMissing(){   // 掛け率が未入力の 卸先×ブランド
     const out=[];
     poSelW().forEach(w=>{ const wid=String(w['卸先ID']||'').trim();
       poSelB().forEach(b=>{ if(!(poRateNum(wid,b)>0)) out.push({wid, wname:String(w['卸先名']||''), brand:b}); }); });
     return out;
+}
+// 卸値が仕入額を下回る商品を洗い出す（「定価売り」の印を付け忘れると赤字のまま発行してしまうため）
+function poLoss(){
+  const out=[];
+  poSelW().forEach(w=>{ const wid=String(w['卸先ID']||'').trim();
+    poSelB().forEach(b=>{ const rate=poRateNum(wid,b); if(!(rate>0)) return;
+      poItems(b).forEach(p=>{
+        const list=num(p['定価（税抜）']), cost=num(p[''+NM.co+'仕入価格（税抜）']);
+        if(!(list>0) || !(cost>0)) return;
+        const sell = poFixed(p) ? list : Math.round(list*rate);
+        if(sell < cost) out.push({wid, wname:String(w['卸先名']||''), brand:b,
+          pid:String(p['商品ID']||''), name:String(p['商品名']||''), size:String(p['容量']||''), sell, cost});
+      });
+    });
+  });
+  return out;
 }
 function poToggleW(id,on){ const s=poS(); if(on) s.w[id]=true; else delete s.w[id]; render(); }
 function poToggleB(n,on){ const s=poS(); if(on) s.b[n]=true; else delete s.b[n]; render(); }
@@ -4575,8 +4608,10 @@ function poBuild(wid){
         {v:String(p['容量']||''), s:XLS.text},
         {v:String(p['JANコード']||''), s:XLS.text},
         {v:num(p['定価（税抜）']), s:XLS.yen},
-        {v:rate, s:XLS.pct},
-        {f:'ROUND(D'+r+'*E'+r+',0)', cv:Math.round(num(p['定価（税抜）'])*rate), s:XLS.yen}
+        // 定価売りの商品は掛け率の欄に「定価」と出し、卸値＝定価にする（Excel側の数式も分岐）
+        poFixed(p) ? {v:'定価', s:XLS.text} : {v:rate, s:XLS.pct},
+        poFixed(p) ? {f:'D'+r, cv:Math.round(num(p['定価（税抜）'])), s:XLS.yen}
+                   : {f:'ROUND(D'+r+'*E'+r+',0)', cv:Math.round(num(p['定価（税抜）'])*rate), s:XLS.yen}
       ];
       if(L.iri) line.push(iri>0 ? {v:iri, s:XLS.num} : {v:null, s:XLS.num});
       line.push({v:null, s:XLS.input});
@@ -4711,6 +4746,17 @@ function vPoForm(){
       '<button class="btn sm" onclick="poSaveRates()">この掛け率を卸先マスタに保存する</button>';
   }
 
+  // 卸値 < 仕入額 の商品があれば発行前に知らせる（「定価売り」の印の付け忘れ対策）
+  const loss = poLoss();
+  const lossCard = loss.length ? '<div class="card" style="border-color:var(--crit)">' +
+    '<b class="small" style="color:var(--crit)">⚠ 卸値が'+NM.co+'仕入額を下回る商品が '+loss.length+'件あります</b>' +
+    '<div class="tblwrap" style="margin-top:6px"><table><tr><th>卸先</th><th>ブランド</th><th>商品</th><th class="num">卸値</th><th class="num">'+NM.co+'仕入</th><th class="num">差</th></tr>' +
+    loss.map(x=>'<tr><td class="small">'+esc(x.wname)+'</td><td class="small">'+esc(x.brand)+'</td>' +
+      '<td class="small">'+esc(x.name)+' '+esc(x.size)+' <span class="mono muted">'+esc(x.pid)+'</span></td>' +
+      '<td class="num">'+yen(x.sell)+'</td><td class="num">'+yen(x.cost)+'</td>' +
+      '<td class="num" style="color:var(--crit)">'+yen(x.sell-x.cost)+'</td></tr>').join('') + '</table></div>' +
+    '<p class="muted small" style="margin-top:6px">このまま発行すると赤字で売ることになります。ポンプ等の付属品は<b>マスタ管理 → 商品</b>で「定価売り」に○を入れると、掛け率ではなく定価がそのまま卸値になります。掛け率の方が違う場合は④で直してください。</p></div>' : '';
+
   const dlRows = selW.map(w=>{
     const wid = String(w['卸先ID']||'').trim();
     const n = selB.reduce((a,b)=>a+poItems(b).length, 0);
@@ -4733,7 +4779,8 @@ function vPoForm(){
     '<div class="card"><b class="small">③ 希望納期</b>' +
       '<div class="row" style="margin-top:8px"><input type="date" value="'+esc(s.due)+'" onchange="poSetDue(this.value);render()">' +
       '<span class="muted small">Excelの表紙と各タブに入ります（空でも作れます）</span></div></div>' +
-    '<div class="card"><b class="small">④ 掛け率の確認（単価＝定価×掛け率）</b><div style="margin-top:8px">'+rateTbl+'</div></div>' +
+    '<div class="card"><b class="small">④ 掛け率の確認（単価＝定価×掛け率。「定価売り」の商品は定価そのまま）</b><div style="margin-top:8px">'+rateTbl+'</div></div>' +
+    lossCard +
     '<div class="card"><b class="small">⑤ ダウンロード</b>' +
       (dlRows
         ? '<div class="tblwrap" style="margin-top:8px"><table><tr><th>卸先</th><th>ブランド</th><th class="num">品目数</th><th></th></tr>'+dlRows+'</table></div>' +
@@ -4746,7 +4793,7 @@ function vPoForm(){
 // ===== 画面: マスタ管理（admin） =====
 // 列名に社名を含むため関数で組む（ログイン後にNMが入ってから評価される）
 const MASTER_CONF_ = ()=>({
-  '商品':   {sheet:'products',    id:'商品ID',  cols:['商品ID','商品名','容量','カテゴリー','JANコード','定価（税抜）','サロン価掛け率','サロン仕入価格（税抜）',NM.co+'掛け率',NM.co+'仕入価格（税抜）'], add:'addProduct', upd:'updateProduct',
+  '商品':   {sheet:'products',    id:'商品ID',  cols:['商品ID','商品名','容量','カテゴリー','JANコード','定価（税抜）','サロン価掛け率','サロン仕入価格（税抜）',NM.co+'掛け率',NM.co+'仕入価格（税抜）','定価売り'], add:'addProduct', upd:'updateProduct',
              searchCols:['商品名','JANコード','商品ID'], searchHint:'商品名・JANで検索'},
   // 略称はシート運用専用（発注書シート名の元）なのでシステム画面には出さない（2026-07-16 ユーザー指定。スプシ側には残す）
   '卸先':   {sheet:'wholesalers', id:'卸先ID',  cols:['卸先ID','卸先名','担当者名','メーカー','郵便番号','住所','電話番号','メールアドレス','納品先名','納品先住所','納品先TEL'], add:'addWholesaler', upd:'updateWholesaler',
