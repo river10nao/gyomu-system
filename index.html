@@ -532,9 +532,53 @@ function refreshSoon(names){
     .then(()=>{ saveSnap(); render(); }).catch(()=>{});
 }
 function busyPill(){ return '<span class="pill" style="background:color-mix(in srgb,var(--muted) 15%, transparent);color:var(--muted)">⏳ 処理中…</span>'; }
+// ===== 楽観更新（2026-08-31 ユーザー要望: ボタンの反映が遅い） =====
+// GASの往復は空でも約2.4秒かかる。押してから返事を待って画面を作り直していたので4〜6秒待たされていた。
+// そこで「押した瞬間に手元のステータスを進めて表示 → 保存は裏で走らせる」に変える。
+// サーバーが正: 成功したら応答に同梱された最新シートで DB ごと差し替わるので、先読みは自然に上書きされる。
+// 失敗したら元のステータスへ戻して赤いメッセージを出す（先読みのまま残さない）。
+const OPT_ENT = {
+  order:      {sheet:'orderLedger',      idCol:'受注ID'},
+  collection: {sheet:'collectionLedger', idCol:'回収ID'},
+  shipment:   {sheet:'shipments',        idCol:'出荷ID'},
+  hanbai:     {sheet:'hanbaiOrders',     idCol:'注文ID'}
+};
+// 押したあとに入るステータス。to 指定があればそれ、無ければフローの次（GAS側と同じ判定）
+function optNextStatus(entity, id, to){
+  if(to) return String(to).trim();
+  const d = OPT_ENT[entity]; if(!d) return '';
+  const rs = rowsAll(d.sheet).filter(r=>String(r[d.idCol]||'').trim()===String(id).trim());
+  if(!rs.length) return '';
+  const cur = String(rs[0]['ステータス']||'').trim();
+  const flow = entity==='hanbai'
+    ? (String(rs[0]['区分']||'').trim()==='EC' ? FLOW.hanbaiEC : FLOW.hanbai)
+    : FLOW[entity];
+  if(!flow) return '';
+  const i = flow.indexOf(cur);
+  if(i<0 || i>=flow.length-1) return '';
+  // 納品前一括・納品後一括は「半金入金待ち」を使わない（GASの advanceStatus_ と同じ飛ばし方）
+  if(entity==='order' && cur==='商談中' && paySkipsHalf(rs[0]['支払方式'])) return flow[i+2] || '';
+  return flow[i+1];
+}
+function optApply(entity, id, next){
+  const d = OPT_ENT[entity]; if(!d || !next) return null;
+  const sheet = DB[d.sheet]; if(!sheet || !sheet.rows) return null;
+  const undo = [];
+  sheet.rows.forEach(r=>{
+    if(String(r[d.idCol]||'').trim()!==String(id).trim()) return;
+    undo.push([r, r['ステータス']]);
+    r['ステータス'] = next;
+  });
+  return undo.length ? undo : null;
+}
+function optRevert(undo){ if(undo) undo.forEach(x=>{ x[0]['ステータス'] = x[1]; }); }
 async function act(action, payload, okMsg, reloadNames){
   const key = actKey(action, payload);
   if(inflight.has(key)){ toast('この対象は処理中です。完了までお待ちください', true); return; }
+  // 先に画面を進める（保存の返事は待たない）。ステータスを動かす操作だけが対象
+  const pe = (payload||{}).entity, pi = (payload||{}).id;
+  const undo = (action==='advanceStatus' || action==='setStatus')
+    ? optApply(pe, pi, optNextStatus(pe, pi, (payload||{}).to)) : null;
   inflight.add(key); render();   // 対象カードだけ「処理中…」表示になる
   try{
     const spec = sheetsFor(action, payload);
@@ -552,7 +596,7 @@ async function act(action, payload, okMsg, reloadNames){
     toast(okMsg || '完了しました');
     await reload();
     return r;
-  }catch(e){ toast(e.message, true); }
+  }catch(e){ optRevert(undo); toast(e.message, true); }   // 保存に失敗したら先読みを取り消す
   finally{ inflight.delete(key); render(); }
 }
 // 商品情報ルックアップ
@@ -2267,8 +2311,10 @@ function docFormHtml(orderId){
   // 対象商品のチェックボックス（外した商品は帳票に載らない。金額も選んだ分だけで計算）
   const lines = rows('orderLedger').filter(r=>String(r['受注ID']).trim()===String(orderId).trim());
   const itemsHtml = '<div class="small" style="margin-top:8px"><b class="muted">対象商品（チェックを外した商品は帳票に載りません。請求書を商品ごとに分けたいときに使います）</b>' +
-    lines.map(r=>'<label style="display:block;margin-top:4px"><input type="checkbox" class="docItem" value="'+esc(r['商品ID'])+'" checked style="width:15px;height:15px;vertical-align:-2px"> ' +
-      esc(r['商品名'])+' '+esc(r['容量'])+' × '+esc(r['個数'])+'（'+yen(num(r['小計（税抜）']))+' 税抜）</label>').join('') + '</div>';
+    // label で全体を囲うと行の横幅いっぱいが当たり判定になり、商品名の右の余白を押してもチェックが外れる。
+    // チェックボックスだけを押したときに反映されるよう、文字はラベルの外に出す（2026-08-31 ユーザー要望）
+    lines.map(r=>'<div style="margin-top:4px"><input type="checkbox" class="docItem" value="'+esc(r['商品ID'])+'" checked style="width:15px;height:15px;vertical-align:-2px"> ' +
+      '<span>'+esc(r['商品名'])+' '+esc(r['容量'])+' × '+esc(r['個数'])+'（'+yen(num(r['小計（税抜）']))+' 税抜）</span></div>').join('') + '</div>';
   const isVia = lines.length && String(lines[0][NM.via+'経由']||'').trim()!=='';
   const kindOpts = DOC_KIND_UI.concat(isVia ? DOC_KIND_UI_VIA() : []);
   // 掛け払い案件: 卸先→掛け払い会社の支払期日は受注月の翌月末で固定なので期限①へ自動入力（手直しも可）
