@@ -4027,6 +4027,11 @@ function vAllocation(){
       (()=>{ const supColor = {}; let ci = 0;
         const colorFor = sup=>{ if(!sup) return ''; if(!(sup in supColor)) supColor[sup] = 'var(--s'+((ci++ % 6)+1)+')'; return supColor[sup]; };
         const colBg = sup=>{ const c = colorFor(sup); return c ? 'background:color-mix(in srgb,'+c+' 15%, transparent);' : ''; };
+        // 見出しは固定して上に留まるので、半透明のままだと下を流れる数字が透けて重なる。
+        // 同じ色味を不透明な surface の上に重ねて塗る（2026-08-31 ユーザー指摘）
+        const colBgHead = sup=>{ const c = colorFor(sup);
+          const tint = c ? 'color-mix(in srgb,'+c+' 15%, transparent)' : 'transparent';
+          return 'background:linear-gradient('+tint+','+tint+'),var(--surface);'; };
         const salonSup = s=>allocSupOf(r, s);
         r.salonIds.forEach(s=>colorFor(salonSup(s)));   // 凡例の並び=列の並びに合わせて先に登録
         if(allocMode!=='own') outs.forEach(o=>colorFor(o.sid));
@@ -4037,14 +4042,14 @@ function vAllocation(){
           // ↔ = サロンだけ差し替え（数量はそのまま）。押した列だけ選択欄に変わる
           if(viewState.swapSlot===s){
             const cands = allocSwapCands(r, slotGroupIdx(s), s);
-            return '<th class="small" style="'+colBg(salonSup(s))+'"><select id="swapSel" style="width:150px;padding:3px 6px;font-weight:normal">' +
+            return '<th class="small" style="'+colBgHead(salonSup(s))+'"><select id="swapSel" style="width:150px;padding:3px 6px;font-weight:normal">' +
               '<option value="">サロンを選ぶ…</option>' +
               cands.map(x=>'<option value="'+esc(String(x['サロンID']).trim())+'">'+esc(salonLabel(x))+'</option>').join('') +
               '</select><div class="row" style="gap:4px;margin-top:4px;justify-content:center">' +
               '<button class="btn pri sm" onclick="allocSwapSalon(\''+esc(s)+'\', document.getElementById(\'swapSel\').value)">変更</button>' +
               '<button class="btn sm" onclick="viewState.swapSlot=null;render()">やめる</button></div></th>';
           }
-          return '<th class="num small" style="'+colBg(salonSup(s))+'">'+esc(names[slotBase(s)]||slotBase(s)) +
+          return '<th class="num small" style="'+colBgHead(salonSup(s))+'">'+esc(names[slotBase(s)]||slotBase(s)) +
             ' <button class="btn sm" title="このサロンを別のサロンに差し替える（数量はそのまま）" style="padding:1px 6px;font-weight:normal" onclick="viewState.swapSlot=\''+esc(s)+'\';render()">↔</button></th>';
         }).join('') +
         // ＋ = 空の列を足して数量を手打ちする（再計算しない）
@@ -4063,7 +4068,7 @@ function vAllocation(){
             '<button class="btn pri sm" onclick="allocAddSalon('+gi+', document.getElementById(\'addSel\').value)">追加</button>' +
             '<button class="btn sm" onclick="viewState.addSalon=null;render()">やめる</button></div></th>';
         })() +
-        (allocMode!=='own' ? outs.map(o=>'<th class="num small" style="'+colBg(o.sid)+'">🤝'+esc(names[o.sid]||'外注')+'</th>').join('') : '')+'<th class="num">割当計</th><th class="num">余り</th></tr>' +
+        (allocMode!=='own' ? outs.map(o=>'<th class="num small" style="'+colBgHead(o.sid)+'">🤝'+esc(names[o.sid]||'外注')+'</th>').join('') : '')+'<th class="num">割当計</th><th class="num">余り</th></tr>' +
         r.items.map(i=>{
           const asg = assignedOf(i.pid), oq = outQty(i.pid), left = i.need-asg-oq;
           return '<tr><td class="small">'+esc(i.name)+(i.unit>1?' <span class="muted">［'+i.unit+'個/箱］</span>':'')+'</td><td class="small">'+esc(i.size||'')+'</td><td class="num">'+i.need+'</td>' +
