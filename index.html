@@ -2012,10 +2012,13 @@ function vOrders(){
       // ✏️編集は振分前（商談中・半金入金待ち）＋回収未紐づけのみ表示（サーバー側にも同じガード。2026-07-21）
       (['商談中','半金入金待ち'].includes(g.st) && !Object.keys(collsByOrder[String(g.id).trim()]||{}).length
         ? '<button class="btn sm" onclick="editOrderUI(\''+g.id+'\')">✏️ 編集</button>' : '') +
+      (SHORTAGE_BLOCK.includes(g.st) || ship
+        ? '' : '<button class="btn sm" onclick="shortOpen(\''+g.id+'\')">📉 欠品で減らす</button>') +
       '<button class="btn sm" onclick="viewState.docFor=(viewState.docFor===\''+g.id+'\'?null:\''+g.id+'\');render()">📄 帳票発行</button>' +
       rollbackBtn('order', g.id, g.st, null, g.pay) +
       deleteBtn('order', g.id) +
       '</div>' +
+      shortFormHtml(g.id) +
       docFormHtml(g.id) +
       docListHtml(g.id) +
       '</details>';
@@ -2304,6 +2307,104 @@ async function deleteDocUI(docNo, url){
   if(typed===null) return;
   if(typed.trim()!==docNo){ toast('管理番号が一致しないため削除を中止しました', true); return; }
   await act('deleteDocument', {url}, docNo+' を削除しました（PDFはDriveのゴミ箱へ）', ['docLog']);
+}
+// ===== 📉 欠品で減らす（2026-09-01 ユーザー要望） =====
+// ディーラー側の在庫切れが検品のときに分かることがある。そのとき受注明細と確定済みの振り分け（回収）を
+// 同じ数だけ減らす必要がある。回収を消してやり直すと回収番号が振り直しになるので、数量だけを引く。
+// どのサロンから引くかはユーザーが決める（自動で割り振らない。2026-09-01 ユーザー指定）。
+const SHORTAGE_BLOCK = ['最終入金完了','納品完了'];   // ここまで進んだ案件は触らせない（GAS側と同条件）
+function shortOpen(oid){
+  const on = viewState.shortFor === oid;
+  viewState.shortFor = on ? null : oid;
+  viewState.shortPid = ''; viewState.shortQty = ''; viewState.shortAlloc = {};
+  render();
+}
+function shortSetPid(v){ viewState.shortPid = String(v||''); viewState.shortAlloc = {}; render(); }
+function shortSetQty(v){ viewState.shortQty = String(v||''); render(); }
+function shortSetAlloc(kid, v){ (viewState.shortAlloc = viewState.shortAlloc||{})[kid] = String(v||''); render(); }
+// この受注×この商品に紐づく生存回収（回収IDごとにまとめる）
+function shortColls(oid, pid){
+  const by = {};
+  rows('collectionLedger').forEach(r=>{
+    if(String(r['商品ID']||'').trim() !== pid) return;
+    const oids = String(r['対象受注']||'').split(',').map(x=>x.trim());
+    if(oids.indexOf(oid) < 0) return;
+    const kid = String(r['回収ID']||'').trim(); if(!kid) return;
+    const e = by[kid] = by[kid] || {kid, salon:String(r['サロン名']||''), qty:0, st:String(r['ステータス']||'').trim(),
+      stocked:false, zaiko:String(r['区分']||'').trim()==='在庫'};
+    e.qty += num(r['個数']);
+    if(['ロット処理済み','ロット処理なし'].includes(e.st) || String(r['在庫ID']||'').trim()!=='') e.stocked = true;
+  });
+  return Object.values(by).sort((a,b)=>String(a.kid).localeCompare(String(b.kid)));
+}
+function shortFormHtml(oid){
+  if(viewState.shortFor !== oid) return '';
+  const lines = rows('orderLedger').filter(r=>String(r['受注ID']||'').trim()===oid);
+  if(!lines.length) return '';
+  const pid = String(viewState.shortPid||'');
+  const sel = lines.filter(r=>String(r['商品ID']||'').trim()===pid);
+  const have = sel.reduce((a,r)=>a+num(r['個数']),0);
+  const less = Math.floor(num(viewState.shortQty));
+  const cs = pid ? shortColls(oid, pid) : [];
+  const alloc = viewState.shortAlloc || {};
+  const allocSum = cs.reduce((a,c)=>a+Math.floor(num(alloc[c.kid])), 0);
+  const stocked = cs.filter(c=>c.stocked || c.zaiko);
+  const docs = rows('docLog').filter(d=>String(d['受注ID']||'').trim()===oid && String(d['種類']||'').indexOf('請求書')===0);
+
+  // 実行できない理由（あれば1つだけ出す）
+  // 入庫済みの回収が混ざっていても、未入庫の分からは減らせる（全体は止めない）。
+  // 減らせる先が1つも無いときだけ、理由を添えて止める
+  const editable = cs.filter(c=>!c.stocked && !c.zaiko);
+  const room = editable.reduce((a,c)=>a+c.qty, 0);
+  let stop = '';
+  if(!pid) stop = '商品を選んでください';
+  else if(!(less>0)) stop = '減らす数を入れてください';
+  else if(less > have) stop = '減らす数（'+less+'）が受注数（'+have+'）を超えています';
+  else if(cs.length && !editable.length) stop = 'この商品の回収はすべて入庫済みです（'+stocked.map(c=>c.kid).join('・')+'）。在庫の逆記帳が要るのでこの操作では減らせません';
+  else if(cs.length && less > room) stop = '未入庫の回収に残っているのは '+room+' 点までです（入庫済みの分は減らせません）';
+  else if(cs.length && allocSum !== less) stop = 'サロン別の合計（'+allocSum+'）が減らす数（'+less+'）と合っていません';
+
+  return '<div class="card" style="margin-top:10px;border-color:var(--crit)"><b class="small" style="color:var(--crit)">📉 欠品で減らす（'+esc(oid)+'）</b>' +
+    '<p class="muted small" style="margin:4px 0 0">受注の数量と、確定済みの振り分けを同じ数だけ減らします。回収番号は変わりません。入庫済み（ロット処理済み／なし）の分は減らせません</p>' +
+    '<div class="row" style="margin-top:8px">' +
+      '<label class="small">商品<br><select onchange="shortSetPid(this.value)" style="max-width:340px">' +
+        '<option value="">選んでください</option>' +
+        lines.map(r=>{ const v=String(r['商品ID']||'').trim();
+          return '<option value="'+esc(v)+'"'+(v===pid?' selected':'')+'>'+esc(r['商品名'])+' '+esc(r['容量']||'')+'（受注 '+num(r['個数'])+'）</option>'; }).join('') +
+      '</select></label>' +
+      '<label class="small">減らす数<br><input type="number" min="1" value="'+esc(viewState.shortQty||'')+'" oninput="shortSetQty(this.value)" onchange="render()" style="width:100px;text-align:right"></label>' +
+      (pid ? '<span class="small muted">受注数 '+have+' → <b>'+Math.max(0, have-(less>0?less:0))+'</b></span>' : '') +
+    '</div>' +
+    // サロン別の内訳（確定済みの回収がある場合だけ）
+    (pid && cs.length ? '<div class="tblwrap" style="margin-top:10px"><table><tr><th>回収ID</th><th>サロン</th><th>状態</th><th class="num">いまの数</th><th class="num">減らす数</th></tr>' +
+      cs.map(c=>'<tr'+((c.stocked||c.zaiko)?' style="opacity:.5"':'')+'><td class="mono small">'+esc(c.kid)+'</td><td class="small">'+esc(c.salon)+'</td>' +
+        '<td class="small">'+esc(c.st)+(c.zaiko?'（在庫充当）':'')+'</td><td class="num">'+c.qty+'</td>' +
+        '<td class="num">'+((c.stocked||c.zaiko) ? '<span class="small muted">—</span>'
+          : '<input type="number" min="0" max="'+c.qty+'" value="'+esc(alloc[c.kid]||'')+'" oninput="shortSetAlloc(\''+esc(c.kid)+'\',this.value)" onchange="render()" style="width:80px;text-align:right">')+'</td></tr>').join('') +
+      '<tr style="background:var(--wash)"><td colspan="4"><b>合計</b></td><td class="num"><b'+(allocSum===less?'':' style="color:var(--crit)"')+'>'+allocSum+' / '+(less>0?less:0)+'</b></td></tr>' +
+      '</table></div>' : '') +
+    (pid && !cs.length ? '<p class="small muted" style="margin-top:8px">この商品はまだ振り分けを確定していません。受注の数量だけを減らします</p>' : '') +
+    (pid && stocked.length ? '<p class="small muted" style="margin-top:6px">灰色の行は入庫済み（在庫台帳に記帳済み）なので減らせません。未入庫の '+room+' 点から選んでください</p>' : '') +
+    (docs.length ? '<p class="small" style="margin-top:8px;color:var(--s4)">⚠ この受注は請求書を発行済みです（'+docs.map(d=>esc(d['管理番号'])).join('・')+'）。金額が変わるので、相殺か再発行かを決めてください（システムは請求書を自動では直しません）</p>' : '') +
+    '<div class="row" style="margin-top:10px">' +
+      (stop ? '<button class="btn sm" onclick="toast(\''+esc(stop).replace(/'/g,'')+'\', true)" style="opacity:.55">📉 減らす</button><span class="small" style="color:var(--crit)">'+esc(stop)+'</span>'
+            : '<button class="btn pri sm" onclick="shortRun(\''+esc(oid)+'\')">📉 減らす</button>') +
+      '<button class="btn sm" onclick="viewState.shortFor=null;render()">閉じる</button>' +
+    '</div></div>';
+}
+async function shortRun(oid){
+  const pid = String(viewState.shortPid||'');
+  const less = Math.floor(num(viewState.shortQty));
+  const cs = shortColls(oid, pid);
+  const alloc = viewState.shortAlloc || {};
+  const allocations = cs.map(c=>({'回収ID':c.kid, '減数':Math.floor(num(alloc[c.kid]))})).filter(x=>x['減数']>0);
+  const name = (rows('orderLedger').find(r=>String(r['商品ID']||'').trim()===pid&&String(r['受注ID']||'').trim()===oid)||{})['商品名']||pid;
+  if(!confirm('欠品として減らします。\n\n'+oid+' ／ '+name+'\n減らす数: '+less+'\n' +
+    (allocations.length ? '振り分け: '+allocations.map(a=>a['回収ID']+' -'+a['減数']).join(', ')+'\n' : '振り分け: まだ確定していないため受注のみ\n') +
+    '\n受注の数量と振り分けを同時に減らします。よろしいですか？')) return;
+  const r = await act('reduceOrderShortage', {'受注ID':oid, '商品ID':pid, '減数':less, allocations},
+    oid+' の '+name+' を '+less+' 減らしました', ['orderLedger','collectionLedger']);
+  if(r){ viewState.shortFor=null; viewState.shortPid=''; viewState.shortQty=''; viewState.shortAlloc={}; render(); }
 }
 function docFormHtml(orderId){
   if(viewState.docFor !== orderId) return '';
