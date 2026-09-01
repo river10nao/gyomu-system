@@ -3324,6 +3324,44 @@ function allocRun(items, salonIds, budget, cap, spread){
   salonIds.forEach(s=>{ m[s]={}; items.forEach(i=>{ const u=(have[s][i.pid]||0)*i.unit; if(u>0) m[s][i.pid]=u; }); });
   return m;
 }
+// ===== 下書きと受注のズレ検知（2026-09-01 ユーザー要望） =====
+// 下書きは「計算結果の写真」なので、保存したあとに受注を直しても（欠品で減らした・数量を訂正した等）
+// 追随しない。再開したときに違いを見つけて、必要数だけ今の受注に入れ替えられるようにする。
+// 割当・外注枠・在庫引き当ては触らないので、手で調整した中身はそのまま残る。
+function allocNeedNow(brand){
+  const conf = ALLOC.conf[brand]||{};
+  const raw = allocItems(brand);
+  const maxQty = num(conf.maxQty)||0;
+  if(maxQty>0) raw.forEach(i=>{ if(i.need>maxQty) i.need = maxQty; });
+  // 在庫引き当ての差し引きは、結果に保存されている引当行を使う（ロットが売れて消えていても計算がぶれない）
+  const byPid = {};
+  ((ALLOC.result[brand]||{}).stock||[]).forEach(z=>{ byPid[z.pid] = num(byPid[z.pid]) + num(z.qty); });
+  return raw.map(i=>({...i, need: Math.max(0, i.need - num(byPid[i.pid]))}));
+}
+function allocNeedDiff(brand){
+  const r = ALLOC.result[brand]; if(!r || !r.items) return [];
+  const now = {}; allocNeedNow(brand).forEach(i=>now[i.pid]=i);
+  const out = [];
+  r.items.forEach(i=>{ const n = now[i.pid] ? now[i.pid].need : 0;
+    if(n !== num(i.need)) out.push({pid:i.pid, name:i.name, size:i.size, was:num(i.need), now:n}); });
+  Object.keys(now).forEach(pid=>{ if(!r.items.some(i=>i.pid===pid))
+    out.push({pid, name:now[pid].name, size:now[pid].size, was:0, now:now[pid].need}); });
+  return out;
+}
+function allocSyncNeed(){
+  const brand = ALLOC.brand, r = ALLOC.result[brand];
+  if(!r){ toast('先に計算するか、下書きを再開してください', true); return; }
+  const now = {}; allocNeedNow(brand).forEach(i=>now[i.pid]=i);
+  r.items.forEach(i=>{ i.need = now[i.pid] ? now[i.pid].need : 0; });
+  // 受注に増えていた商品は行を足す（割当0なので「余り」として出る）
+  Object.keys(now).forEach(pid=>{ if(!r.items.some(i=>i.pid===pid)) r.items.push({...now[pid]}); });
+  // 必要数が0になった商品は落とす。ただし割当が残っているうちは残して「配りすぎ」で気づけるようにする
+  r.items = r.items.filter(i=>num(i.need)>0
+    || r.salonIds.some(s=>num((r.m[s]||{})[i.pid])>0)
+    || (r.outs||[]).some(o=>num((o.q||{})[i.pid])>0));
+  toast('必要数を今の受注に合わせました。割当はそのままなので、多すぎ／足りない分を直してください');
+  render();
+}
 function allocSelectionKey(){ return Object.keys(ALLOC.sel).filter(k=>ALLOC.sel[k]).sort().join('|'); }
 function allocToggleOrder(id, on){
   const before = allocSelectionKey();
@@ -4097,6 +4135,18 @@ function vAllocation(){
         : overTotal>0
         ? '<button class="btn sm right" style="opacity:.55" onclick="toast(\'受注数より '+overTotal+'点 多く割り振っています。減らしてから確定してください\', true)">✅ 確定して回収データを作成</button>'
         : '<button class="btn pri sm right" onclick="allocCommit()">✅ 確定して回収データを作成</button>')+'</div>' +
+      // 下書きを再開したあとに受注を直していると、ここで気づける（必要数は写真のままなので追随しない）
+      (()=>{ const dif = allocNeedDiff(brand); if(!dif.length) return '';
+        return '<div style="margin-top:8px;padding:10px 12px;border:1.5px solid var(--s4);border-radius:10px;background:color-mix(in srgb,var(--s4) 8%,transparent)">' +
+          '<div class="row"><b class="small" style="color:var(--s4)">⚠ 受注の内容と合っていない商品が '+dif.length+'件あります</b>' +
+          '<button class="btn sm right" onclick="allocSyncNeed()">必要数を今の受注に合わせる</button></div>' +
+          '<div class="tblwrap" style="margin-top:6px"><table style="width:auto"><tr><th>商品</th><th class="num">この画面</th><th class="num">今の受注</th><th class="num">差</th></tr>' +
+          dif.map(d=>'<tr><td class="small">'+esc(d.name)+' '+esc(d.size||'')+'</td><td class="num">'+d.was+'</td>' +
+            '<td class="num"><b>'+d.now+'</b></td><td class="num" style="color:var(--crit)">'+(d.now-d.was>0?'+':'')+(d.now-d.was)+'</td></tr>').join('') +
+          '</table></div>' +
+          '<p class="muted small" style="margin:6px 0 0">保存した下書きは計算したときの写真なので、あとから受注を直しても追随しません。' +
+          '「必要数を今の受注に合わせる」を押すと<b>必要数だけ</b>入れ替わります（サロンの割当・外注枠・在庫引き当てはそのまま）。' +
+          'そのあと差が出た商品の列だけ手で直してください</p></div>'; })() +
       // 外注枠のサマリー（枠の指定は②で。ここは結果確認＋🔁での手直し。表形式で整列・自社サロンのみモードでは出さない）
       (allocMode!=='own' && outs.length ? '<div style="margin-top:8px;padding:10px 12px;background:var(--wash);border-radius:10px">' +
       '<div class="row"><b class="small">🤝 外注仕入枠の結果</b>' +
