@@ -2372,7 +2372,8 @@ function shortFormHtml(oid){
         lines.map(r=>{ const v=String(r['商品ID']||'').trim();
           return '<option value="'+esc(v)+'"'+(v===pid?' selected':'')+'>'+esc(r['商品名'])+' '+esc(r['容量']||'')+'（受注 '+num(r['個数'])+'）</option>'; }).join('') +
       '</select></label>' +
-      '<label class="small">減らす数<br><input type="number" min="1" value="'+esc(viewState.shortQty||'')+'" oninput="shortSetQty(this.value)" onchange="render()" style="width:100px;text-align:right"></label>' +
+      // 入力のたびに描き直すとカーソルが飛ぶので、確定（Tab・Enter・欄外クリック）で反映する
+      '<label class="small">減らす数<br><input type="number" min="1" data-cell="shq" value="'+esc(viewState.shortQty||'')+'" onchange="shortSetQty(this.value)" style="width:100px;text-align:right"></label>' +
       (pid ? '<span class="small muted">受注数 '+have+' → <b>'+Math.max(0, have-(less>0?less:0))+'</b></span>' : '') +
     '</div>' +
     // サロン別の内訳（確定済みの回収がある場合だけ）
@@ -2380,7 +2381,7 @@ function shortFormHtml(oid){
       cs.map(c=>'<tr'+((c.stocked||c.zaiko)?' style="opacity:.5"':'')+'><td class="mono small">'+esc(c.kid)+'</td><td class="small">'+esc(c.salon)+'</td>' +
         '<td class="small">'+esc(c.st)+(c.zaiko?'（在庫充当）':'')+'</td><td class="num">'+c.qty+'</td>' +
         '<td class="num">'+((c.stocked||c.zaiko) ? '<span class="small muted">—</span>'
-          : '<input type="number" min="0" max="'+c.qty+'" value="'+esc(alloc[c.kid]||'')+'" oninput="shortSetAlloc(\''+esc(c.kid)+'\',this.value)" onchange="render()" style="width:80px;text-align:right">')+'</td></tr>').join('') +
+          : '<input type="number" min="0" max="'+c.qty+'" data-cell="sha|'+esc(c.kid)+'" value="'+esc(alloc[c.kid]||'')+'" onchange="shortSetAlloc(\''+esc(c.kid)+'\',this.value)" style="width:80px;text-align:right">')+'</td></tr>').join('') +
       '<tr style="background:var(--wash)"><td colspan="4"><b>合計</b></td><td class="num"><b'+(allocSum===less?'':' style="color:var(--crit)"')+'>'+allocSum+' / '+(less>0?less:0)+'</b></td></tr>' +
       '</table></div>' : '') +
     (pid && !cs.length ? '<p class="small muted" style="margin-top:8px">この商品はまだ振り分けを確定していません。受注の数量だけを減らします</p>' : '') +
