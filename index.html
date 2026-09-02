@@ -815,6 +815,31 @@ function refRealCost(oid, brand){
   return cost;
 }
 
+// 仕入単価の正本（2026-09-02 ユーザー要望）。優先順:
+//   ① 回収台帳の「仕入単価」= 確定時に焼き付けた実額。過去の数字がマスタ変更で動かない
+//   ② 商品マスタの「仕入固定単価」= ポンプ等、ブランドの掛け率が当てはまらない商品
+//   ③ ブランドの掛け率計算（従来どおり）
+// ①②が無いときだけ③に落ちるので、既存データは今までと同じ数字のまま動く。
+const BUY_UNIT_COL = '仕入単価', FIXED_BUY_COL = '仕入固定単価';
+function fixedBuyUnit(pid){ const v = num((product(pid)||{})[FIXED_BUY_COL]); return v>0 ? v : null; }
+// row = 回収台帳の行（無い場合は null）。戻り値 {unit, src:'台帳'|'固定'|'掛け率', note}
+function buyUnitOf(pid, supId, supRow, brand, row){
+  const led = row ? num(row[BUY_UNIT_COL]) : 0;
+  if(led>0) return {unit:led, src:'台帳', note:''};
+  const fx = fixedBuyUnit(pid);
+  if(fx!=null) return {unit:fx, src:'固定', note:'固定単価'};
+  const list = num((product(pid)||{})['定価（税抜）']);
+  const rate = payRateOf(supRow, brand);
+  if(rate!=null && supId===PAYIDS.pure){
+    // 口座請求元の実請求単価 = サロン仕入価格×57%（円未満切捨）。2026-07-23 実請求書と全明細照合して確定。
+    // ×0.57は浮動小数点誤差で1円ズレるため整数演算（700×0.57=398.99…対策）
+    const sc = salonCost(pid);
+    if(sc>0) return {unit:Math.floor(sc*57/100), src:'掛け率', note:'', rate};
+    return {unit:Math.floor(list*(Math.round((rate-BROKER_RATE)*1000)/1000)), src:'掛け率', note:'サロン価未設定→旧式で仮', rate};
+  }
+  if(rate!=null) return {unit:Math.round(list*rate), src:'掛け率', note:'', rate};
+  return {unit:ownCost(pid), src:'掛け率', note:'率未設定→仕入価格で仮', rate:null};
+}
 // ===== 画面: 💰支払い（支払先ごとの支払予定と根拠明細。Task#22 Phase②・2026-07-18） =====
 // 計上ルール: 仕入=回収台帳の生存行（振り分け・外注仕入）。計上日=対象受注の📦発注日（未入力は振分確定日で仮計上・「仮」表示）
 // 単価: 仕入先（サロンマスタのディーラー/外注行）の掛け率列×定価。率が無い商品は商品マスタの仕入価格で仮単価
@@ -882,15 +907,9 @@ function collectSupplierLines(inMonthFn, allMonths){
     if(inMonthFn && !inMonthFn(date)) return;
     const rate = payRateOf(sal[supId], brand);
     const list = num((product(pid)||{})['定価（税抜）']);
-    let unit, unitNote='';
-    if(rate!=null && supId===PAYIDS.pure){
-      // 口座請求元の実請求単価 = サロン仕入価格×57%（円未満切捨）。2026-07-23 実請求書と全明細照合して確定。
-      // サロン価70%商品=定価×39.9%（従来通り）・65%商品=定価×37.05%。仲介2%は別途（定価×2%・🤝カード）
-      const sc = salonCost(pid);
-      if(sc>0){ unit = Math.floor(sc*57/100); }   // ×0.57は浮動小数点誤差で1円ズレるため整数演算（700×0.57=398.99…対策）
-      else { unit = Math.floor(list*(Math.round((rate-BROKER_RATE)*1000)/1000)); unitNote='サロン価未設定→旧式で仮'; }
-    } else if(rate!=null){ unit = Math.round(list*rate); }
-    else { unit = ownCost(pid); unitNote='率未設定→仕入価格で仮'; }
+    const u = buyUnitOf(pid, supId, sal[supId], brand, r);
+    const unit = u.unit;
+    const unitNote = u.note || (u.src==='台帳' ? '台帳の実額' : '');
     // 受注に紐づかない仕入（手動仕入れ・外注一括の旧データ等）は行自体の発注日が計上日なので「仮」にしない
     // listAmt=定価×数量: 仲介手数料の基準額（2026-07-23 実請求書で「手数料=定価×2%」と確定したため保持）
     (bySup[supId]=bySup[supId]||[]).push({date, prov:oids.length>0 && !od, kid:String(r['回収ID']||'').trim(), oids:oids.join(', '),
@@ -1552,18 +1571,12 @@ function anbetsuSupply(){
     (need[oid]=need[oid]||{})[pid] = (need[oid][pid]||0) + num(r['個数']);
   });
   const got = {};    // 受注ID|ブランド → { 仕入先ID: {qty, amt, listAmt} }
-  const add = (oid, pid, supId, qty)=>{
+  const add = (oid, pid, supId, qty, row)=>{
     if(qty<=0) return;
     const brand = brandOf(pid) || '（メーカー不明）';
     const list = num((product(pid)||{})['定価（税抜）']);
     const rate = payRateOf(sal[supId], brand);
-    let unit;
-    if(rate!=null && supId===PAYIDS.pure){
-      // 口座請求元の実請求単価（支払い画面と同じ式）。サロン価未設定なら旧式で仮
-      const sc = salonCost(pid);
-      unit = sc>0 ? Math.floor(sc*57/100) : Math.floor(list*(Math.round((rate-BROKER_RATE)*1000)/1000));
-    } else if(rate!=null){ unit = Math.round(list*rate); }
-    else { unit = ownCost(pid); }   // 掛け率が引けない仕入先は商品マスタで仮
+    const unit = buyUnitOf(pid, supId, sal[supId], brand, row).unit;   // 支払い画面と同じ関数
     const k = oid+'|'+brand;
     const g = (got[k]=got[k]||{});
     const e = g[supId] = g[supId] || {qty:0, amt:0, listAmt:0, noRate:(rate==null)};
@@ -1583,10 +1596,10 @@ function anbetsuSupply(){
       if(left<=0) return;
       const t = Math.min(left, need[oid][pid]||0);
       if(t<=0) return;
-      add(oid, pid, supId, t); need[oid][pid] -= t; left -= t;
+      add(oid, pid, supId, t, r); need[oid][pid] -= t; left -= t;
     });
     // どの受注も満ちていた分（数量を減らした後などに出る）は先頭の受注に寄せて取りこぼさない
-    if(left>0) add(oids[0], pid, supId, left);
+    if(left>0) add(oids[0], pid, supId, left, r);
   });
   return {got, left:need};   // left = 充当しきれず残った必要数（＝まだ振り分けていない分）
 }
@@ -4777,7 +4790,24 @@ async function allocCommit(){
       return pct>0 ? {sid, brand, rate: Math.round(pct*10)/1000} : null;
     }).filter(Boolean);
   })();
-  const res = await act('commitAllocation', {brand, orderIds:selIds, lines, supplierId:r.supplier||'', stock:r.stock||[]}, brand+' の回収データを作成しました', ['collectionLedger','orderLedger','stock','stockLog']);
+  // ②で単価・掛け率を上書きした組み合わせだけ、実額を回収台帳へ焼き付ける（2026-09-02 ユーザー要望）。
+  // 上書きしていない分は単価を送らない＝従来どおりマスタの掛け率から計算する（マスタを直せば過去も直る挙動を残す）。
+  // これを入れる前は、ポンプのように掛け率の構造が違う商品の上書きが確定した瞬間に消えていた。
+  const buyUnits = (()=>{
+    const m = {};
+    lines.forEach(l=>{
+      const sid = l.out ? String(l.salonId).trim() : String(l.supplierId||'').trim();
+      if(!sid) return;
+      (l.items||[]).forEach(it=>{
+        const pid = String(it.pid||'').trim(); if(!pid) return;
+        if(allocItemUnitOf(pid, sid)==null && !allocBuyRateEdited(sid)) return;   // 上書きしていない分は送らない
+        const u = allocBuyUnit(pid, sid);
+        if(u>0) m[sid+'|'+pid] = Math.round(u);
+      });
+    });
+    return m;
+  })();
+  const res = await act('commitAllocation', {brand, orderIds:selIds, lines, supplierId:r.supplier||'', stock:r.stock||[], units:buyUnits}, brand+' の回収データを作成しました', ['collectionLedger','orderLedger','stock','stockLog']);
   if(res){
     if(buyRateLearn.length) saveLearnedRates('saveSalonRateCells', buyRateLearn, 'salons', '仕入れマスタ');
     const warning=allocFormUpdateWarning(res);
@@ -5238,7 +5268,7 @@ function vPoForm(){
 // ===== 画面: マスタ管理（admin） =====
 // 列名に社名を含むため関数で組む（ログイン後にNMが入ってから評価される）
 const MASTER_CONF_ = ()=>({
-  '商品':   {sheet:'products',    id:'商品ID',  cols:['商品ID','商品名','容量','カテゴリー','JANコード','定価（税抜）','サロン価掛け率','サロン仕入価格（税抜）',NM.co+'掛け率',NM.co+'仕入価格（税抜）','定価売り'], add:'addProduct', upd:'updateProduct',
+  '商品':   {sheet:'products',    id:'商品ID',  cols:['商品ID','商品名','容量','カテゴリー','JANコード','定価（税抜）','サロン価掛け率','サロン仕入価格（税抜）',NM.co+'掛け率',NM.co+'仕入価格（税抜）','定価売り','仕入固定単価'], add:'addProduct', upd:'updateProduct',
              searchCols:['商品名','JANコード','商品ID'], searchHint:'商品名・JANで検索'},
   // 略称はシート運用専用（発注書シート名の元）なのでシステム画面には出さない（2026-07-16 ユーザー指定。スプシ側には残す）
   '卸先':   {sheet:'wholesalers', id:'卸先ID',  cols:['卸先ID','卸先名','担当者名','メーカー','郵便番号','住所','電話番号','メールアドレス','納品先名','納品先住所','納品先TEL'], add:'addWholesaler', upd:'updateWholesaler',
