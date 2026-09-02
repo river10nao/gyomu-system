@@ -2536,6 +2536,17 @@ async function issueDocUI(orderId){
 }
 
 // ===== 案件作成グリッド（JAN列を貼る → 商品展開 → 数量列を貼る → 商談中で登録） =====
+// マスタが空欄だった掛け率を、入力値で覚えさせる（案件グリッド=卸先マスタ / 振り分け=仕入れマスタ 共通）。
+// 保存に失敗しても本体の登録は済んでいるので、画面は止めずトーストで知らせるだけにする。2026-09-02 ユーザー要望
+function saveLearnedRates(action, cells, sheetKey, label){
+  const pct = v=>Math.round(v*1000)/10+'%';
+  apiPost(action, {cells, onlyIfEmpty:true}, [sheetKey]).then(d=>{
+    if(!d || !d.saved) return;
+    toast('掛け率を'+label+'に保存しました（'+cells.map(c=>c.brand+' '+pct(c.rate)).join('・')+'）。次回から自動で入ります' +
+      (d.addedColumns && d.addedColumns.length ? ' ※新しい列を追加: '+d.addedColumns.join('・') : ''));
+    render();
+  }).catch(e=>toast('掛け率の'+label+'への保存に失敗しました（登録自体は完了しています）: '+e.message, true));
+}
 // 掛け率の自動解決: 卸先マスタのブランド列「ミル(40%)」= ブランド名が「ミル」で始まれば適用。
 // 卸先の個別掛け率（セル値）優先、無ければヘッダーの標準掛け率。
 function rateFor(wid, brand){
@@ -2686,6 +2697,21 @@ async function noSubmit(){
   if(noRate){ toast('掛け率が空の明細があります（'+noRate+'件）。掛け率を入れてください', true); return; }
   const skipped = (viewState.noRows||[]).filter(r=>!r.pid).length;
   if(skipped && !confirm('未登録JANが'+skipped+'件あります。除外して登録しますか？')) return;
+  // 卸先マスタに掛け率が無かったブランドは、ここで入れた率を覚えさせる（2026-09-02 ユーザー要望）。
+  // 覚えるのは「マスタが空欄（列の既定値も無い）」かつ「そのブランドの明細が全部同じ率」のときだけ。
+  // 率がバラけているブランドはどれを正にすべきか決められないので触らない。
+  const rateLearn = (()=>{
+    const byBrand = {};
+    (viewState.noRows||[]).forEach(r=>{
+      if(!r.pid || num(r.qty)<=0) return;
+      const b = brandOf(r.pid); const v = num(r.rate);
+      if(!b || !(v>0)) return;
+      (byBrand[b] = byBrand[b] || new Set()).add(v);
+    });
+    return Object.keys(byBrand)
+      .filter(b=>byBrand[b].size===1 && String(rateFor(wid, b)).trim()==='')
+      .map(b=>({wid, brand:b, rate:[...byBrand[b]][0]}));
+  })();
   const editOid = viewState.editOid||null;   // ✏️編集モード（2026-07-21）: 同じグリッドで updateOrder に切り替える
   const btn = document.getElementById('noGo'); btn.disabled = true; btn.textContent = editOid?'保存中…':'登録中…';
   try{
@@ -2702,6 +2728,7 @@ async function noSubmit(){
     viewState.newOrder = false; viewState.editOid = null; viewState.noRows = []; viewState.noJansTxt=''; viewState.noQtyTxt=''; viewState.noVia=false; viewState.noForms=null;
     toast(editOid ? ('案件 '+r.orderId+' を更新しました（'+r.lines+'明細）') : ('案件 '+r.orderId+' を作成しました（商談中・'+r.lines+'明細）'));
     render();
+    if(rateLearn.length) saveLearnedRates('saveRateCells', rateLearn, 'wholesalers', '卸先マスタ');
   }catch(e){
     toast(e.message, true);
     btn.disabled = false; btn.textContent = editOid?'💾 この内容で上書き保存':'📝 この内容で案件を作成（商談中）';
@@ -4624,8 +4651,22 @@ async function allocCommit(){
     splitUsed ? '\n仕入先（枠ごと）:\n' + lines.filter(l=>!l.out).map(l=>'　'+slotName(names,l.slot)+' ← '+supLabelOf(l.supplierId)).join('\n')
               : (r.supplier ? '\n仕入先: '+supLabelOf(r.supplier) : '');
   if(!confirm(brand+' の割り振りを確定します。\n対象受注: '+selIds.join(', ')+supText+'\nサロン '+salonCount+'枠・合計 '+total+'点'+(outTotal?'（うち🤝外注 '+outTotal+'点）':'')+(stockTotal?'＋📦在庫充当 '+stockTotal+'点（確定時に在庫から確保）':'')+' を「回収待ち」で回収・検品に登録します。\n\n⚠ 確定後は、この画面での振り分けの修正はできません（直す場合は回収・検品側で該当の回収を削除してやり直しになります）。よろしいですか？')) return;
+  // 仕入れマスタに掛け率が無かった仕入先は、②で入れた率を覚えさせる（2026-09-02 ユーザー要望）。
+  // 上書きは従来どおり「今回の振り分けだけ」に効く。マスタが空欄だったときに限り、その値を初期値として残す
+  const buyRateLearn = (()=>{
+    const ovr = (ALLOC.conf[brand]||{}).buyRates || {};
+    const sids = [...new Set(lines.filter(l=>!l.out).map(l=>l.supplierId)
+      .concat(allocOutsOf(r).map(o=>String(o.sid||'').trim())).filter(Boolean))];
+    return sids.map(sid=>{
+      const row = rows('salons').find(x=>String(x['サロンID']||'').trim()===sid);
+      if(!row || payRateOf(row, brand)!=null) return null;   // マスタにある分は触らない
+      const pct = num(ovr[sid]);                              // ②の入力は％（41.9 → 0.419 で保存）
+      return pct>0 ? {sid, brand, rate: Math.round(pct*10)/1000} : null;
+    }).filter(Boolean);
+  })();
   const res = await act('commitAllocation', {brand, orderIds:selIds, lines, supplierId:r.supplier||'', stock:r.stock||[]}, brand+' の回収データを作成しました', ['collectionLedger','orderLedger','stock','stockLog']);
   if(res){
+    if(buyRateLearn.length) saveLearnedRates('saveSalonRateCells', buyRateLearn, 'salons', '仕入れマスタ');
     const warning=allocFormUpdateWarning(res);
     ALLOC.lastCommit={brand,ids:res.collectionIds||[],printable:true,warning};
     delete ALLOC.result[brand];
