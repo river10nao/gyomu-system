@@ -798,6 +798,22 @@ function render(){
   renderNav();
 }
 
+// 紹介報酬の対象額に使う「実額の仕入」。案件別収支と同じ計算（回収台帳の仕入先×掛け率、
+// まだ振り分けていない分だけ商品マスタの仕入価格で仮置き）。2026-09-01 ユーザー指定で実額ベースに。
+function refRealCost(oid, brand){
+  const sup = anbetsuSupplyMemo();
+  let cost = 0;
+  const g = sup.got[oid+'|'+brand] || {};
+  Object.keys(g).forEach(k=>{ cost += g[k].amt; });
+  const rest = sup.left[oid] || {};
+  Object.keys(rest).forEach(pid=>{
+    const q = num(rest[pid]); if(q<=0) return;
+    if((brandOf(pid)||'（メーカー不明）') !== brand) return;
+    cost += ownCost(pid)*q;
+  });
+  return cost;
+}
+
 // ===== 画面: 💰支払い（支払先ごとの支払予定と根拠明細。Task#22 Phase②・2026-07-18） =====
 // 計上ルール: 仕入=回収台帳の生存行（振り分け・外注仕入）。計上日=対象受注の📦発注日（未入力は振分確定日で仮計上・「仮」表示）
 // 単価: 仕入先（サロンマスタのディーラー/外注行）の掛け率列×定価。率が無い商品は商品マスタの仕入価格で仮単価
@@ -963,35 +979,45 @@ function vPayments(){
     refWs.forEach(w=>{
       const wid = String(w['卸先ID']||'').trim(); const rid = String(w['紹介者']||'').trim();
       const base = String(w['報酬基準']||'利益').trim(); const rateV = num(w['報酬率']); const rate = rateV>1 ? rateV/100 : rateV;
+      // 報酬対象ブランド: 入っていればそのブランドの明細だけが対象。空欄なら全ブランド（2026-09-01 ユーザー指定）
+      const only = String(w['報酬対象ブランド']||'').trim();
       const byOrder = {};
       // 2026-07-23 ユーザー確定: 判定は発注日ベース（入金日ではない）。発注日1〜15日→当月末・16日〜末日→翌月10日。
       // 卸先からの入金完了は待たない（発注した月末に先方が請求書を作成→入金する運用）
       rows('orderLedger').filter(r=>String(r['卸先ID']||'').trim()===wid && String(r['削除']||'').trim()==='').forEach(r=>{
         const oid=String(r['受注ID']||'').trim(); if(!oid) return;
-        (byOrder[oid]=byOrder[oid]||{oid, ord:String(r['発注日']||'').trim(), sales:0, cost:0});
-        byOrder[oid].sales += num(r['小計（税抜）']);
-        byOrder[oid].cost += num(r['個数'])*ownCost(String(r['商品ID']||'').trim());
+        const brand = brandOf(r['商品ID']) || '（メーカー不明）';
+        if(only && brand!==only) return;
+        const key = oid+'|'+brand;
+        (byOrder[key]=byOrder[key]||{oid, brand, ord:String(r['発注日']||'').trim(), sales:0});
+        byOrder[key].sales += num(r['小計（税抜）']);
       });
       Object.values(byOrder).filter(o=>o.ord && inMonth(o.ord)).forEach(o=>{   // 対象月は発注日基準（発注日未入力はまだ計上しない）
-        const b = base==='売上' ? o.sales : (o.sales-o.cost);
+        // 仕入は実額（回収台帳の仕入先×掛け率。未振分の分だけ商品マスタで仮）。案件別収支と同じ（2026-09-01 ユーザー指定）
+        const cost = refRealCost(o.oid, o.brand);
+        const b = base==='売上' ? o.sales : (o.sales-cost);
         const fee = Math.round(b*rate);
         // 発注日が15日まで→当月末、16日以降→翌月10日
         const d = new Date(o.ord.replace(/\//g,'-'));
         let due = '（発注日なし）';
         if(!isNaN(d)) due = d.getDate()<=15 ? payFmt(payEom(d.getFullYear(), d.getMonth()))+'（当月末）'
                                             : payFmt(new Date(d.getFullYear(), d.getMonth()+1, 10))+'（翌月10日）';
-        (byRef[rid]=byRef[rid]||[]).push({wname:String(w['卸先名']||''), oid:o.oid, base, rate, b, fee, ord:o.ord, due});
+        (byRef[rid]=byRef[rid]||[]).push({wname:String(w['卸先名']||''), oid:o.oid, brand:o.brand,
+          base, rate, sales:o.sales, cost, b, fee, ord:o.ord, due});
       });
     });
     Object.keys(byRef).forEach(rid=>{
       const list = byRef[rid]; const total = list.reduce((a,x)=>a+x.fee,0);
       const open = (viewState.aggOpen||{})['pay_ref_'+rid];
       html += '<div class="card"><div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_ref_'+rid+'\')">'+(open?'▾':'▸')+' <b>🤝 '+esc(salonLabel(sal[rid]||{})||rid)+'（紹介報酬）</b><span class="small muted">紹介卸先の発注済み案件 × 報酬率 ／ <b>発注日</b>1〜15日→当月末・16日〜→翌月10日（発注ベース・入金は待たない）</span><span class="right"><b>'+yen(total)+'</b></span></div>' +
-        (open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>卸先</th><th>受注</th><th>基準</th><th class="num">対象額</th><th class="num">率</th><th class="num">報酬</th><th>発注日</th><th>支払予定</th></tr>' +
-          list.map(x=>'<tr><td class="small">'+esc(x.wname)+'</td><td class="mono small">'+esc(x.oid)+'</td><td class="small">'+esc(x.base)+'</td><td class="num">'+yen(x.b)+'</td><td class="num">'+(x.rate*100).toFixed(0)+'%</td><td class="num"><b>'+yen(x.fee)+'</b></td><td class="small">'+esc(x.ord)+'</td><td class="small">'+esc(x.due)+'</td></tr>').join('')+'</table></div>' : '') + '</div>';
+        (open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>卸先</th><th>受注</th><th>ブランド</th><th class="num">売上</th><th class="num">'+NM.co+'仕入</th><th>基準</th><th class="num">対象額</th><th class="num">率</th><th class="num">報酬</th><th>発注日</th><th>支払予定</th></tr>' +
+          list.map(x=>'<tr><td class="small">'+esc(x.wname)+'</td><td class="mono small">'+esc(x.oid)+'</td><td class="small">'+esc(x.brand||'')+'</td>' +
+            '<td class="num">'+yen(x.sales)+'</td><td class="num">'+yen(x.cost)+'</td>' +
+            '<td class="small">'+esc(x.base)+'</td><td class="num">'+yen(x.b)+'</td><td class="num">'+(x.rate*100).toFixed(0)+'%</td><td class="num"><b>'+yen(x.fee)+'</b></td><td class="small">'+esc(x.ord)+'</td><td class="small">'+esc(x.due)+'</td></tr>').join('')+'</table></div>' +
+          '<p class="muted small" style="margin:6px 0 0">仕入は<b>実額</b>（回収台帳の仕入先×掛け率。まだ振り分けていない分は商品マスタの仕入価格で仮）。案件別収支と同じ計算です</p>' : '') + '</div>';
     });
   } else {
-    html += '<div class="card"><b class="small muted">🤝 紹介報酬</b><p class="muted small">卸先マスタの「紹介者」列が入った卸先の発注済み案件（📦発注日ベース）から自動計算します（今は対象なし。マスタ管理で紹介者・報酬基準・報酬率を記入してください）</p></div>';
+    html += '<div class="card"><b class="small muted">🤝 紹介報酬</b><p class="muted small">卸先マスタの「紹介者」列が入った卸先の発注済み案件（📦発注日ベース）から自動計算します（今は対象なし。マスタ管理で紹介者・報酬基準・報酬率を記入してください）。特定ブランドだけに払う場合は「報酬対象ブランド」にブランド名を入れます（空欄=全ブランド）</p></div>';
   }
 
   // ---- 店販請求元（請求書ベース・想定額の参考） ----
