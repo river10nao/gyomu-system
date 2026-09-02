@@ -1659,7 +1659,7 @@ function anbetsuHtml(m){
       return '<tr>'+brandCell+'<td class="small">'+esc(l.w)+'</td>' +
       '<td class="num">'+yen(l.sales)+'</td><td class="num">'+pct(l.list>0?l.cost/l.list:null)+'</td><td class="num">'+pct(l.list>0?l.sales/l.list:null)+'</td>' +
       '<td class="num">'+yen(l.cost)+(l.prov?' <span class="small" style="color:var(--s4)">仮</span>':'')+'</td>' +
-      '<td class="num">'+yen(profit(l))+'</td><td class="num">'+pct(l.sales>0?profit(l)/l.sales:null)+'</td>' +
+      '<td class="num">'+yen(profit(l))+'</td><td class="num">'+pct(l.cost>0?profit(l)/l.cost:null)+'</td>' +
       '<td class="small">'+formCell(l)+'</td><td>'+pill(l.st)+'</td><td class="mono small">'+l.oid+'</td>' +
       '<td style="text-align:center">'+allocBtn(l)+'</td></tr>';
     }).join('')
@@ -1671,9 +1671,9 @@ function anbetsuHtml(m){
     '<button class="btn sm" onclick="printAnbetsu()">🖨 PDF出力</button></div>' +
     '<table style="margin-top:8px"><tr><th>メーカー</th><th>卸先</th><th class="num">売上（卸値税抜）</th><th class="num">掛率（仕入）</th><th class="num">掛率(卸)</th><th class="num">'+NM.co+'仕入</th><th class="num">利益額</th><th class="num">利益率</th><th style="min-width:260px">仕入形態 ／ 仕入先</th><th>状態</th><th>受注ID</th><th></th></tr>' +
     (body || '<tr><td colspan="'+NCOL+'" class="muted">この月の受注はまだありません</td></tr>') +
-    (groups.length ? '<tr><td colspan="2"><b>合計</b></td><td class="num"><b>'+yen(t.sales)+'</b></td><td class="num"><b>'+pct(groups.reduce((a,g)=>a+g.ls.reduce((b,l)=>b+l.list,0),0)>0?t.cost/groups.reduce((a,g)=>a+g.ls.reduce((b,l)=>b+l.list,0),0):null)+'</b></td><td></td><td class="num"><b>'+yen(t.cost)+'</b></td><td class="num"><b>'+yen(profit(t))+'</b></td><td class="num"><b>'+pct(t.sales>0?profit(t)/t.sales:null)+'</b></td><td colspan="4"></td></tr>' : '') +
+    (groups.length ? '<tr><td colspan="2"><b>合計</b></td><td class="num"><b>'+yen(t.sales)+'</b></td><td class="num"><b>'+pct(groups.reduce((a,g)=>a+g.ls.reduce((b,l)=>b+l.list,0),0)>0?t.cost/groups.reduce((a,g)=>a+g.ls.reduce((b,l)=>b+l.list,0),0):null)+'</b></td><td></td><td class="num"><b>'+yen(t.cost)+'</b></td><td class="num"><b>'+yen(profit(t))+'</b></td><td class="num"><b>'+pct(t.cost>0?profit(t)/t.cost:null)+'</b></td><td colspan="4"></td></tr>' : '') +
     '</table><p class="muted small" style="margin-top:6px">仕入額は<b>実額</b>（回収台帳の仕入先×仕入先マスタの掛け率。支払い画面と同じ計算）。まだ振り分けていない分だけ商品マスタの仕入価格で仮置きし「仮」と出します（振り分けを確定すると自動で実額に入れ替わります' +
-    (provTotal?'。今月の仮置き '+yen(provTotal):'') + '）。掛率（仕入）='+NM.co+'仕入÷定価、掛率(卸)=卸値÷定価。仕入形態の欄に、実際に通した仕入先と掛け率・金額を並べています。📋 を押すとその案件のサロン振り分け表が開きます</p></div>';
+    (provTotal?'。今月の仮置き '+yen(provTotal):'') + '）。利益率=利益額÷'+NM.co+'仕入（仕入に対して何割乗せられたか）、掛率（仕入）='+NM.co+'仕入÷定価、掛率(卸)=卸値÷定価。仕入形態の欄に、実際に通した仕入先と掛け率・金額を並べています。📋 を押すとその案件のサロン振り分け表が開きます</p></div>';
 }
 function exportAnbetsu(){
   const lines = calcAnbetsu(selMonth);
@@ -1681,7 +1681,7 @@ function exportAnbetsu(){
   const out = [];
   lines.forEach(l=>{
     out.push([l.brand, l.w, l.sales, l.list>0?(l.cost/l.list).toFixed(3):'', l.list>0?(l.sales/l.list).toFixed(3):'',
-      l.cost, l.sales-l.cost, l.sales>0?((l.sales-l.cost)/l.sales).toFixed(3):'', anbetsuFormText(l.form), l.st, l.oid, '']);
+      l.cost, l.sales-l.cost, l.cost>0?((l.sales-l.cost)/l.cost).toFixed(3):'', anbetsuFormText(l.form), l.st, l.oid, '']);
     l.sups.forEach(s=>out.push(['', '　└ 仕入先: '+s.name+'（'+(s.kind||'仕入先')+'）', '', s.rate!=null&&!s.noRate?s.rate.toFixed(3):'', '',
       s.amt, '', '', '', '', l.oid, s.noRate?'率未設定（仕入価格で仮）':'']));
     if(l.prov) out.push(['', '　└ 未振分（仮）', '', '', '', l.prov, '', '', '', '', l.oid, '商品マスタの仕入価格で仮置き']);
@@ -1714,7 +1714,7 @@ function printAnbetsu(){
       return '<tr>'+brandCell+'<td>'+esc(l.w)+'</td>' +
       '<td class="num">'+y(l.sales)+'</td><td class="num">'+pct(l.list>0?l.cost/l.list:null)+'</td><td class="num">'+pct(l.list>0?l.sales/l.list:null)+'</td>' +
       '<td class="num">'+y(l.cost)+(l.prov?' 仮':'')+'</td>' +
-      '<td class="num">'+y(profit(l))+'</td><td class="num">'+pct(l.sales>0?profit(l)/l.sales:null)+'</td>' +
+      '<td class="num">'+y(profit(l))+'</td><td class="num">'+pct(l.cost>0?profit(l)/l.cost:null)+'</td>' +
       '<td class="small">'+esc(anbetsuFormText(l.form))+(sup.length?'<div class="sup">'+sup.join('<br>')+'</div>':'')+'</td>' +
       '<td class="small">'+esc(l.st||'')+'</td><td class="small">'+l.oid+'</td></tr>';
     }).join('')
@@ -1730,9 +1730,9 @@ function printAnbetsu(){
     '<h1>案件別収支（'+esc(m)+'）</h1>' +
     '<table><tr><th>メーカー</th><th>卸先</th><th class="num">売上（卸値税抜）</th><th class="num">掛率（仕入）</th><th class="num">掛率(卸)</th><th class="num">'+NM.co+'仕入</th><th class="num">利益額</th><th class="num">利益率</th><th>仕入形態</th><th>状態</th><th>受注ID</th></tr>' +
     body +
-    '<tr class="brand"><td colspan="2"><b>合計</b></td><td class="num"><b>'+y(t.sales)+'</b></td><td class="num"><b>'+pct(t.list>0?t.cost/t.list:null)+'</b></td><td></td><td class="num"><b>'+y(t.cost)+'</b></td><td class="num"><b>'+y(profit(t))+'</b></td><td class="num"><b>'+pct(t.sales>0?profit(t)/t.sales:null)+'</b></td><td colspan="3"></td></tr>' +
+    '<tr class="brand"><td colspan="2"><b>合計</b></td><td class="num"><b>'+y(t.sales)+'</b></td><td class="num"><b>'+pct(t.list>0?t.cost/t.list:null)+'</b></td><td></td><td class="num"><b>'+y(t.cost)+'</b></td><td class="num"><b>'+y(profit(t))+'</b></td><td class="num"><b>'+pct(t.cost>0?profit(t)/t.cost:null)+'</b></td><td colspan="3"></td></tr>' +
     '</table>' +
-    '<p class="small">仕入額は実額（回収台帳の仕入先×仕入先マスタの掛け率）。まだ振り分けていない分だけ商品マスタの仕入価格で仮置きし「仮」と表示。掛率（仕入）='+NM.co+'仕入÷定価、掛率(卸)=卸値÷定価（出力日: '+today()+'）</p>' +
+    '<p class="small">仕入額は実額（回収台帳の仕入先×仕入先マスタの掛け率）。まだ振り分けていない分だけ商品マスタの仕入価格で仮置きし「仮」と表示。利益率=利益額÷'+NM.co+'仕入、掛率（仕入）='+NM.co+'仕入÷定価、掛率(卸)=卸値÷定価（出力日: '+today()+'）</p>' +
     '</body></html>');
   w.document.close();
 }
