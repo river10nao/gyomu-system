@@ -3231,11 +3231,27 @@ function vQuota(){
   // ブランド→色の割当は全サロン共通・固定順（同じブランドはどのサロンでも同じ色）
   const allBrands = [...new Set(lines.map(l=>l.brand))].sort();
   const colorOf = b => 'var(--s'+((allBrands.indexOf(b)%6)+1)+')';
+  // バーの並び: 仕入先（ディーラー・外注）を上、サロンを下にまとめる。サロンは連携ディーラーで分ける
+  // （自社サロン＝連携ディーラー空 / 神澤さん連携サロン＝連携ディーラー=S0021）。2026-09-02 ユーザー要望
+  const salMaster = {}; rows('salons').forEach(x=>{ const id=String(x['サロンID']||'').trim(); if(id) salMaster[id]=x; });
+  const dealerName = id=>salMaster[id] ? salonLabel(salMaster[id]) : id;
   const salons = Object.values(bySalon).map(s=>{
     s.totalUsed = s.brands.reduce((a,b)=>a+b.used,0);
     s.totalQuota = s.brands.reduce((a,b)=>a+b.quota,0);
+    const m = salMaster[s.sid] || {};
+    s.kind = String(m['種別']||'').trim();
+    s.link = String(m['連携ディーラー']||'').trim();
     return s;
   }).sort((a,b)=>b.totalUsed-a.totalUsed);
+  // グループの並び順: 仕入先 → 自社サロン → 連携サロン（連携先ごと）
+  const isSupplier = s=>['ディーラー','外注','紹介','注文サイト'].includes(s.kind);
+  const linkIds = [...new Set(salons.filter(s=>!isSupplier(s) && s.link).map(s=>s.link))].sort();
+  const salonGroups = [
+    {key:'sup',  title:'🏭 仕入先（ディーラー・外注）', note:'AXIAが仕入れる相手。サロンへの枠とは別物です', list:salons.filter(isSupplier)},
+    {key:'own',  title:'💇 自社サロン',                 note:'連携ディーラーなし',                        list:salons.filter(s=>!isSupplier(s) && !s.link)},
+    ...linkIds.map(id=>({key:'link_'+id, title:'🤝 '+dealerName(id)+' 連携サロン', note:'サロンマスタの「連携ディーラー」='+id,
+                         list:salons.filter(s=>!isSupplier(s) && s.link===id)}))
+  ].filter(g=>g.list.length);
 
   const legend = allBrands.map(b=>'<span class="step"><span class="dot" style="background:'+colorOf(b)+';border-color:'+colorOf(b)+'"></span>'+esc(b)+'</span>').join(' ');
 
@@ -3280,7 +3296,11 @@ function vQuota(){
   '<div class="row" style="margin-bottom:12px">対象月: '+monthPicker()+'<span class="right steps">'+legend+'</span></div>' +
   brandCapCard +
   '<div class="card">' +
-  (salons.map(s=>{
+  (salonGroups.map(g=>
+    '<div class="row small" style="margin:2px 0 10px;padding-bottom:4px;border-bottom:1px solid var(--grid)">' +
+      '<b>'+g.title+'</b><span class="muted">'+esc(g.note)+'</span>' +
+      '<span class="right muted">'+g.list.length+'件 ／ 使用 '+yen(g.list.reduce((a,x)=>a+x.totalUsed,0))+'</span></div>' +
+    g.list.map(s=>{
     // 積み上げセグメント（幅 = 使用額 ÷ サロンの枠合計。100%でクリップ）
     let acc = 0;
     const segs = s.brands.map(b=>{
@@ -3299,8 +3319,10 @@ function vQuota(){
       '<span class="right mono">'+(s.brands.length ? yen(s.totalUsed)+(totalHanbai>0?'<span class="muted">（内 店販/EC '+yen(totalHanbai)+'）</span>':'')+' / '+yen(s.totalQuota)+'（残 '+yen(s.totalQuota-s.totalUsed)+'）' : '<span class="muted">今月の仕入なし</span>')+'</span></div>' +
       '<div class="bar-outer" style="height:16px;display:flex;gap:2px">'+segs+'</div>' +
       (s.brands.length ? '<div class="steps" style="margin-top:4px">'+chips+'</div>' : '')+'</div>';
-  }).join('') || '<p class="muted">この月の使用データがありません</p>') + '</div>' +
-  '<p class="muted small">※ 使用額は 回収（発注日ベース）＋店販品注文 の サロン仕入価格（税抜）×個数。ブランド内訳が70%超で黄・90%超で赤。</p>';
+    }).join('')
+  ).join('<div style="height:10px"></div>') || '<p class="muted">この月の使用データがありません</p>') + '</div>' +
+  '<p class="muted small">※ 使用額は 回収（受注の📦発注日ベース・未入力は振分確定日）＋店販品注文 の サロン仕入価格（税抜）×個数。ブランド内訳が70%超で黄・90%超で赤。<br>' +
+  '並びは 仕入先（ディーラー・外注）→ 自社サロン → 連携サロン。連携の判定はサロンマスタの「連携ディーラー」列です。</p>';
 }
 
 // ===== 画面: サロン振り分け（admin） =====
