@@ -1231,8 +1231,9 @@ function vDashboard(){
   }).sort((a,b)=>String(a._due||'9999').localeCompare(String(b._due||'9999')));
 
   // 月次バーチャート（1本に集約: 下段=仕入・上段=利益・バー全体の高さ=売上。点線=売上目標）
-  // 実運用開始の2026/05から対象月まで全部並べる。月数が増えたら横スクロール
-  const CHART_START = '2026/05';
+  // 2026/08から対象月まで全部並べる。月数が増えたら横スクロール
+  // 5〜7月はシステムに入れ始める前で数字が揃っていないため出さない（2026-09-02 ユーザー指定）
+  const CHART_START = '2026/08';
   const months=[];
   { let d = new Date(CHART_START.replace('/','-')+'-01T00:00:00');
     const end = new Date(m.replace('/','-')+'-01T00:00:00');
@@ -1520,7 +1521,7 @@ function vDashboard(){
     kpi('EC商品 預かり中', nEc+'店舗', ecQty?'残 '+ecQty+'点':'') +
   '</div>' +
   '<div class="row" style="align-items:stretch">' +
-    '<div class="card grow" style="min-width:300px"><b class="small">月次実績（2026/05〜・税抜）</b> <span class="muted small" style="margin-left:6px">バー全体=売上（<span style="color:var(--s3)">■</span>仕入＋<span style="color:var(--s2)">■</span>利益）／点線=売上目標（「月次目標」シート）</span><div style="margin-top:8px">'+chart+'</div></div>' +
+    '<div class="card grow" style="min-width:300px"><b class="small">月次実績（'+CHART_START+'〜・税抜）</b> <span class="muted small" style="margin-left:6px">バー全体=売上（<span style="color:var(--s3)">■</span>仕入＋<span style="color:var(--s2)">■</span>利益）／点線=売上目標（「月次目標」シート）</span><div style="margin-top:8px">'+chart+'</div></div>' +
     '<div class="card grow" style="min-width:280px"><b class="small">'+m+' 案件別売上・利益</b><div style="margin-top:10px">'+wbars+'</div></div>' +
   '</div>' +
   '<div class="card"><b class="small">💸 今月のお金の出入り（資金繰り・概算）</b><div style="margin-top:4px">'+cashHtml+'</div></div>' +
