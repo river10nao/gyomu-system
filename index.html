@@ -1188,20 +1188,25 @@ function buyMonthOf(r){
   const od = orderPoDates();
   return monthOf(oids.map(o=>od[o]).find(Boolean) || own);
 }
-// 受注ID → その受注の回収行に発注日が2種類以上あるか（＝分けて発注した案件）
-let _splitDateMemo = {a:null, val:null};
-function allocSplitDates(){
-  if(_splitDateMemo.a !== DB.collectionLedger){
+// 受注ID → その受注の回収行に入っている発注日の一覧（分けて発注した案件は2つ以上になる）
+let _poDatesMemo = {a:null, val:null};
+function orderBatchDates(){
+  if(_poDatesMemo.a !== DB.collectionLedger){
     const by = {};
     rows('collectionLedger').forEach(r=>{
       const d = String(r['発注日']||'').trim(); if(!d) return;
       String(r['対象受注']||'').split(',').map(x=>x.trim()).filter(Boolean)
         .forEach(o=>{ (by[o]=by[o]||new Set()).add(d); });
     });
-    const out = {}; Object.keys(by).forEach(o=>{ if(by[o].size>1) out[o]=true; });
-    _splitDateMemo = {a:DB.collectionLedger, val:out};
+    const out = {}; Object.keys(by).forEach(o=>{ out[o] = [...by[o]].sort(); });
+    _poDatesMemo = {a:DB.collectionLedger, val:out};
   }
-  return _splitDateMemo.val;
+  return _poDatesMemo.val;
+}
+function allocSplitDates(){   // 2つ以上の発注日を持つ＝分けて発注した案件
+  const d = orderBatchDates(); const out = {};
+  Object.keys(d).forEach(o=>{ if(d[o].length>1) out[o]=true; });
+  return out;
 }
 // サロン/仕入先マスタの掛け率列（例「ナプ(41.9%)」）から、その行が扱うブランドを引く。
 // 列名の略称でブランド名が始まれば一致（allocBrandDealers と同じ判定）。
@@ -2170,6 +2175,10 @@ function vOrders(){
         '<button class="btn sm" onclick="saveOrderDate(\''+g.id+'\')">保存</button>' +
         (ordEmpty ? '<span class="small" style="color:var(--ink2)"><b>※入力しないと「回収中」へ進めません。</b>実際にディーラーへ発注した日＝どの月の支払いに乗るかの基準です（ズレるとディーラー請求書と合いません）</span>'
           : '<span class="muted small">記録済み（直すときは日付を変えて保存）</span>') +
+        // 分けて発注した案件は、回ごとの発注日を並べて出す（上の欄は代表値＝1回目）
+        (()=>{ const ds = (orderBatchDates()[g.id]||[]);
+          if(ds.length<2) return '';
+          return '<span class="small" style="margin-left:6px;padding:2px 8px;border-radius:10px;background:var(--wash)">📦 <b>'+ds.length+'回に分けて発注</b> '+ds.map(esc).join(' ／ ')+'</span>'; })() +
         '</div>'; })() : '') +
       '<div class="row" style="margin-top:10px">' +
       // 進行ガード（サーバー側と同条件）: 請求書未発行・発注日未入力の間はボタンを案内に差し替え（スルー事故防止）
@@ -4127,8 +4136,13 @@ function vAllocation(){
     const lc=ALLOC.lastCommit;
     html += '<div class="card" style="border-color:'+(lc.warning?'var(--serious)':'var(--good)')+'"><div class="row"><div><b class="small">✅ 振り分けを確定しました</b>' +
       '<div class="small" style="margin-top:4px">'+esc(lc.brand||'')+' ／ 回収ID: <span class="mono">'+esc((lc.ids||[]).join(', '))+'</span></div>' +
+      // 分けて確定したときは、回ごとに印刷できるようにする（まとめてしか出せないと確認に使えない）
+      ((lc.batches||[]).length>1 ? '<div class="small" style="margin-top:5px">📦 '+lc.batches.length+'回に分けて登録しました: ' +
+        lc.batches.map(b=>esc(b.no+'回目 '+b.date)).join(' ／ ')+'</div>' : '') +
       (lc.warning?'<div class="small" style="color:var(--serious);margin-top:5px">⚠ '+esc(lc.warning)+'</div>':'')+'</div>' +
-      '<div class="right row">'+(lc.printable&&lc.ids&&lc.ids.length?'<button class="btn sm" onclick="allocPrintDone(\''+esc(lc.brand)+'\',\''+lc.ids.map(esc).join(',')+'\')">🖨 印刷用を開く</button>':'') +
+      '<div class="right row">' +
+      ((lc.batches||[]).length>1 ? lc.batches.map(b=>'<button class="btn sm" onclick="allocPrintDone(\''+esc(lc.brand)+'\',\''+b.ids.map(esc).join(',')+'\')">🖨 '+b.no+'回目</button>').join('') : '') +
+      (lc.printable&&lc.ids&&lc.ids.length?'<button class="btn sm" onclick="allocPrintDone(\''+esc(lc.brand)+'\',\''+lc.ids.map(esc).join(',')+'\')">🖨 '+((lc.batches||[]).length>1?'まとめて':'印刷用を開く')+'</button>':'') +
       '<button class="btn sm" onclick="ALLOC.lastCommit=null;render()">閉じる</button></div></div></div>';
   }
   if(!selIds.length) return html;
@@ -5090,8 +5104,10 @@ async function allocCommit(){
     const ids = res.collectionIds||[];
     // 分割中の途中バッチでは結果を消さない（次のバッチで同じ r を使うため）
     const last = !sp || (_B||0) >= sp.n-1;
-    ALLOC.lastCommit={brand, ids:(ALLOC.lastCommit&&ALLOC.lastCommit._acc||[]).concat(ids), printable:true, warning, _acc:undefined};
-    if(!last){ ALLOC.lastCommit._acc = ALLOC.lastCommit.ids; }
+    const prev = (ALLOC.lastCommit && ALLOC.lastCommit._acc) ? ALLOC.lastCommit : {ids:[], batches:[]};
+    const batches = (prev.batches||[]).concat(sp ? [{no:(_B||0)+1, date:String(sp.dates[_B||0]||'').replace(/-/g,'/'), ids}] : []);
+    ALLOC.lastCommit={brand, ids:(prev.ids||[]).concat(ids), batches, printable:true, warning};
+    if(!last) ALLOC.lastCommit._acc = true;
     if(last){
       delete ALLOC.result[brand];
       apiPost('deleteAllocDraft', {brand}, ['allocDrafts']).then(()=>render()).catch(()=>{});   // 確定したブランドの下書きは自動削除（無ければ何もしない）
