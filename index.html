@@ -1179,9 +1179,29 @@ function orderPoDates(){
   return _ordPoMemo.val;
 }
 function buyMonthOf(r){
-  const od = orderPoDates();
+  // 発注を分けた案件（回収行に2つ以上の発注日がある）は行の日付が正。
+  // 分けていない案件は、回収台帳の発注日が「振り分け確定日の自動値」でしかないため受注の📦発注日を使う
+  // （8/28発注のナプラを9/1に確定して9月扱いになっていた件。2026-09-02）。
+  const own = String(r['発注日']||'').trim();
   const oids = String(r['対象受注']||'').split(',').map(x=>x.trim()).filter(Boolean);
-  return monthOf(oids.map(o=>od[o]).find(Boolean) || String(r['発注日']||'').trim());
+  if(own && oids.some(o=>allocSplitDates()[o])) return monthOf(own);   // 分割された案件は行の日付
+  const od = orderPoDates();
+  return monthOf(oids.map(o=>od[o]).find(Boolean) || own);
+}
+// 受注ID → その受注の回収行に発注日が2種類以上あるか（＝分けて発注した案件）
+let _splitDateMemo = {a:null, val:null};
+function allocSplitDates(){
+  if(_splitDateMemo.a !== DB.collectionLedger){
+    const by = {};
+    rows('collectionLedger').forEach(r=>{
+      const d = String(r['発注日']||'').trim(); if(!d) return;
+      String(r['対象受注']||'').split(',').map(x=>x.trim()).filter(Boolean)
+        .forEach(o=>{ (by[o]=by[o]||new Set()).add(d); });
+    });
+    const out = {}; Object.keys(by).forEach(o=>{ if(by[o].size>1) out[o]=true; });
+    _splitDateMemo = {a:DB.collectionLedger, val:out};
+  }
+  return _splitDateMemo.val;
 }
 // サロン/仕入先マスタの掛け率列（例「ナプ(41.9%)」）から、その行が扱うブランドを引く。
 // 列名の略称でブランド名が始まれば一致（allocBrandDealers と同じ判定）。
@@ -4368,6 +4388,7 @@ function vAllocation(){
     // 配りすぎ（受注数より多く割り振っている）。手打ちで増やせるぶん起こりうるので確定前に止める（2026-08-26）
     const overTotal  = r.items.reduce((a,i)=>a+Math.max(0, assignedOf(i.pid)+outQty(i.pid)-i.need),0);
     const dealers = rows('salons').filter(s=>String(s['種別']||'').trim()==='外注' && String(s['ストップ']||'').trim()==='' && String(s['サロンID']||'').trim());   // 外注先=種別「外注」（2026-07-17 3値化）
+    html += allocSplitCard(r, brand);
     html += '<div class="card tblwrap"><div class="row"><b class="small">③ '+esc(brand)+' 割り振り結果（対象受注: '+selIds.join(', ')+'）</b>' +
       '<button class="btn sm" onclick="allocPrint()">🖨 印刷用を開く（PDF保存）</button>' +
       '<button class="btn sm" onclick="allocSaveDraft()">💾 確認待ちで保存</button>' +
@@ -4376,7 +4397,7 @@ function vAllocation(){
         ? '<button class="btn sm right" style="opacity:.55" onclick="toast(\'余りが '+shortTotal+'点 残っています。全て割り振ってから確定してください\', true)">✅ 確定して回収データを作成</button>'
         : overTotal>0
         ? '<button class="btn sm right" style="opacity:.55" onclick="toast(\'受注数より '+overTotal+'点 多く割り振っています。減らしてから確定してください\', true)">✅ 確定して回収データを作成</button>'
-        : '<button class="btn pri sm right" onclick="allocCommit()">✅ 確定して回収データを作成</button>')+'</div>' +
+        : '<button class="btn pri sm right" onclick="allocCommitAll()">✅ 確定して回収データを作成'+(allocSplit(r)?'（'+allocSplit(r).n+'回に分けて）':'')+'</button>')+'</div>' +
       // 下書きを再開したあとに受注を直していると、ここで気づける（必要数は写真のままなので追随しない）
       (()=>{ const dif = allocNeedDiff(brand); if(!dif.length) return '';
         return '<div style="margin-top:8px;padding:10px 12px;border:1.5px solid var(--s4);border-radius:10px;background:color-mix(in srgb,var(--s4) 8%,transparent)">' +
@@ -4541,11 +4562,220 @@ function vAllocation(){
   }
   return html;
 }
-function allocPrint(){
+// 📦 発注を分けるカード（③の直前に出す）
+function allocSplitCard(r, brand){
+  const sp = allocSplit(r);
+  const n = sp ? sp.n : 1;
+  const opt = [1,2,3,4].map(k=>'<option value="'+k+'"'+(k===n?' selected':'')+'>'+(k===1?'分けない':k+'回に分ける')+'</option>').join('');
+  let html = '<div class="card"><div class="row"><b class="small">📦 発注を分ける</b>' +
+    '<span class="muted small">10日締めなどで前半・後半に分けて発注するとき。確定前にここで分けます</span>' +
+    '<select onchange="allocSplitSetN(this.value)" style="margin-left:8px">'+opt+'</select>' +
+    (n>1 ? '<button class="btn sm" onclick="allocSplitAuto()">⚖️ 金額で均等に割り直す</button>' : '') + '</div>';
+  if(n<=1) return html + '<p class="muted small" style="margin:6px 0 0">分けないときは今までどおり1回で確定します（発注日は確定した日が入ります）。</p></div>';
+
+  const names = {}; rows('salons').forEach(x=>names[String(x['サロンID']).trim()]=salonLabel(x));
+  const tot = Array.from({length:n}, (_,b)=>allocSplitTotals(r, b));
+  const grand = tot.reduce((a,x)=>a+x.yen, 0);
+  html += '<div class="row" style="margin-top:8px;gap:10px;flex-wrap:wrap">' +
+    tot.map((t,b)=>'<div style="border:1px solid var(--grid);border-radius:8px;padding:8px 10px;min-width:230px">' +
+      '<div class="row small"><b>'+(b+1)+'回目</b><span class="right muted">'+t.qty+'点 ／ <b>'+yen(t.yen)+'</b>'+(grand>0?'（'+Math.round(t.yen/grand*100)+'%）':'')+'</span></div>' +
+      '<label class="small">発注日 <input type="date" value="'+esc(String((sp.dates[b]||'')).replace(/\//g,'-'))+'" onchange="allocSplitSetDate('+b+',this.value)"></label>' +
+      '<button class="btn sm" style="margin-left:6px" onclick="allocPrint('+b+')">🖨 '+(b+1)+'回目を印刷</button></div>').join('') + '</div>';
+
+  // 明細（サロン×商品 ごとにバッチの個数を直接編集）
+  const rowsHtml = [];
+  r.salonIds.forEach(sid=>{
+    r.items.forEach(i=>{
+      const total = num((r.m[sid]||{})[i.pid]); if(total<=0) return;
+      const cells = Array.from({length:n}, (_,b)=>'<td class="num"><input type="number" min="0" value="'+allocSplitQty(r,sid,i.pid,b)+'" onchange="allocSplitEdit(\'sal\',\''+esc(allocSplitKey_(sid,i.pid))+'\','+b+',this.value)" style="width:70px;text-align:right"></td>').join('');
+      let sum=0; for(let b=0;b<n;b++) sum+=allocSplitQty(r,sid,i.pid,b);
+      rowsHtml.push('<tr><td class="small">'+esc(slotName(names,sid))+'</td><td class="small">'+esc(i.name)+' '+esc(i.size||'')+(i.unit>1?'<span class="muted">（'+i.unit+'個/箱）</span>':'')+'</td>' +
+        '<td class="num">'+total+'</td>'+cells+'<td class="num'+(sum!==total?'" style="color:var(--crit);font-weight:700':'')+'">'+sum+'</td></tr>');
+    });
+  });
+  allocOutsOf(r).forEach((o, oi)=>{
+    r.items.forEach(i=>{
+      const total = num((o.q||{})[i.pid]); if(total<=0) return;
+      const cells = Array.from({length:n}, (_,b)=>'<td class="num"><input type="number" min="0" value="'+allocSplitOutQty(r,oi,i.pid,b)+'" onchange="allocSplitEdit(\'out\',\''+esc(allocSplitKey_(oi,i.pid))+'\','+b+',this.value)" style="width:70px;text-align:right"></td>').join('');
+      let sum=0; for(let b=0;b<n;b++) sum+=allocSplitOutQty(r,oi,i.pid,b);
+      rowsHtml.push('<tr><td class="small">🤝 '+esc(names[String(o.sid||'')]||String(o.sid||''))+'</td><td class="small">'+esc(i.name)+' '+esc(i.size||'')+'</td>' +
+        '<td class="num">'+total+'</td>'+cells+'<td class="num'+(sum!==total?'" style="color:var(--crit);font-weight:700':'')+'">'+sum+'</td></tr>');
+    });
+  });
+  const bad = allocSplitMismatch(r);
+  html += '<details style="margin-top:10px"'+(bad.length?' open':'')+'><summary class="small" style="cursor:pointer">明細を開いて手直しする（'+rowsHtml.length+'行）'+(bad.length?' <span style="color:var(--crit)">⚠ 個数が合っていない行が'+bad.length+'件</span>':'')+'</summary>' +
+    '<div class="tblwrap"><table style="margin-top:6px"><tr><th>振り分け先</th><th>商品</th><th class="num">合計</th>' +
+    Array.from({length:n},(_,b)=>'<th class="num">'+(b+1)+'回目</th>').join('') + '<th class="num">計</th></tr>' +
+    rowsHtml.join('') + '</table></div></details>';
+  const noDate = sp.dates.filter(d=>!String(d||'').trim()).length;
+  html += '<p class="muted small" style="margin:8px 0 0">箱を割らずに金額が均等へ寄るよう配分しています（端数は1かたまり扱い）。金額は'+NM.co+'仕入額ベース。' +
+    (noDate ? '<b style="color:var(--warn)"> 発注日が未入力のバッチが'+noDate+'件あります。全部入れると確定できます。</b>' : ' 各回の発注日で回収台帳に記録され、仕入枠・支払いもその月で集計されます。') + '</p></div>';
+  return html;
+}
+// ===== 📦 発注バッチ（10日締めの前半・後半に分けて発注する。2026-09-02 ユーザー要望）=====
+// 確定前に「金額が半分ずつになるよう」箱単位で分け、バッチごとに発注日を持たせて確定する。
+// 状態は r.split = { n, dates:[], q:{'sid|pid':[個数,…]}, outq:{'外注枠index|pid':[個数,…]} }。
+// q が無い組み合わせは「全部バッチ1」とみなす（未設定でも壊れない）。
+function allocSplit(r){ return r && r.split ? r.split : null; }
+function allocSplitKey_(sid, pid){ return String(sid)+'|'+String(pid); }
+// バッチ b における サロンsid × 商品pid の個数。split 未設定なら b=0 に全量
+function allocSplitQty(r, sid, pid, b){
+  const total = num((r.m[sid]||{})[pid]);
+  const sp = allocSplit(r); if(!sp) return b===0 ? total : 0;
+  const a = sp.q[allocSplitKey_(sid,pid)];
+  if(!a) return b===0 ? total : 0;
+  return num(a[b]);
+}
+function allocSplitOutQty(r, oi, pid, b){
+  const o = allocOutsOf(r)[oi] || {};
+  const total = num((o.q||{})[pid]);
+  const sp = allocSplit(r); if(!sp) return b===0 ? total : 0;
+  const a = sp.outq[allocSplitKey_(oi,pid)];
+  if(!a) return b===0 ? total : 0;
+  return num(a[b]);
+}
+// バッチ数を変える（既存の配分は捨てて割り直す）
+function allocSplitSetN(n){
+  const r = ALLOC.result[ALLOC.brand]; if(!r) return;
+  n = Math.max(1, Math.min(6, Math.round(num(n))));
+  if(n<=1){ delete r.split; render(); return; }
+  const old = r.split || {};
+  r.split = {n, dates:Array.from({length:n},(_,i)=>(old.dates||[])[i]||''), q:{}, outq:{}};
+  allocSplitAuto();
+}
+function allocSplitSetDate(b, v){
+  const r = ALLOC.result[ALLOC.brand]; const sp = allocSplit(r); if(!sp) return;
+  sp.dates[b] = String(v||'').trim();
+}
+// 金額（AXIA仕入額）が均等に近づくよう、箱単位で配る。
+// 各サロン（および外注枠）の中で、商品を「箱のかたまり」に割ってから、
+// 金額の大きい順に「いまの合計がいちばん小さいバッチ」へ入れる（LPT法）。箱は割らない。
+function allocSplitAuto(){
+  const r = ALLOC.result[ALLOC.brand]; const sp = allocSplit(r);
+  if(!sp){ toast('先に分割する回数を選んでください', true); return; }
+  const n = sp.n;
+  const chunksOf = (pid, qty)=>{   // 箱のかたまりに分解。端数（箱に満たない分）は1かたまりとして残す
+    const u = Math.max(1, unitOf(pid));
+    const out = [];
+    let left = qty;
+    while(left >= u){ out.push(u); left -= u; }
+    if(left > 0) out.push(left);
+    return out;
+  };
+  const distribute = (pairs, supSid, put)=>{
+    // pairs = [{pid, qty}]。単価は仕入先の実単価（ピュアの57%・上書き・固定単価もここに乗る）
+    const tot = Array.from({length:n}, ()=>0);
+    const chunks = [];
+    pairs.forEach(({pid, qty})=>{
+      if(qty<=0) return;
+      const unitYen = num(allocBuyUnit(pid, supSid)) || num((product(pid)||{})['定価（税抜）']);
+      chunksOf(pid, qty).forEach(q=>chunks.push({pid, q, yen:q*unitYen}));
+    });
+    chunks.sort((a,b)=>b.yen-a.yen);   // 大きいかたまりから置くほど均等に寄る
+    chunks.forEach(c=>{
+      let b = 0; for(let i=1;i<n;i++) if(tot[i] < tot[b]) b = i;
+      tot[b] += c.yen; c.b = b;
+    });
+    // 仕上げ: いちばん重いバッチと軽いバッチの間で1個ずつ交換してみて、差が縮むなら採用する。
+    // 置いていくだけ（LPT）だと箱の大きさが揃わない時に1かたまりぶん偏ることがあるため（例 45:55 → 49:51）
+    const spread = ()=>Math.max.apply(null, tot) - Math.min.apply(null, tot);
+    for(let pass=0; pass<50; pass++){
+      let hi=0, lo=0;
+      for(let i=1;i<n;i++){ if(tot[i]>tot[hi]) hi=i; if(tot[i]<tot[lo]) lo=i; }
+      if(hi===lo) break;
+      let best=null, bestSpread=spread();
+      chunks.filter(c=>c.b===hi).forEach(a=>{
+        // 片方向の移動
+        const t0=tot[hi], t1=tot[lo];
+        tot[hi]-=a.yen; tot[lo]+=a.yen;
+        if(spread()<bestSpread){ bestSpread=spread(); best={a, b:null}; }
+        tot[hi]=t0; tot[lo]=t1;
+        chunks.filter(c=>c.b===lo).forEach(b2=>{   // 交換
+          tot[hi]+=b2.yen-a.yen; tot[lo]+=a.yen-b2.yen;
+          if(spread()<bestSpread){ bestSpread=spread(); best={a, b:b2}; }
+          tot[hi]-=b2.yen-a.yen; tot[lo]-=a.yen-b2.yen;
+        });
+      });
+      if(!best) break;
+      if(best.b){ tot[hi]+=best.b.yen-best.a.yen; tot[lo]+=best.a.yen-best.b.yen; best.a.b=lo; best.b.b=hi; }
+      else { tot[hi]-=best.a.yen; tot[lo]+=best.a.yen; best.a.b=lo; }
+    }
+    const acc = {};
+    chunks.forEach(c=>{
+      const a = acc[c.pid] = acc[c.pid] || Array.from({length:n}, ()=>0);
+      a[c.b] += c.q;
+    });
+    Object.keys(acc).forEach(pid=>put(pid, acc[pid]));
+  };
+  sp.q = {}; sp.outq = {};
+  r.salonIds.forEach(sid=>{
+    const supSid = allocSupOf(r, sid);
+    const pairs = r.items.map(i=>({pid:i.pid, qty:num((r.m[sid]||{})[i.pid])})).filter(x=>x.qty>0);
+    distribute(pairs, supSid, (pid, arr)=>{ sp.q[allocSplitKey_(sid,pid)] = arr; });
+  });
+  allocOutsOf(r).forEach((o, oi)=>{
+    const pairs = r.items.map(i=>({pid:i.pid, qty:num((o.q||{})[i.pid])})).filter(x=>x.qty>0);
+    distribute(pairs, String(o.sid||''), (pid, arr)=>{ sp.outq[allocSplitKey_(oi,pid)] = arr; });
+  });
+  toast(n+'回に分けました。金額が均等に近づくよう箱単位で配分しています');
+  render();
+}
+// 表のマスを直接手直し（同じ組み合わせの合計が元の個数と合うよう、最後のバッチで辻褄を合わせる）
+function allocSplitEdit(kind, key, b, v){
+  const r = ALLOC.result[ALLOC.brand]; const sp = allocSplit(r); if(!sp) return;
+  const map = kind==='out' ? sp.outq : sp.q;
+  const [a1, pid] = String(key).split('|');
+  const total = kind==='out' ? num((allocOutsOf(r)[Number(a1)]||{}).q?.[pid]) : num((r.m[a1]||{})[pid]);
+  const arr = map[key] || Array.from({length:sp.n}, (_,i)=>i===0?total:0);
+  arr[b] = Math.max(0, Math.round(num(v)));
+  const used = arr.reduce((x,y,i)=>i===b?x:x+num(y), 0);
+  if(used + arr[b] > total){   // 入れすぎた分は他から削る（後ろのバッチから）
+    let over = used + arr[b] - total;
+    for(let i=sp.n-1; i>=0 && over>0; i--){ if(i===b) continue; const cut=Math.min(arr[i], over); arr[i]-=cut; over-=cut; }
+  }
+  map[key] = arr;
+  render();
+}
+// バッチの合計金額（AXIA仕入額）と点数
+function allocSplitTotals(r, b){
+  const sp = allocSplit(r); if(!sp) return {qty:0, yen:0};
+  let qty=0, yen=0;
+  r.salonIds.forEach(sid=>{
+    const supSid = allocSupOf(r, sid);
+    r.items.forEach(i=>{ const q=allocSplitQty(r, sid, i.pid, b); if(q>0){ qty+=q; yen+=q*num(allocBuyUnit(i.pid, supSid)); } });
+  });
+  allocOutsOf(r).forEach((o, oi)=>{
+    r.items.forEach(i=>{ const q=allocSplitOutQty(r, oi, i.pid, b); if(q>0){ qty+=q; yen+=q*num(allocBuyUnit(i.pid, String(o.sid||''))); } });
+  });
+  return {qty, yen};
+}
+// 数量の辻褄チェック（バッチ合計 = 元の個数）。ズレていたら確定を止める
+function allocSplitMismatch(r){
+  const sp = allocSplit(r); if(!sp) return [];
+  const bad = [];
+  r.salonIds.forEach(sid=>r.items.forEach(i=>{
+    const total = num((r.m[sid]||{})[i.pid]); if(total<=0) return;
+    let sum=0; for(let b=0;b<sp.n;b++) sum += allocSplitQty(r, sid, i.pid, b);
+    if(sum!==total) bad.push({who:sid, name:i.name, total, sum});
+  }));
+  allocOutsOf(r).forEach((o, oi)=>r.items.forEach(i=>{
+    const total = num((o.q||{})[i.pid]); if(total<=0) return;
+    let sum=0; for(let b=0;b<sp.n;b++) sum += allocSplitOutQty(r, oi, i.pid, b);
+    if(sum!==total) bad.push({who:String(o.sid||''), name:i.name, total, sum});
+  }));
+  return bad;
+}
+function allocPrint(batch){
   // サロンごとの商品リスト形式（各サロンが何を何個か一目で分かる。検品時のチェック欄つき）
   // 印刷ページ内の「出力範囲」ボタンで 一括／ディーラー別 を切り替えられる（2026-07-29 ユーザー要望）
+  // batch を渡すとその回の分だけ出す（発注を分けたときの確認用。2026-09-02 ユーザー要望）
   const brand = ALLOC.brand, r = ALLOC.result[brand];
   if(!r){ toast('先に割り振りを計算してください', true); return; }
+  const b = (batch==null || isNaN(num(batch))) ? null : Math.round(num(batch));
+  const sp = allocSplit(r);
+  const qtyOf = (sid, pid)=> (b!=null && sp) ? allocSplitQty(r, sid, pid, b) : num((r.m[sid]||{})[pid]);
+  const batchLabel = (b!=null && sp)
+    ? '（'+(b+1)+'回目 ／ 発注日 '+(String(sp.dates[b]||'').replace(/-/g,'/')||'未入力')+'）' : '';
   const selIds = Object.keys(ALLOC.sel).filter(k=>ALLOC.sel[k]);
   const names = {}; rows('salons').forEach(s=>names[String(s['サロンID']).trim()]=salonLabel(s));
   const sids = r.salonIds;
@@ -4558,7 +4788,7 @@ function allocPrint(){
     return allocBuyUnder(pid, supSid) ? txt+' <span style="color:#c60">⚠</span>' : txt;
   };
   const sections = sids.map(sid=>{
-    const lines = r.items.map(i=>({i, qty:num((r.m[sid]||{})[i.pid])})).filter(x=>x.qty>0);
+    const lines = r.items.map(i=>({i, qty:qtyOf(sid, i.pid)})).filter(x=>x.qty>0);
     if(!lines.length) return '';
     const totalQty = lines.reduce((a,x)=>a+x.qty,0);
     const totalYen = lines.reduce((a,x)=>a+x.qty*x.i.price,0);
@@ -4570,8 +4800,8 @@ function allocPrint(){
   }).join('');
   // 🤝外注仕入枠の分は外注先ごとに独立セクションで出す（外注先への共有・検品チェックにも使える。複数外注先対応 2026-07-18）
   const routs = r.outs || (r.out ? [r.out] : []);
-  const outSection = routs.map(o=>{
-    const ls = r.items.map(i=>({i, qty:num((o.q||{})[i.pid])})).filter(x=>x.qty>0);
+  const outSection = routs.map((o, oi)=>{
+    const ls = r.items.map(i=>({i, qty:(b!=null && sp) ? allocSplitOutQty(r, oi, i.pid, b) : num((o.q||{})[i.pid])})).filter(x=>x.qty>0);
     if(!ls.length) return '';
     const oname = o.sid ? (names[o.sid]||o.sid) : '（外注先未選択）';
     const omoney = ls.reduce((a,x)=>a+x.qty*allocOutUnit(o.sid,x.i.pid),0);
@@ -4580,13 +4810,13 @@ function allocPrint(){
     ls.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*allocOutUnit(o.sid,x.i.pid)).toLocaleString()+'</td><td class="num intonly">'+buyRateTxt(x.i.pid, o.sid)+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
     '</table></div>'; }).join('');
   // 📦余剰在庫からの充当分（回収・検品はスキップしてロット処理から始まるため、チェック欄はロットのみ 2026-07-18）
-  const stocks = r.stock || [];
+  const stocks = (b!=null && b>0) ? [] : (r.stock || []);   // 在庫充当は分けない（1回目にまとめる）
   const stockSection = stocks.length ? '<div class="salon" data-sup="stock"><h2>📦 余剰在庫から充当 <span class="sub">計 '+stocks.reduce((a,x)=>a+x.qty,0)+'点（仕入れなし・手元在庫から出荷）</span></h2>' +
     '<table><tr><th>商品</th><th>引当元ロット</th><th class="num">個数</th><th class="chk">ロット✓</th></tr>' +
     stocks.map(x=>'<tr><td>'+esc(x.name)+' '+esc(x.size||'')+'</td><td>'+esc(x.zid)+'</td><td class="num">'+x.qty+'</td><td class="chk">□</td></tr>').join('') +
     '</table></div>' : '';
   const outQtyOf = pid=>routs.reduce((a,o)=>a+num((o.q||{})[pid]),0);
-  const leftovers = r.items.map(i=>({i, left:i.need - r.salonIds.reduce((a,s)=>a+num((r.m[s]||{})[i.pid]),0) - outQtyOf(i.pid)})).filter(x=>x.left>0);
+  const leftovers = (b!=null) ? [] : r.items.map(i=>({i, left:i.need - r.salonIds.reduce((a,s)=>a+num((r.m[s]||{})[i.pid]),0) - outQtyOf(i.pid)})).filter(x=>x.left>0);
   // 印刷ページ内切り替え用の「出力範囲」（2026-08-07 ユーザー要望で 仕入先ごと に拡張）。
   // ディーラー（サロンぶん）だけでなく、外注先・余剰在庫も個別に出せるようにする
   // （例: 神澤さんの分だけ渡したい）。キー: ディーラー=サロンID / 外注先='out:'+ID / 在庫='stock'
@@ -4627,13 +4857,13 @@ function allocPrint(){
     'document.title=BASE+(t?"（"+t.label.replace(/^[^ ]+ /,"")+"）":"（社内用）");}' +
     'pick("");<\/script>';
   const w = window.open('', '_blank');
-  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(brand)+' サロン振り分け</title>' +
+  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(brand)+' サロン振り分け'+esc(batchLabel)+'</title>' +
     '<style>body{font-family:"Hiragino Sans",sans-serif;font-size:12px;margin:24px}h1{font-size:16px}h2{font-size:14px;margin:18px 0 6px;border-left:4px solid #333;padding-left:8px}h2 .sub{font-size:11px;font-weight:normal;color:#555}' +
     'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:5px 8px;text-align:left}td.num,th.num{text-align:right;white-space:nowrap}td.chk,th.chk{text-align:center;width:40px;padding:5px 3px}th.chk{font-size:10px}th{background:#f2f2f2;white-space:nowrap}' +
     '.salon{page-break-inside:avoid;margin-bottom:10px}@page{size:A4 portrait;margin:12mm}@media print{button,.no-print{display:none}}</style></head><body>' +
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
     toolbar +
-    '<h1>'+esc(brand)+' サロン振り分け表<span id="supTag"></span>（'+today()+'）</h1>' +
+    '<h1>'+esc(brand)+' サロン振り分け表'+esc(batchLabel)+'<span id="supTag"></span>（'+today()+'）</h1>' +
     // 社内用（仕入掛け率つき・全仕入先まとめ）で印刷したときに、紙・PDFにもどちらの版か残るようにする
     '<p id="intWarn" style="display:none;margin:0 0 8px;color:#777;font-size:11px">社内用（仕入掛け率つき・全仕入先まとめ）</p>' +
     '<p>対象受注: '+selIds.join(', ')+' ／ 1サロン枠: ¥'+Math.round(r.budget).toLocaleString()+(r.cap?' ／ 同一商品上限: '+r.cap:'')+(r.supSplit?' ／ 仕入先: サロンごと（各欄に記載）':r.supplier?' ／ 仕入先: '+esc(names[r.supplier]||r.supplier):'')+'</p>' +
@@ -4729,16 +4959,29 @@ async function allocCommit(){
   const dirtyGi = Object.keys(allocDirty()).filter(k=>allocDirty()[k]);
   if(dirtyGi.length){ toast('サロン選択を変えたグループがあります（グループ'+dirtyGi.map(x=>Number(x)+1).join('・')+'）。🔄 このグループだけ計算し直す を押してから確定してください', true); return; }
   const selIds = Object.keys(ALLOC.sel).filter(k=>ALLOC.sel[k]);
+  // 📦 発注を分けている場合は、バッチごとに別の回収ID＋発注日で確定する（2026-09-02 ユーザー要望）
+  const sp = allocSplit(r);
+  if(sp){
+    const bad = allocSplitMismatch(r);
+    if(bad.length){ toast('分割した個数の合計が元の個数と合っていません（'+bad.length+'件）。明細を直してください', true); return; }
+    const noDate = sp.dates.filter(d=>!String(d||'').trim());
+    if(noDate.length){ toast('発注日が未入力のバッチがあります（'+noDate.length+'件）。全部入れてから確定してください', true); return; }
+  }
+  const _B = ALLOC._batch==null ? null : ALLOC._batch;
+  const qtyAt = (slot, pid)=> sp ? allocSplitQty(r, slot, pid, _B||0) : num((r.m[slot]||{})[pid]);
+  const outQtyAt = (oi, pid, o)=> sp ? allocSplitOutQty(r, oi, pid, _B||0) : num((o.q||{})[pid]);
   // スロット（2枠目）は台帳上は同じサロン: salonIdは#2を外して送り、仕入先だけ行ごとに分ける
   const lines = r.salonIds.map(slot=>({ slot, salonId:slotBase(slot),
     salonName:(rows('salons').find(s=>String(s['サロンID']).trim()===slotBase(slot))||{})['サロン名(ディーラー含む)']||'',
-    items: r.items.map(i=>({pid:i.pid, name:i.name, size:i.size, qty:num((r.m[slot]||{})[i.pid])})).filter(x=>x.qty>0)
+    items: r.items.map(i=>({pid:i.pid, name:i.name, size:i.size, qty:qtyAt(slot, i.pid)})).filter(x=>x.qty>0)
   })).filter(l=>l.items.length);
   // 🤝外注仕入枠: 外注先ごとに回収行として一緒に確定（区分=外注・外注先ごとに別の回収ID。複数外注先対応 2026-07-18）
   const salonCount = lines.length;
   let outTotal = 0;
-  for(const o of allocOutsOf(r)){
-    const oi = r.items.map(i=>({pid:i.pid, name:i.name, size:i.size, qty:num((o.q||{})[i.pid])})).filter(x=>x.qty>0);
+  const _outs = allocOutsOf(r);
+  for(let _oi=0; _oi<_outs.length; _oi++){
+    const o = _outs[_oi];
+    const oi = r.items.map(i=>({pid:i.pid, name:i.name, size:i.size, qty:outQtyAt(_oi, i.pid, o)})).filter(x=>x.qty>0);
     if(!oi.length) continue;
     if(!o.sid){ toast('外注枠に数量がありますが、外注先が選ばれていない行があります', true); return; }
     outTotal += oi.reduce((a,x)=>a+x.qty,0);
@@ -4747,7 +4990,8 @@ async function allocCommit(){
       items: oi, out:true });
   }
   const total = lines.reduce((a,l)=>a+l.items.reduce((b,x)=>b+x.qty,0),0);
-  const stockTotal = (r.stock||[]).reduce((a,x)=>a+num(x.qty),0);
+  const _stock = (sp && (_B||0)>0) ? [] : (r.stock||[]);   // 在庫引き当ては分けず1回目にまとめる
+  const stockTotal = _stock.reduce((a,x)=>a+num(x.qty),0);
   if(!lines.length && !stockTotal){ toast('個数が1以上のサロンがありません', true); return; }
   // 余りが残っている間は確定できない（ボタン側でも塞いでいるが、下書き再開などの抜け道防止で二重ガード。2026-07-18）
   const shortLeft = r.items.reduce((a,i)=>{
@@ -4776,7 +5020,8 @@ async function allocCommit(){
   const supText = !hasWholesale ? '' :
     splitUsed ? '\n仕入先（枠ごと）:\n' + lines.filter(l=>!l.out).map(l=>'　'+slotName(names,l.slot)+' ← '+supLabelOf(l.supplierId)).join('\n')
               : (r.supplier ? '\n仕入先: '+supLabelOf(r.supplier) : '');
-  if(!confirm(brand+' の割り振りを確定します。\n対象受注: '+selIds.join(', ')+supText+'\nサロン '+salonCount+'枠・合計 '+total+'点'+(outTotal?'（うち🤝外注 '+outTotal+'点）':'')+(stockTotal?'＋📦在庫充当 '+stockTotal+'点（確定時に在庫から確保）':'')+' を「回収待ち」で回収・検品に登録します。\n\n⚠ 確定後は、この画面での振り分けの修正はできません（直す場合は回収・検品側で該当の回収を削除してやり直しになります）。よろしいですか？')) return;
+  const batchText = sp ? '\n📦 発注 '+((_B||0)+1)+'回目／全'+sp.n+'回（発注日 '+String(sp.dates[_B||0]).replace(/-/g,'/')+'）' : '';
+  if(!ALLOC._skipConfirm && !confirm(brand+' の割り振りを確定します。'+batchText+'\n対象受注: '+selIds.join(', ')+supText+'\nサロン '+salonCount+'枠・合計 '+total+'点'+(outTotal?'（うち🤝外注 '+outTotal+'点）':'')+(stockTotal?'＋📦在庫充当 '+stockTotal+'点（確定時に在庫から確保）':'')+' を「回収待ち」で回収・検品に登録します。\n\n⚠ 確定後は、この画面での振り分けの修正はできません（直す場合は回収・検品側で該当の回収を削除してやり直しになります）。よろしいですか？')) return;
   // 仕入れマスタに掛け率が無かった仕入先は、②で入れた率を覚えさせる（2026-09-02 ユーザー要望）。
   // 上書きは従来どおり「今回の振り分けだけ」に効く。マスタが空欄だったときに限り、その値を初期値として残す
   const buyRateLearn = (()=>{
@@ -4807,16 +5052,60 @@ async function allocCommit(){
     });
     return m;
   })();
-  const res = await act('commitAllocation', {brand, orderIds:selIds, lines, supplierId:r.supplier||'', stock:r.stock||[], units:buyUnits}, brand+' の回収データを作成しました', ['collectionLedger','orderLedger','stock','stockLog']);
+  const res = await act('commitAllocation', {brand, orderIds:selIds, lines, supplierId:r.supplier||'', stock:_stock, units:buyUnits,
+    orderDate: sp ? String(sp.dates[_B||0]||'').replace(/-/g,'/') : ''}, brand+' の回収データを作成しました', ['collectionLedger','orderLedger','stock','stockLog']);
   if(res){
     if(buyRateLearn.length) saveLearnedRates('saveSalonRateCells', buyRateLearn, 'salons', '仕入れマスタ');
     const warning=allocFormUpdateWarning(res);
-    ALLOC.lastCommit={brand,ids:res.collectionIds||[],printable:true,warning};
-    delete ALLOC.result[brand];
-    apiPost('deleteAllocDraft', {brand}, ['allocDrafts']).then(()=>render()).catch(()=>{});   // 確定したブランドの下書きは自動削除（無ければ何もしない）
+    const ids = res.collectionIds||[];
+    // 分割中の途中バッチでは結果を消さない（次のバッチで同じ r を使うため）
+    const last = !sp || (_B||0) >= sp.n-1;
+    ALLOC.lastCommit={brand, ids:(ALLOC.lastCommit&&ALLOC.lastCommit._acc||[]).concat(ids), printable:true, warning, _acc:undefined};
+    if(!last){ ALLOC.lastCommit._acc = ALLOC.lastCommit.ids; }
+    if(last){
+      delete ALLOC.result[brand];
+      apiPost('deleteAllocDraft', {brand}, ['allocDrafts']).then(()=>render()).catch(()=>{});   // 確定したブランドの下書きは自動削除（無ければ何もしない）
+    }
     if(warning) toast(warning,true);
-    toast('回収ID: '+res.collectionIds.join(', ')+' を作成しました'); render();
+    toast((sp?((_B||0)+1)+'回目 ':'')+'回収ID: '+ids.join(', ')+' を作成しました');
+    if(last) render();
+    return true;
   }
+  return false;
+}
+// 分割しているときは、バッチの数だけ順に確定する（確認は1回・途中で失敗したらそこで止める）
+async function allocCommitAll(){
+  const brand = ALLOC.brand, r = ALLOC.result[brand];
+  const sp = allocSplit(r);
+  if(!sp){ ALLOC._batch = null; await allocCommit(); return; }
+  const bad = allocSplitMismatch(r);
+  if(bad.length){ toast('分割した個数の合計が元の個数と合っていません（'+bad.length+'件）。明細を直してください', true); return; }
+  const noDate = sp.dates.filter(d=>!String(d||'').trim());
+  if(noDate.length){ toast('発注日が未入力のバッチがあります（'+noDate.length+'件）。全部入れてから確定してください', true); return; }
+  const plan = sp.dates.map((d,i)=>'　'+(i+1)+'回目: '+String(d).replace(/-/g,'/')+'（'+allocSplitTotals(r,i).qty+'点 / '+yen(allocSplitTotals(r,i).yen)+'）').join('\n');
+  if(!confirm(brand+' を '+sp.n+'回に分けて確定します。\n'+plan+'\n\n回収IDは回ごとに分かれ、それぞれの発注日で記録されます。\n⚠ 確定後はこの画面での修正はできません。よろしいですか？')) return;
+  const selIds = Object.keys(ALLOC.sel).filter(k=>ALLOC.sel[k]);
+  ALLOC._skipConfirm = true;
+  let done = 0;
+  try{
+    for(let b=0; b<sp.n; b++){
+      ALLOC._batch = b;
+      const ok = await allocCommit();
+      if(!ok){ toast((b+1)+'回目で止まりました。ここまでの分は登録済みです', true); break; }
+      done++;
+    }
+  } finally { ALLOC._skipConfirm = false; ALLOC._batch = null; }
+  if(done!==sp.n) return;
+  // 受注の📦発注日が空なら1回目の発注日を入れておく（ステータスを進めるゲート用。
+  // 仕入の計上は回収台帳の各バッチの日付で行うので、ここは表示と進行のための代表値）。既に入っていれば触らない
+  const first = String(sp.dates[0]||'').replace(/-/g,'/');
+  for(const oid of selIds){
+    const has = rows('orderLedger').some(x=>String(x['受注ID']||'').trim()===oid && String(x['発注日']||'').trim());
+    if(has || !first) continue;
+    try{ await apiPost('setOrderDate', {'受注ID':oid, '発注日':first}, ['orderLedger']); }catch(e){ /* 失敗しても確定自体は済んでいる */ }
+  }
+  toast(sp.n+'回に分けて確定しました（発注日: '+sp.dates.map(d=>String(d).replace(/-/g,'/')).join(' ／ ')+'）');
+  render();
 }
 // 振り分け下書き: 保存（1ブランド=1下書き・上書き）／再開／削除
 async function allocSaveDraft(){
