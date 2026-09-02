@@ -1144,6 +1144,15 @@ function calcSalonPay(month){
   return Object.values(bySalon).map(s=>({sid:s.sid, name:s.name, brands:[...s.brands], mtg:s.mtg, charge:s.charge,
     fee:s.brands.size*BRAND_FEE, net:s.brands.size*BRAND_FEE - s.charge}));
 }
+// サロン/仕入先マスタの掛け率列（例「ナプ(41.9%)」）から、その行が扱うブランドを引く。
+// 列名の略称でブランド名が始まれば一致（allocBrandDealers と同じ判定）。
+// 率として読めない値（「待ち」など交渉中の記入）は取扱に数えない。
+function rateBrandsOf(row, brands){
+  return brands.filter(b=>Object.keys(row).some(k=>{
+    const m = String(k).match(/^([^（(]+)[（(][^）)]*[%％][）)]\s*$/);
+    return m && m[1].trim() && b.indexOf(m[1].trim())===0 && num(row[k])>0;
+  }));
+}
 function calcQuota(month){
   const used={};
   const add=(sid,name,brand,amt,isHanbai)=>{ if(!sid||!brand) return; const k=sid+'|'+brand;
@@ -1152,6 +1161,12 @@ function calcQuota(month){
     add(String(r['サロンID']).trim(), r['サロン名'], brandOf(r['商品ID']), salonCost(r['商品ID'])*num(r['個数']), false); });
   rows('hanbaiOrders').forEach(r=>{ if(monthOf(r['注文日'])!==month) return;
     add(String(r['サロンID']).trim(), r['サロン名'], brandOf(r['商品ID']), salonCost(r['商品ID'])*num(r['個数']), true); });   // 店販/EC分は「内 店販」表示用に別カウント（2026-07-18 ユーザー要望）
+  // その月に仕入が0でも、そのサロンの取扱ブランドは枠として立てる（2026-09-02 ユーザー指定）。
+  // 以前は台帳の行からしか組み立てていなかったので、動きのなかったブランド（例: ナプラ）が
+  // セグメントごと消え、バーの分母からもその枠が丸ごと抜けていた。
+  const masterBrands = [...new Set(rows('products').map(p=>String(p['ブランド']||p['カテゴリー']||'').trim()).filter(Boolean))];
+  rows('salons').filter(s=>String(s['サロンID']||'').trim() && ['サロン',''].includes(String(s['種別']||'').trim()) && String(s['ストップ']||'').trim()==='')
+    .forEach(s=>rateBrandsOf(s, masterBrands).forEach(b=>add(String(s['サロンID']).trim(), salonLabel(s), b, 0, false)));
   const qm={}; rows('quotaMaster').forEach(q=>qm[String(q['サロンID']).trim()+'|'+String(q['ブランド']).trim()]=num(q['枠金額（円）']));
   return Object.values(used).map(u=>{ const key=u.sid+'|'+u.brand;
     const quota = (key in qm) ? qm[key] : DEFAULT_QUOTA;
