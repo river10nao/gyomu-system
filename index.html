@@ -4602,8 +4602,34 @@ function allocSplitCard(r, brand){
         '<td class="num">'+total+'</td>'+cells+'<td class="num'+(sum!==total?'" style="color:var(--crit);font-weight:700':'')+'">'+sum+'</td></tr>');
     });
   });
+  // サロンごとの各回の金額（明細の上に置く。全体だけだと偏っているサロンに気づけない）
+  const perSalon = r.salonIds.map(sid=>{
+    const supSid = allocSupOf(r, sid);
+    const yen = Array.from({length:n}, (_,b)=>r.items.reduce((a,i)=>a+allocSplitQty(r,sid,i.pid,b)*num(allocBuyUnit(i.pid,supSid)),0));
+    const qty = Array.from({length:n}, (_,b)=>r.items.reduce((a,i)=>a+allocSplitQty(r,sid,i.pid,b),0));
+    return {name:slotName(names,sid), yen, qty, sum:yen.reduce((a,x)=>a+x,0)};
+  }).filter(x=>x.sum>0)
+   .concat(allocOutsOf(r).map((o,oi)=>{
+    const yen = Array.from({length:n}, (_,b)=>r.items.reduce((a,i)=>a+allocSplitOutQty(r,oi,i.pid,b)*num(allocBuyUnit(i.pid,String(o.sid||''))),0));
+    const qty = Array.from({length:n}, (_,b)=>r.items.reduce((a,i)=>a+allocSplitOutQty(r,oi,i.pid,b),0));
+    return {name:'🤝 '+(names[String(o.sid||'')]||String(o.sid||'')), yen, qty, sum:yen.reduce((a,x)=>a+x,0)};
+  }).filter(x=>x.sum>0));
+  html += '<details style="margin-top:10px"'+(allocSplitOpen('sum')?' open':'')+' ontoggle="allocSplitToggle(\'sum\',this.open)">' +
+    '<summary class="small" style="cursor:pointer">振り分け先ごとの金額を見る（'+perSalon.length+'件）</summary>' +
+    '<div class="tblwrap"><table style="margin-top:6px"><tr><th>振り分け先</th>' +
+    Array.from({length:n},(_,b)=>'<th class="num">'+(b+1)+'回目</th>').join('') + '<th class="num">合計</th><th>配分</th></tr>' +
+    perSalon.map(x=>'<tr><td class="small">'+esc(x.name)+'</td>' +
+      x.yen.map((v,b)=>'<td class="num">'+yen(v)+'<div class="muted small">'+x.qty[b]+'点</div></td>').join('') +
+      '<td class="num"><b>'+yen(x.sum)+'</b><div class="muted small">'+x.qty.reduce((a,q)=>a+q,0)+'点</div></td>' +
+      '<td><div style="display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--wash);min-width:120px">' +
+        x.yen.map((v,b)=>'<div title="'+(b+1)+'回目 '+yen(v)+'" style="width:'+(x.sum>0?v/x.sum*100:0)+'%;background:var(--s'+((b%6)+1)+')"></div>').join('') +
+      '</div><div class="muted small">'+x.yen.map(v=>x.sum>0?Math.round(v/x.sum*100)+'%':'—').join(' / ')+'</div></td></tr>').join('') +
+    '<tr><td><b>合計</b></td>' + tot.map(t=>'<td class="num"><b>'+yen(t.yen)+'</b><div class="muted small">'+t.qty+'点</div></td>').join('') +
+    '<td class="num"><b>'+yen(grand)+'</b></td><td></td></tr>' +
+    '</table></div></details>';
+
   const bad = allocSplitMismatch(r);
-  html += '<details style="margin-top:10px"'+(bad.length?' open':'')+'><summary class="small" style="cursor:pointer">明細を開いて手直しする（'+rowsHtml.length+'行）'+(bad.length?' <span style="color:var(--crit)">⚠ 個数が合っていない行が'+bad.length+'件</span>':'')+'</summary>' +
+  html += '<details style="margin-top:10px"'+((bad.length||allocSplitOpen('detail'))?' open':'')+' ontoggle="allocSplitToggle(\'detail\',this.open)"><summary class="small" style="cursor:pointer">明細を開いて手直しする（'+rowsHtml.length+'行）'+(bad.length?' <span style="color:var(--crit)">⚠ 個数が合っていない行が'+bad.length+'件</span>':'')+'</summary>' +
     '<div class="tblwrap"><table style="margin-top:6px"><tr><th>振り分け先</th><th>商品</th><th class="num">合計</th>' +
     Array.from({length:n},(_,b)=>'<th class="num">'+(b+1)+'回目</th>').join('') + '<th class="num">計</th></tr>' +
     rowsHtml.join('') + '</table></div></details>';
@@ -4646,7 +4672,11 @@ function allocSplitSetN(n){
 function allocSplitSetDate(b, v){
   const r = ALLOC.result[ALLOC.brand]; const sp = allocSplit(r); if(!sp) return;
   sp.dates[b] = String(v||'').trim();
+  render();   // 「発注日が未入力」の注意書きと確定ボタンの状態を更新する（入れたのに警告が残っていた）
 }
+// 明細・サロン別集計の開閉はrenderをまたいで覚えておく（日付を入れるたびに閉じてしまうため）
+function allocSplitToggle(key, on){ (ALLOC._open = ALLOC._open || {})[key] = !!on; }
+function allocSplitOpen(key){ return !!(ALLOC._open||{})[key]; }
 // 金額（AXIA仕入額）が均等に近づくよう、箱単位で配る。
 // 各サロン（および外注枠）の中で、商品を「箱のかたまり」に割ってから、
 // 金額の大きい順に「いまの合計がいちばん小さいバッチ」へ入れる（LPT法）。箱は割らない。
