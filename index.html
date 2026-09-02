@@ -3276,7 +3276,7 @@ function vQuota(){
   const isSupplier = s=>['ディーラー','外注','紹介','注文サイト'].includes(s.kind);
   const linkIds = [...new Set(salons.filter(s=>!isSupplier(s) && s.link).map(s=>s.link))].sort();
   const salonGroups = [
-    {key:'sup',  title:'🏭 仕入先（ディーラー・外注）', note:'AXIAが仕入れる相手。サロンへの枠とは別物です', list:salons.filter(isSupplier)},
+    {key:'sup',  title:'🏭 仕入先（ディーラー・外注）', note:'AXIAが仕入れた金額。枠はサロンだけの考え方なので出しません', list:salons.filter(isSupplier)},
     {key:'own',  title:'💇 自社サロン',                 note:'連携ディーラーなし',                        list:salons.filter(s=>!isSupplier(s) && !s.link)},
     ...linkIds.map(id=>({key:'link_'+id, title:'🤝 '+dealerName(id)+' 連携サロン', note:'サロンマスタの「連携ディーラー」='+id,
                          list:salons.filter(s=>!isSupplier(s) && s.link===id)}))
@@ -3334,6 +3334,19 @@ function vQuota(){
       '<b>'+g.title+'</b><span class="muted">'+esc(g.note)+'</span>' +
       '<span class="right muted">'+g.list.length+'件 ／ 使用 '+yen(g.list.reduce((a,x)=>a+x.totalUsed,0))+'</span></div>' +
     g.list.map(s=>{
+    // 仕入先（ディーラー・外注）は枠の概念が無いので金額だけ出す。バー・枠・残は出さない
+    // （サロン用の¥200,000の物差しで測ると常に大幅超過の赤字表示になって読めなかった。2026-09-02 ユーザー指定）
+    const sup = isSupplier(s);
+    const totalHanbai = s.brands.reduce((a,b)=>a+num(b.hanbai),0);
+    const hanbaiNote = b=>num(b.hanbai)>0?'<span class="muted">（内 店販/EC '+yen(b.hanbai)+'）</span>':'';
+    if(sup){
+      const chips = s.brands.filter(b=>b.used>0).map(b=>
+        '<span class="step small"><span class="dot" style="background:'+colorOf(b.brand)+';border-color:'+colorOf(b.brand)+'"></span>' +
+        esc(b.brand)+' '+yen(b.used)+hanbaiNote(b)+'</span>').join('<span style="color:var(--grid)">｜</span>');
+      return '<div class="gauge" style="margin-bottom:10px"><div class="row small"><span><b>'+esc(s.name)+'</b></span>' +
+        '<span class="right mono">'+(s.totalUsed>0 ? '<b>'+yen(s.totalUsed)+'</b>'+(totalHanbai>0?'<span class="muted">（内 店販/EC '+yen(totalHanbai)+'）</span>':'') : '<span class="muted">今月の仕入なし</span>')+'</span></div>' +
+        (chips ? '<div class="steps" style="margin-top:2px">'+chips+'</div>' : '')+'</div>';
+    }
     // 積み上げセグメント（幅 = 使用額 ÷ サロンの枠合計。100%でクリップ）
     let acc = 0;
     const segs = s.brands.map(b=>{
@@ -3345,9 +3358,8 @@ function vQuota(){
     const chips = s.brands.map(b=>{
       const warnC = b.rate>=0.9 ? 'var(--crit)' : b.rate>=0.7 ? 'var(--warn)' : 'var(--ink2)';
       return '<span class="step small" style="color:'+warnC+'"><span class="dot" style="background:'+colorOf(b.brand)+';border-color:'+colorOf(b.brand)+'"></span>' +
-        esc(b.brand)+' '+yen(b.used)+(num(b.hanbai)>0?'<span class="muted">（内 店販/EC '+yen(b.hanbai)+'）</span>':'')+' / '+yen(b.quota)+'（残 '+yen(b.quota-b.used)+'）</span>';
+        esc(b.brand)+' '+yen(b.used)+hanbaiNote(b)+' / '+yen(b.quota)+'（残 '+yen(b.quota-b.used)+'）</span>';
     }).join('<span style="color:var(--grid)">｜</span>');
-    const totalHanbai = s.brands.reduce((a,b)=>a+num(b.hanbai),0);
     return '<div class="gauge" style="margin-bottom:16px"><div class="row small"><span><b>'+esc(s.name)+'</b></span>' +
       '<span class="right mono">'+(s.brands.length ? yen(s.totalUsed)+(totalHanbai>0?'<span class="muted">（内 店販/EC '+yen(totalHanbai)+'）</span>':'')+' / '+yen(s.totalQuota)+'（残 '+yen(s.totalQuota-s.totalUsed)+'）' : '<span class="muted">今月の仕入なし</span>')+'</span></div>' +
       '<div class="bar-outer" style="height:16px;display:flex;gap:2px">'+segs+'</div>' +
