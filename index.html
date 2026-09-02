@@ -1144,6 +1144,25 @@ function calcSalonPay(month){
   return Object.values(bySalon).map(s=>({sid:s.sid, name:s.name, brands:[...s.brands], mtg:s.mtg, charge:s.charge,
     fee:s.brands.size*BRAND_FEE, net:s.brands.size*BRAND_FEE - s.charge}));
 }
+// 仕入の計上月: 対象受注の📦発注日を優先し、入っていなければ回収台帳の発注日で仮計上する。
+// 振り分け確定時に回収台帳へ書かれるのは「確定作業をした日」（allocation.gs）なので、月をまたいで
+// 振り分けると計上月がずれる（8/28発注のナプラを9/1に確定 → 9月の仕入として出ていた。2026-09-02 ユーザー指摘）。
+// 支払い画面（collectSupplierLines）と同じ基準に揃えるための共通関数。
+let _ordPoMemo = {a:null, val:null};
+function orderPoDates(){
+  if(_ordPoMemo.a !== DB.orderLedger){
+    const d = {};
+    rows('orderLedger').forEach(r=>{ const id=String(r['受注ID']||'').trim();
+      if(id && !d[id] && String(r['発注日']||'').trim()) d[id]=String(r['発注日']).trim(); });
+    _ordPoMemo = {a:DB.orderLedger, val:d};
+  }
+  return _ordPoMemo.val;
+}
+function buyMonthOf(r){
+  const od = orderPoDates();
+  const oids = String(r['対象受注']||'').split(',').map(x=>x.trim()).filter(Boolean);
+  return monthOf(oids.map(o=>od[o]).find(Boolean) || String(r['発注日']||'').trim());
+}
 // サロン/仕入先マスタの掛け率列（例「ナプ(41.9%)」）から、その行が扱うブランドを引く。
 // 列名の略称でブランド名が始まれば一致（allocBrandDealers と同じ判定）。
 // 率として読めない値（「待ち」など交渉中の記入）は取扱に数えない。
@@ -1157,7 +1176,7 @@ function calcQuota(month){
   const used={};
   const add=(sid,name,brand,amt,isHanbai)=>{ if(!sid||!brand) return; const k=sid+'|'+brand;
     used[k]=used[k]||{sid,name,brand,used:0,hanbai:0}; used[k].used+=amt; if(isHanbai) used[k].hanbai+=amt; };
-  rows('collectionLedger').forEach(r=>{ if(monthOf(r['発注日'])!==month || String(r['区分']||'').trim()==='在庫') return;   // 在庫充当は仕入ではない（2026-07-18）
+  rows('collectionLedger').forEach(r=>{ if(buyMonthOf(r)!==month || String(r['区分']||'').trim()==='在庫') return;   // 在庫充当は仕入ではない（2026-07-18）
     add(String(r['サロンID']).trim(), r['サロン名'], brandOf(r['商品ID']), salonCost(r['商品ID'])*num(r['個数']), false); });
   rows('hanbaiOrders').forEach(r=>{ if(monthOf(r['注文日'])!==month) return;
     add(String(r['サロンID']).trim(), r['サロン名'], brandOf(r['商品ID']), salonCost(r['商品ID'])*num(r['個数']), true); });   // 店販/EC分は「内 店販」表示用に別カウント（2026-07-18 ユーザー要望）
@@ -3227,7 +3246,7 @@ function vQuota(){
   const salonN = rows('salons').filter(s=>String(s['サロンID']||'').trim() && ['サロン',''].includes(String(s['種別']||'').trim()) && String(s['ストップ']||'').trim()==='').length;
   const usedByBrand = {}, usedBySup = {};
   const addUse = (b, sup, v)=>{ usedByBrand[b]=(usedByBrand[b]||0)+v; (usedBySup[b]=usedBySup[b]||{})[sup]=num((usedBySup[b]||{})[sup])+v; };
-  rows('collectionLedger').forEach(r=>{ if(monthOf(r['発注日'])!==selMonth || ['外注','在庫'].includes(String(r['区分']||'卸').trim())) return;   // 在庫充当は仕入ではない（2026-07-18）
+  rows('collectionLedger').forEach(r=>{ if(buyMonthOf(r)!==selMonth || ['外注','在庫'].includes(String(r['区分']||'卸').trim())) return;   // 在庫充当は仕入ではない（2026-07-18）
     const b=brandOf(r['商品ID']); if(!b) return;
     addUse(b, String(r['仕入先名']||r['仕入先ID']||'').trim()||'（仕入先未記録）', salonCost(r['商品ID'])*num(r['個数'])); });
   rows('hanbaiOrders').forEach(r=>{ if(monthOf(r['注文日'])!==selMonth) return;
