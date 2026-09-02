@@ -1732,9 +1732,10 @@ function anbetsuHtml(m){
                  '<td class="num" rowspan="'+n+'">'+yen(l.sales)+'</td>';
         }
         // 仕入先ごとの段（ここだけ毎行出す）。率は均さないので小数第1位まで出す（39.7%と40%を潰さない）
-        tds += '<td class="small" style="white-space:nowrap">'+(s.icon?s.icon+' ':'')+esc(s.name)+'</td>' +
-               '<td class="num">'+(s.rate==null?'—':pct1(s.rate))+'</td>' +
-               '<td class="num" style="white-space:nowrap">'+yen(s.amt)+(s.note?' <span class="small" style="color:var(--s4)">'+esc(s.note)+'</span>':'')+'</td>';
+        // 並びは 掛率（仕入）→ 仕入額 → 仕入先。仕入先を利益額の直前に置く（2026-09-02 ユーザー指定）
+        tds += '<td class="num">'+(s.rate==null?'—':pct1(s.rate))+'</td>' +
+               '<td class="num" style="white-space:nowrap">'+yen(s.amt)+(s.note?' <span class="small" style="color:var(--s4)">'+esc(s.note)+'</span>':'')+'</td>' +
+               '<td class="small" style="white-space:nowrap">'+(s.icon?s.icon+' ':'')+esc(s.name)+'</td>';
         if(i===0){
           const nr = l.cost>0 ? l.net/l.cost : null;
           tds += '<td class="num" rowspan="'+n+'">'+yen(profit(l))+'</td>' +
@@ -1757,12 +1758,12 @@ function anbetsuHtml(m){
     '<button class="btn sm" onclick="printAnbetsu()">🖨 PDF出力</button></div>' +
     '<table style="margin-top:8px;min-width:1320px"><tr><th style="min-width:110px">メーカー</th><th style="min-width:130px">卸先</th>' +
     '<th class="num">掛率(卸)</th><th class="num" style="min-width:110px">売上（卸値税抜）</th>' +
-    '<th style="min-width:160px">仕入先</th><th class="num">掛率（仕入）</th><th class="num" style="min-width:100px">'+NM.co+'仕入</th>' +
+    '<th class="num">掛率（仕入）</th><th class="num" style="min-width:100px">'+NM.co+'仕入</th><th style="min-width:160px">仕入先</th>' +
     '<th class="num" style="min-width:95px">利益額</th><th class="num">利益率</th><th class="num" style="min-width:160px">手数料</th>' +
     '<th class="num" style="min-width:100px">実利益</th><th>状態</th><th>受注ID</th><th></th></tr>' +
     (body || '<tr><td colspan="'+NCOL+'" class="muted">この月の受注はまだありません</td></tr>') +
     (groups.length ? '<tr><td colspan="3"><b>合計</b></td><td class="num"><b>'+yen(t.sales)+'</b></td>' +
-      '<td></td><td class="num"><b>'+pct(totalRate)+'</b></td><td class="num"><b>'+yen(t.cost)+'</b></td>' +
+      '<td class="num"><b>'+pct(totalRate)+'</b></td><td class="num"><b>'+yen(t.cost)+'</b></td><td></td>' +
       '<td class="num"><b>'+yen(profit(t))+'</b></td><td class="num"><b>'+pct(t.cost>0?profit(t)/t.cost:null)+'</b></td>' +
       '<td class="num"><b style="color:var(--crit)">'+(t.fee?'−'+yen(t.fee):'—')+'</b></td>' +
       '<td class="num"><b>'+yen(t.net)+'</b></td><td colspan="3"></td></tr>' : '') +
@@ -1784,14 +1785,14 @@ function exportAnbetsu(){
     const feeTxt = l.fees.map(f=>f.who+' '+f.what+' '+f.amt).join(' / ');
     sr.forEach((s,i)=>{
       out.push(i===0
-        ? [l.brand, l.w, l.list>0?(l.sales/l.list).toFixed(3):'', l.sales, s.name, s.rate, s.amt,
+        ? [l.brand, l.w, l.list>0?(l.sales/l.list).toFixed(3):'', l.sales, s.rate, s.amt, s.name,
            l.sales-l.cost, l.cost>0?((l.sales-l.cost)/l.cost).toFixed(3):'', l.fee?-l.fee:0, feeTxt, l.net,
            anbetsuFormText(l.form), l.st, l.oid, s.memo]
-        : ['', '', '', '', s.name, s.rate, s.amt, '', '', '', '', '', '', '', l.oid, s.memo]);
+        : ['', '', '', '', s.rate, s.amt, s.name, '', '', '', '', '', '', '', l.oid, s.memo]);
     });
   });
   exportCsv('案件別収支_'+selMonth.replace('/','-'),
-    ['メーカー','卸先','掛率(卸)','売上(卸値税抜)','仕入先','掛率（仕入）',''+NM.co+'仕入',
+    ['メーカー','卸先','掛率(卸)','売上(卸値税抜)','掛率（仕入）',''+NM.co+'仕入','仕入先',
      '利益額','利益率','手数料','手数料の内訳','実利益','仕入形態','状態','受注ID','備考'], out);
 }
 function printAnbetsu(){
@@ -1830,9 +1831,9 @@ function printAnbetsu(){
         if(i===0) tds += '<td rowspan="'+n+'">'+esc(l.w)+(l.form?'<div class="small">'+esc(l.form)+'</div>':'')+'</td>' +
           '<td class="num" rowspan="'+n+'">'+pct(l.list>0?l.sales/l.list:null)+'</td>' +
           '<td class="num" rowspan="'+n+'">'+y(l.sales)+'</td>';
-        tds += '<td class="small" style="white-space:nowrap">'+(s.icon?s.icon+' ':'')+esc(s.name)+'</td>' +
-               '<td class="num">'+(s.rate==null?'—':pct1(s.rate))+'</td>' +
-               '<td class="num">'+y(s.amt)+(s.note?' '+esc(s.note):'')+'</td>';
+        tds += '<td class="num">'+(s.rate==null?'—':pct1(s.rate))+'</td>' +
+               '<td class="num">'+y(s.amt)+(s.note?' '+esc(s.note):'')+'</td>' +
+               '<td class="small" style="white-space:nowrap">'+(s.icon?s.icon+' ':'')+esc(s.name)+'</td>';
         if(i===0){
           const nr = l.cost>0 ? l.net/l.cost : null;
           tds += '<td class="num" rowspan="'+n+'">'+y(profit(l))+'</td>' +
@@ -1856,12 +1857,12 @@ function printAnbetsu(){
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
     '<h1>案件別収支（'+esc(m)+'）</h1>' +
     '<table><tr><th>メーカー</th><th>卸先</th><th class="num">掛率(卸)</th><th class="num">売上（卸値税抜）</th>' +
-    '<th>仕入先</th><th class="num">掛率（仕入）</th><th class="num">'+NM.co+'仕入</th>' +
+    '<th class="num">掛率（仕入）</th><th class="num">'+NM.co+'仕入</th><th>仕入先</th>' +
     '<th class="num">利益額</th><th class="num">利益率</th><th class="num">手数料</th><th class="num">実利益</th>' +
     '<th>状態</th><th>受注ID</th></tr>' +
     body +
     '<tr class="brand"><td colspan="3"><b>合計</b></td><td class="num"><b>'+y(t.sales)+'</b></td>' +
-    '<td></td><td class="num"><b>'+pct(t.list>0?t.cost/t.list:null)+'</b></td><td class="num"><b>'+y(t.cost)+'</b></td>' +
+    '<td class="num"><b>'+pct(t.list>0?t.cost/t.list:null)+'</b></td><td class="num"><b>'+y(t.cost)+'</b></td><td></td>' +
     '<td class="num"><b>'+y(profit(t))+'</b></td><td class="num"><b>'+pct(t.cost>0?profit(t)/t.cost:null)+'</b></td>' +
     '<td class="num"><b>'+(t.fee?'−'+y(t.fee):'—')+'</b></td><td class="num"><b>'+y(t.net)+'</b></td><td colspan="2"></td></tr>' +
     '</table>' +
