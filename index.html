@@ -71,7 +71,7 @@ h1{font-size:19px;margin-bottom:4px}
 .tabs button .n.hot{opacity:1;background:var(--warn);color:#3d2c00;font-weight:700;border-radius:10px;padding:1px 7px}
 nav button .nb, #mnav button .nb{margin-left:6px;font-size:11px;background:var(--warn);color:#3d2c00;font-weight:700;border-radius:10px;padding:1px 7px;display:inline-block}
 table{width:100%;border-collapse:collapse;font-size:13px}
-td[rowspan]{vertical-align:middle}   /* 案件別収支: 仕入先が複数段のとき、結合セルを縦中央に寄せる */
+table.anbetsu td{vertical-align:middle}   /* 案件別収支: 仕入先が2段・3段になっても各セルを縦中央で揃える */
 th{text-align:left;color:var(--muted);font-weight:600;font-size:11.5px;border-bottom:1px solid var(--grid);padding:6px 8px;white-space:nowrap}
 td{border-bottom:1px solid var(--grid);padding:7px 8px;vertical-align:top}
 tr:last-child td{border-bottom:0}
@@ -1794,7 +1794,7 @@ function anbetsuHtml(m){
   return '<div class="card tblwrap"><div class="row"><b class="small">案件別収支（'+m+'）</b>' +
     '<button class="btn sm right" onclick="exportAnbetsu()">CSV出力</button>' +
     '<button class="btn sm" onclick="printAnbetsu()">🖨 PDF出力</button></div>' +
-    '<table style="margin-top:8px;min-width:1320px"><tr><th style="min-width:110px">メーカー</th><th style="min-width:130px">卸先</th>' +
+    '<table class="anbetsu" style="margin-top:8px;min-width:1320px"><tr><th style="min-width:110px">メーカー</th><th style="min-width:130px">卸先</th>' +
     '<th class="num">掛率(卸)</th><th class="num" style="min-width:110px">売上（卸値税抜）</th>' +
     '<th class="num">掛率（仕入）</th><th class="num" style="min-width:100px">'+NM.co+'仕入</th><th style="min-width:160px">仕入先</th>' +
     '<th class="num" style="min-width:95px">利益額</th><th class="num">利益率</th><th class="num" style="min-width:160px">手数料</th>' +
@@ -1890,11 +1890,11 @@ function printAnbetsu(){
     '<style>body{font-family:"Hiragino Sans",sans-serif;font-size:11px;margin:24px}h1{font-size:16px}' +
     'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:4px 7px;text-align:left}td.num,th.num{text-align:right}th{background:#f2f2f2}' +
     'tr.brand td{background:#eef1f5}td.brandcell{background:#eef1f5}td.indent{padding-left:22px}.small{font-size:10px;color:#555}' +
-    'td[rowspan]{vertical-align:middle}' +
+    'table.anbetsu td{vertical-align:middle}' +
     'tr{page-break-inside:avoid}@media print{button{display:none}}</style></head><body>' +
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
     '<h1>案件別収支（'+esc(m)+'）</h1>' +
-    '<table><tr><th>メーカー</th><th>卸先</th><th class="num">掛率(卸)</th><th class="num">売上（卸値税抜）</th>' +
+    '<table class="anbetsu"><tr><th>メーカー</th><th>卸先</th><th class="num">掛率(卸)</th><th class="num">売上（卸値税抜）</th>' +
     '<th class="num">掛率（仕入）</th><th class="num">'+NM.co+'仕入</th><th>仕入先</th>' +
     '<th class="num">利益額</th><th class="num">利益率</th><th class="num">手数料</th><th class="num">実利益</th>' +
     '<th>状態</th><th>受注ID</th></tr>' +
