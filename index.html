@@ -4928,42 +4928,67 @@ function allocPrintDone(brand, kidsCsv){
   const byKid = {};
   lines.forEach(r=>{ const k=String(r['回収ID']).trim(); (byKid[k]=byKid[k]||[]).push(r); });
   const orderIds = [...new Set(lines.flatMap(r=>String(r['対象受注']||'').split(',').map(x=>x.trim()).filter(Boolean)))];
-  const TOT = {};   // 仕入先名 → 総計（印刷ページ内のディーラー別切り替え用 2026-07-29）
+  const TOT = {};   // 仕入先名 → 総計（印刷ページ内のディーラー別切り替え用 2026-07-29。仕入額も持つ 2026-09-04）
+  const salById = {}; rows('salons').forEach(x=>{ const id=String(x['サロンID']||'').trim(); if(id) salById[id]=x; });
   const sections = Object.keys(byKid).sort().map(kid=>{
     const rs = byKid[kid];
+    const supId = String(rs[0]['仕入先ID']||'').trim();
+    const supRow = salById[supId];
+    const isStock = String(rs[0]['区分']||'').trim()==='在庫';   // 余剰在庫の充当は仕入ではない（支払い・仕入枠と同じ扱い）
+    // 実際の仕入額 = 支払い画面・案件別収支と同じ buyUnitOf（台帳の実額→商品の固定単価→掛け率の順）
+    const buyOf = r=>isStock ? 0 : buyUnitOf(String(r['商品ID']||'').trim(), supId, supRow, brandOf(r['商品ID']), r).unit;
     const totalQty = rs.reduce((a,r)=>a+num(r['個数']),0);
     const totalYen = rs.reduce((a,r)=>a+num(r['個数'])*salonCost(r['商品ID']),0);
-    const sup = String(rs[0]['仕入先名']||'').trim();
-    if(sup){ TOT[sup]=TOT[sup]||{q:0,y:0}; TOT[sup].q+=totalQty; TOT[sup].y+=totalYen; }
-    return '<div class="salon" data-sup="'+esc(sup)+'"><h2>'+esc(rs[0]['サロン名']||'')+' <span class="sub">'+esc(kid)+' ／ 計 '+totalQty+'点 ／ ¥'+Math.round(totalYen).toLocaleString()+'（サロン価格・税抜）'+(sup?' ／ 仕入先: '+esc(sup):'')+'</span></h2>' +
-      '<table><tr><th>商品</th><th class="num">個数</th><th class="num">金額</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
-      rs.map(r=>'<tr><td>'+esc(r['商品名'])+' '+esc(r['容量']||'')+'</td><td class="num">'+num(r['個数'])+'</td><td class="num">¥'+Math.round(num(r['個数'])*salonCost(r['商品ID'])).toLocaleString()+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
+    const totalBuy = rs.reduce((a,r)=>a+num(r['個数'])*buyOf(r),0);
+    const sup = isStock ? '📦 余剰在庫（仕入なし）' : (String(rs[0]['仕入先名']||'').trim() || '（仕入先未記録）');
+    TOT[sup]=TOT[sup]||{q:0,y:0,b:0}; TOT[sup].q+=totalQty; TOT[sup].y+=totalYen; TOT[sup].b+=totalBuy;
+    return '<div class="salon" data-sup="'+esc(sup)+'"><h2>'+esc(rs[0]['サロン名']||'')+' <span class="sub">'+esc(kid)+' ／ 計 '+totalQty+'点 ／ サロン価 ¥'+Math.round(totalYen).toLocaleString()+(isStock?'':' <span class="intonly">／ <b>仕入額 ¥'+Math.round(totalBuy).toLocaleString()+'</b></span>')+'（税抜）'+(sup?' ／ 仕入先: '+esc(sup):'')+'</span></h2>' +
+      '<table><tr><th>商品</th><th class="num">個数</th><th class="num">サロン価</th><th class="num intonly">仕入単価</th><th class="num intonly">仕入額</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
+      rs.map(r=>{ const q=num(r['個数']), u=buyOf(r);
+        return '<tr><td>'+esc(r['商品名'])+' '+esc(r['容量']||'')+'</td><td class="num">'+q+'</td>' +
+        '<td class="num">¥'+Math.round(q*salonCost(r['商品ID'])).toLocaleString()+'</td>' +
+        '<td class="num intonly">'+(isStock?'—':'¥'+Math.round(u).toLocaleString())+'</td>' +
+        '<td class="num intonly">'+(isStock?'—':'¥'+Math.round(q*u).toLocaleString())+'</td>' +
+        '<td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>'; }).join('') +
       '</table></div>';
   }).join('');
+  // 仕入先ごとの仕入額合計（社内用。先頭に出す）
+  const supSummary = '<div class="intonly" style="margin:10px 0 14px"><table style="width:auto;min-width:420px">' +
+    '<tr><th>仕入先</th><th class="num">点数</th><th class="num">サロン価 計</th><th class="num">仕入額 計</th></tr>' +
+    Object.keys(TOT).sort((a,b)=>TOT[b].b-TOT[a].b).map(sn=>
+      '<tr><td>'+esc(sn)+'</td><td class="num">'+TOT[sn].q+'</td><td class="num">¥'+Math.round(TOT[sn].y).toLocaleString()+'</td><td class="num">'+(TOT[sn].b>0?'<b>¥'+Math.round(TOT[sn].b).toLocaleString()+'</b>':'<span style="color:#777">— 仕入なし</span>')+'</td></tr>').join('') +
+    (Object.keys(TOT).length>1 ? '<tr><td><b>合計</b></td><td class="num"><b>'+Object.values(TOT).reduce((a,t)=>a+t.q,0)+'</b></td>' +
+      '<td class="num"><b>¥'+Math.round(Object.values(TOT).reduce((a,t)=>a+t.y,0)).toLocaleString()+'</b></td>' +
+      '<td class="num"><b>¥'+Math.round(Object.values(TOT).reduce((a,t)=>a+t.b,0)).toLocaleString()+'</b></td></tr>' : '') +
+    '</table><div style="color:#777;font-size:11px;margin-top:3px">仕入額＝実際に仕入先へ支払う額（支払い画面・案件別収支と同じ計算）。税抜。余剰在庫からの充当は仕入が発生しないため計上しません</div></div>';
   const sups = Object.keys(TOT);
   const supMap = {}; sups.forEach(sn=>supMap[sn]=sn);
   const toolbar = sups.length ? '<div class="no-print" style="margin:10px 0">出力範囲: ' +
     '<button class="selbtn" data-s="" onclick="pick(\'\')" style="padding:4px 12px">一括（全体）</button>' +
     sups.map(sn=>'<button class="selbtn" data-s="'+esc(sn)+'" onclick="pick(\''+esc(sn)+'\')" style="padding:4px 12px">'+esc(sn)+'</button>').join('') +
     '<span style="color:#777;font-size:11px;margin-left:6px">ディーラーを選ぶと、その仕入先分だけ表示・印刷されます</span></div>' : '';
-  const pageScript = '<script>var SUPS='+JSON.stringify(supMap)+';var TOT='+JSON.stringify(TOT)+';var BASE=document.title;' +
+  const pageScript = '<script>var SUPS='+JSON.stringify(supMap)+';var TOT='+JSON.stringify(TOT)+';var BASE=document.title;var HIDE=false;' +
+    'function hideCost(v){HIDE=v;document.getElementById("costBtn").textContent=v?"💰 仕入額を出す":"🙈 仕入額を隠す（共有用）";' +
+    'document.querySelectorAll(".intonly").forEach(function(el){el.style.display=v?"none":"";});}' +
     'function pick(s){' +
     'document.querySelectorAll(".salon").forEach(function(el){el.style.display=(!s||el.getAttribute("data-sup")===s)?"":"none";});' +
     'document.querySelectorAll(".selbtn").forEach(function(b){var on=b.getAttribute("data-s")===(s||"");b.style.background=on?"#333":"";b.style.color=on?"#fff":"";});' +
     'var tag=document.getElementById("supTag");if(tag)tag.textContent=s?"（ディーラー: "+SUPS[s]+"）":"";' +
-    'var t=document.getElementById("supTotal");if(t){if(s){t.style.display="";t.innerHTML="<b>"+SUPS[s]+" 経由 計 "+TOT[s].q+"点 ／ ¥"+Math.round(TOT[s].y).toLocaleString()+"（サロン価格・税抜）</b>";}else{t.style.display="none";}}' +
+    'var t=document.getElementById("supTotal");if(t){if(s){t.style.display="";t.innerHTML="<b>"+SUPS[s]+" 経由 計 "+TOT[s].q+"点 ／ サロン価 ¥"+Math.round(TOT[s].y).toLocaleString()+" ／ 仕入額 ¥"+Math.round(TOT[s].b).toLocaleString()+"（税抜）</b>";}else{t.style.display="none";}}' +
     'document.title=BASE+(s?"（"+SUPS[s]+"）":"");}' +
     'pick("");<\/script>';
   const w = window.open('', '_blank');
   w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(brand)+' サロン振り分け</title>' +
     '<style>body{font-family:"Hiragino Sans",sans-serif;font-size:12px;margin:24px}h1{font-size:16px}h2{font-size:14px;margin:18px 0 6px;border-left:4px solid #333;padding-left:8px}h2 .sub{font-size:11px;font-weight:normal;color:#555}' +
     'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:5px 8px;text-align:left}td.num,th.num{text-align:right;white-space:nowrap}td.chk,th.chk{text-align:center;width:40px;padding:5px 3px}th.chk{font-size:10px}th{background:#f2f2f2;white-space:nowrap}' +
-    '.salon{page-break-inside:avoid;margin-bottom:10px}@page{size:A4 portrait;margin:12mm}@media print{button,.no-print{display:none}}</style></head><body>' +
+    '.salon{margin-bottom:10px}tr{page-break-inside:avoid}h2{page-break-after:avoid}@page{size:A4 portrait;margin:12mm}@media print{button,.no-print{display:none}}</style></head><body>' +
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
+    '<button id="costBtn" class="no-print" onclick="hideCost(!HIDE)" style="padding:6px 14px;margin-left:6px">🙈 仕入額を隠す（共有用）</button>' +
     toolbar +
     '<h1>'+esc(brand)+' サロン振り分け表<span id="supTag"></span>（'+today()+'）</h1>' +
     '<p>対象受注: '+orderIds.join(', ')+' ／ 回収ID: '+esc(kFmt(kidSet))+'（確定済み・回収台帳から作成）</p>' +
     '<p id="supTotal" style="display:none"></p>' +
+    supSummary +
     sections +
     pageScript +   // ← これを入れ忘れていて pick() が定義されず、出力範囲のボタンが無反応だった（2026-08-28 修正）
     '</body></html>');
