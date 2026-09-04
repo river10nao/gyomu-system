@@ -3982,10 +3982,22 @@ function allocBuyUnit(pid, supSid){
   // 商品単位の上書きが最優先（ポンプのように1品だけ掛け率の構造が違う商品向け。2026-08-07 ユーザー要望）
   const ov = allocItemUnitOf(pid, supSid);
   if(ov!=null) return ov;
+  const fx = fixedBuyUnit(pid);   // 商品マスタの「仕入固定単価」（ポンプ等・2026-09-04）
+  if(fx!=null) return fx;
   const rate = allocBuyRateOf(supSid);
   const list = num((product(pid)||{})['定価（税抜）']);
   if(rate!=null && list) return Math.round(list*rate/100);
   return num((product(pid)||{})['AXIA仕入価格（税抜）']);
+}
+// 振り分けPDFに出す「実際の仕入単価」。②の上書き＞商品の固定単価＞支払い画面と同じ計算。
+// allocBuyUnit はマスタの率をそのまま使う（ピュアの41.9%＝39.9%＋仲介2%）が、
+// 実際にピュアへ払うのは39.9%相当なので、PDFの金額は支払い画面と同じ buyUnitOf に合わせる（2026-09-04）
+function allocRealUnit(pid, supSid){
+  const ov = allocItemUnitOf(pid, supSid);
+  if(ov!=null) return ov;
+  const sid = String(supSid||'').trim();
+  const s = rows('salons').find(x=>String(x['サロンID']||'').trim()===sid);
+  return buyUnitOf(pid, sid, s, brandOf(pid), null).unit;
 }
 // 商品×仕入先の単価上書き。正本は「単価」で持ち、掛け率は定価から逆算して表示する
 // （率と単価の二重管理を避ける）。conf.buyItem = { '仕入先ID|商品ID': 単価 }
@@ -4831,15 +4843,21 @@ function allocPrint(batch){
     const txt = Math.round(allocBuyUnit(pid, supSid)/list*1000)/10 + '%';
     return allocBuyUnder(pid, supSid) ? txt+' <span style="color:#c60">⚠</span>' : txt;
   };
+  // 仕入先ごとの合計（確定後PDFと同じ形で先頭に出す。2026-09-04 ユーザー要望）
+  const SUPTOT = {};
+  const addTot = (name, q, y, b)=>{ const t=SUPTOT[name]=SUPTOT[name]||{q:0,y:0,b:0}; t.q+=q; t.y+=y; t.b+=b; };
   const sections = sids.map(sid=>{
     const lines = r.items.map(i=>({i, qty:qtyOf(sid, i.pid)})).filter(x=>x.qty>0);
     if(!lines.length) return '';
     const totalQty = lines.reduce((a,x)=>a+x.qty,0);
     const totalYen = lines.reduce((a,x)=>a+x.qty*x.i.price,0);
     const supSid = allocSupOf(r, sid);   // サロン別に仕入先を分けている場合は各セクションに明記
-    return '<div class="salon" data-sup="'+esc(supSid)+'"><h2>'+esc(slotName(names, sid))+' <span class="sub">計 '+totalQty+'点 ／ ¥'+Math.round(totalYen).toLocaleString()+'（サロン価格・税抜）'+(r.supSplit&&supSid?' ／ 仕入先: '+esc(names[supSid]||supSid):'')+'</span></h2>' +
-      '<table><tr><th>商品</th><th class="num">個数</th><th class="num">金額</th><th class="num intonly">仕入掛け率</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
-      lines.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+(x.i.unit>1?'（'+x.i.unit+'個/箱）':'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*x.i.price).toLocaleString()+'</td><td class="num intonly">'+buyRateTxt(x.i.pid, supSid)+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
+    const buyU = pid=>num(allocRealUnit(pid, supSid));   // 実際の仕入単価（支払い画面と同じ）
+    const totalBuy = lines.reduce((a,x)=>a+x.qty*buyU(x.i.pid),0);
+    addTot(names[supSid]||supSid||'（仕入先未選択）', totalQty, totalYen, totalBuy);
+    return '<div class="salon" data-sup="'+esc(supSid)+'"><h2>'+esc(slotName(names, sid))+' <span class="sub">計 '+totalQty+'点 ／ サロン価 ¥'+Math.round(totalYen).toLocaleString()+'<span class="intonly"> ／ <b>仕入額 ¥'+Math.round(totalBuy).toLocaleString()+'</b></span>（税抜）'+(r.supSplit&&supSid?' ／ 仕入先: '+esc(names[supSid]||supSid):'')+'</span></h2>' +
+      '<table><tr><th>商品</th><th class="num">個数</th><th class="num">サロン価</th><th class="num intonly">仕入掛け率</th><th class="num intonly">仕入単価</th><th class="num intonly">仕入額</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
+      lines.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+(x.i.unit>1?'（'+x.i.unit+'個/箱）':'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*x.i.price).toLocaleString()+'</td><td class="num intonly">'+buyRateTxt(x.i.pid, supSid)+'</td><td class="num intonly">¥'+Math.round(buyU(x.i.pid)).toLocaleString()+'</td><td class="num intonly">¥'+Math.round(x.qty*buyU(x.i.pid)).toLocaleString()+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
       '</table></div>';
   }).join('');
   // 🤝外注仕入枠の分は外注先ごとに独立セクションで出す（外注先への共有・検品チェックにも使える。複数外注先対応 2026-07-18）
@@ -4848,10 +4866,11 @@ function allocPrint(batch){
     const ls = r.items.map(i=>({i, qty:(b!=null && sp) ? allocSplitOutQty(r, oi, i.pid, b) : num((o.q||{})[i.pid])})).filter(x=>x.qty>0);
     if(!ls.length) return '';
     const oname = o.sid ? (names[o.sid]||o.sid) : '（外注先未選択）';
-    const omoney = ls.reduce((a,x)=>a+x.qty*allocOutUnit(o.sid,x.i.pid),0);
-    return '<div class="salon" data-sup="out:'+esc(o.sid||'')+'"><h2>🤝 外注仕入: '+esc(oname)+' <span class="sub">計 '+ls.reduce((a,x)=>a+x.qty,0)+'点 ／ ¥'+Math.round(omoney).toLocaleString()+'（外注先掛け率・税抜）</span></h2>' +
-    '<table><tr><th>商品</th><th class="num">個数</th><th class="num">金額</th><th class="num intonly">仕入掛け率</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
-    ls.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*allocOutUnit(o.sid,x.i.pid)).toLocaleString()+'</td><td class="num intonly">'+buyRateTxt(x.i.pid, o.sid)+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
+    const omoney = ls.reduce((a,x)=>a+x.qty*allocRealUnit(x.i.pid, o.sid),0);
+    addTot(oname, ls.reduce((a,x)=>a+x.qty,0), ls.reduce((a,x)=>a+x.qty*x.i.price,0), omoney);   // 外注枠の金額は元から仕入額
+    return '<div class="salon" data-sup="out:'+esc(o.sid||'')+'"><h2>🤝 外注仕入: '+esc(oname)+' <span class="sub">計 '+ls.reduce((a,x)=>a+x.qty,0)+'点 ／ <b>仕入額 ¥'+Math.round(omoney).toLocaleString()+'</b>（外注先掛け率・税抜）</span></h2>' +
+    '<table><tr><th>商品</th><th class="num">個数</th><th class="num intonly">仕入掛け率</th><th class="num intonly">仕入単価</th><th class="num">仕入額</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
+    ls.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+'</td><td class="num">'+x.qty+'</td><td class="num intonly">'+buyRateTxt(x.i.pid, o.sid)+'</td><td class="num intonly">¥'+Math.round(allocRealUnit(x.i.pid, o.sid)).toLocaleString()+'</td><td class="num">¥'+Math.round(x.qty*allocRealUnit(x.i.pid, o.sid)).toLocaleString()+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
     '</table></div>'; }).join('');
   // 📦余剰在庫からの充当分（回収・検品はスキップしてロット処理から始まるため、チェック欄はロットのみ 2026-07-18）
   const stocks = (b!=null && b>0) ? [] : (r.stock || []);   // 在庫充当は分けない（1回目にまとめる）
@@ -4859,6 +4878,15 @@ function allocPrint(batch){
     '<table><tr><th>商品</th><th>引当元ロット</th><th class="num">個数</th><th class="chk">ロット✓</th></tr>' +
     stocks.map(x=>'<tr><td>'+esc(x.name)+' '+esc(x.size||'')+'</td><td>'+esc(x.zid)+'</td><td class="num">'+x.qty+'</td><td class="chk">□</td></tr>').join('') +
     '</table></div>' : '';
+  // 仕入先ごとの合計（確定後PDFと同じ。社内用なので intonly）
+  const supSummary = Object.keys(SUPTOT).length ? '<div class="intonly" style="margin:10px 0 14px"><table style="width:auto;min-width:420px">' +
+    '<tr><th>仕入先</th><th class="num">点数</th><th class="num">サロン価 計</th><th class="num">仕入額 計</th></tr>' +
+    Object.keys(SUPTOT).sort((a,b)=>SUPTOT[b].b-SUPTOT[a].b).map(sn=>
+      '<tr><td>'+esc(sn)+'</td><td class="num">'+SUPTOT[sn].q+'</td><td class="num">¥'+Math.round(SUPTOT[sn].y).toLocaleString()+'</td><td class="num"><b>¥'+Math.round(SUPTOT[sn].b).toLocaleString()+'</b></td></tr>').join('') +
+    (Object.keys(SUPTOT).length>1 ? '<tr><td><b>合計</b></td><td class="num"><b>'+Object.values(SUPTOT).reduce((a,t)=>a+t.q,0)+'</b></td>' +
+      '<td class="num"><b>¥'+Math.round(Object.values(SUPTOT).reduce((a,t)=>a+t.y,0)).toLocaleString()+'</b></td>' +
+      '<td class="num"><b>¥'+Math.round(Object.values(SUPTOT).reduce((a,t)=>a+t.b,0)).toLocaleString()+'</b></td></tr>' : '') +
+    '</table><div style="color:#777;font-size:11px;margin-top:3px">仕入額＝実際に仕入先へ支払う額（支払い画面・案件別収支と同じ計算）。税抜。余剰在庫からの充当は仕入が発生しないため計上しません</div></div>' : '';
   const outQtyOf = pid=>routs.reduce((a,o)=>a+num((o.q||{})[pid]),0);
   const leftovers = (b!=null) ? [] : r.items.map(i=>({i, left:i.need - r.salonIds.reduce((a,s)=>a+num((r.m[s]||{})[i.pid]),0) - outQtyOf(i.pid)})).filter(x=>x.left>0);
   // 印刷ページ内切り替え用の「出力範囲」（2026-08-07 ユーザー要望で 仕入先ごと に拡張）。
@@ -4904,7 +4932,7 @@ function allocPrint(batch){
   w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(brand)+' サロン振り分け'+esc(batchLabel)+'</title>' +
     '<style>body{font-family:"Hiragino Sans",sans-serif;font-size:12px;margin:24px}h1{font-size:16px}h2{font-size:14px;margin:18px 0 6px;border-left:4px solid #333;padding-left:8px}h2 .sub{font-size:11px;font-weight:normal;color:#555}' +
     'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:5px 8px;text-align:left}td.num,th.num{text-align:right;white-space:nowrap}td.chk,th.chk{text-align:center;width:40px;padding:5px 3px}th.chk{font-size:10px}th{background:#f2f2f2;white-space:nowrap}' +
-    '.salon{page-break-inside:avoid;margin-bottom:10px}@page{size:A4 portrait;margin:12mm}@media print{button,.no-print{display:none}}</style></head><body>' +
+    '.salon{margin-bottom:10px}tr{page-break-inside:avoid}h2{page-break-after:avoid}@page{size:A4 portrait;margin:12mm}@media print{button,.no-print{display:none}}</style></head><body>' +
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
     toolbar +
     '<h1>'+esc(brand)+' サロン振り分け表'+esc(batchLabel)+'<span id="supTag"></span>（'+today()+'）</h1>' +
@@ -4912,6 +4940,7 @@ function allocPrint(batch){
     '<p id="intWarn" style="display:none;margin:0 0 8px;color:#777;font-size:11px">社内用（仕入掛け率つき・全仕入先まとめ）</p>' +
     '<p>対象受注: '+selIds.join(', ')+' ／ 1サロン枠: ¥'+Math.round(r.budget).toLocaleString()+(r.cap?' ／ 同一商品上限: '+r.cap:'')+(r.supSplit?' ／ 仕入先: サロンごと（各欄に記載）':r.supplier?' ／ 仕入先: '+esc(names[r.supplier]||r.supplier):'')+'</p>' +
     '<p id="supTotal" style="display:none"></p>' +
+    supSummary +
     sections + outSection + stockSection +
     (leftovers.length ? '<div class="salon"><h2>配りきれなかった分（余り）</h2><table><tr><th>商品</th><th class="num">余り個数</th></tr>' +
       leftovers.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+'</td><td class="num">'+x.left+'</td></tr>').join('') + '</table></div>' : '') +
@@ -4967,9 +4996,7 @@ function allocPrintDone(brand, kidsCsv){
     '<button class="selbtn" data-s="" onclick="pick(\'\')" style="padding:4px 12px">一括（全体）</button>' +
     sups.map(sn=>'<button class="selbtn" data-s="'+esc(sn)+'" onclick="pick(\''+esc(sn)+'\')" style="padding:4px 12px">'+esc(sn)+'</button>').join('') +
     '<span style="color:#777;font-size:11px;margin-left:6px">ディーラーを選ぶと、その仕入先分だけ表示・印刷されます</span></div>' : '';
-  const pageScript = '<script>var SUPS='+JSON.stringify(supMap)+';var TOT='+JSON.stringify(TOT)+';var BASE=document.title;var HIDE=false;' +
-    'function hideCost(v){HIDE=v;document.getElementById("costBtn").textContent=v?"💰 仕入額を出す":"🙈 仕入額を隠す（共有用）";' +
-    'document.querySelectorAll(".intonly").forEach(function(el){el.style.display=v?"none":"";});}' +
+  const pageScript = '<script>var SUPS='+JSON.stringify(supMap)+';var TOT='+JSON.stringify(TOT)+';var BASE=document.title;' +
     'function pick(s){' +
     'document.querySelectorAll(".salon").forEach(function(el){el.style.display=(!s||el.getAttribute("data-sup")===s)?"":"none";});' +
     'document.querySelectorAll(".selbtn").forEach(function(b){var on=b.getAttribute("data-s")===(s||"");b.style.background=on?"#333":"";b.style.color=on?"#fff":"";});' +
@@ -4983,7 +5010,6 @@ function allocPrintDone(brand, kidsCsv){
     'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:5px 8px;text-align:left}td.num,th.num{text-align:right;white-space:nowrap}td.chk,th.chk{text-align:center;width:40px;padding:5px 3px}th.chk{font-size:10px}th{background:#f2f2f2;white-space:nowrap}' +
     '.salon{margin-bottom:10px}tr{page-break-inside:avoid}h2{page-break-after:avoid}@page{size:A4 portrait;margin:12mm}@media print{button,.no-print{display:none}}</style></head><body>' +
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
-    '<button id="costBtn" class="no-print" onclick="hideCost(!HIDE)" style="padding:6px 14px;margin-left:6px">🙈 仕入額を隠す（共有用）</button>' +
     toolbar +
     '<h1>'+esc(brand)+' サロン振り分け表<span id="supTag"></span>（'+today()+'）</h1>' +
     '<p>対象受注: '+orderIds.join(', ')+' ／ 回収ID: '+esc(kFmt(kidSet))+'（確定済み・回収台帳から作成）</p>' +
