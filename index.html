@@ -1753,6 +1753,7 @@ function anbetsuHtml(m){
 
   // 掛け率が単一でないときに、その内訳を説明する文（2026-09-04 ユーザー要望）。
   // 「39.8%」のような中途半端な実効率が、何と何の合成なのかを一番右のメモ欄で示す
+  let memoSeq = 0;   // 「もっと見る」の開閉に使う通し番号
   const mixPct = m => m.listAmt>0 ? Math.round(m.amt/m.listAmt*1000)/10 : null;
   const mixNote = mix => (mix||[]).map(m=>m.why+(mixPct(m)==null?'':'＝'+mixPct(m)+'%')+'（'+m.items.size+'品/'+m.qty+'点）').join('　');
   const memoOf = l => {
@@ -1769,8 +1770,14 @@ function anbetsuHtml(m){
       out.push('<div><b>掛率(卸)</b> '+(l.list>0?Math.round(l.sales/l.list*1000)/10:'—')+'% の内訳<br><span class="muted">' +
         esc(wm.map(m=>m.pct+'%（'+m.items+'品/'+m.qty+'点）').join('　'))+'</span></div>');
     }
-    return out.length ? '<div class="small" style="line-height:1.6">'+out.join('<div style="height:4px"></div>')+'</div>'
-                      : '<span class="muted small">—</span>';
+    if(!out.length) return '<span class="muted small">—</span>';
+    const html = '<div class="small" style="line-height:1.6">'+out.join('<div style="height:4px"></div>')+'</div>';
+    // 長いと行の高さが崩れるので、2行ぶんに畳んで「もっと見る」で開く（PDF・CSVは全文のまま）
+    if(anbetsuMemoText(l).length <= 55) return html;
+    const id = 'amemo'+(memoSeq++);
+    return '<div id="'+id+'" style="max-height:3.4em;overflow:hidden">'+html+'</div>' +
+      '<button class="btn sm" id="'+id+'b" style="margin-top:4px;padding:1px 8px;font-size:11px" ' +
+      'onclick="anbetsuMemoMore(\''+id+'\')">もっと見る</button>';
   };
   // 仕入先は1社1段（2社なら2段・3社なら3段）。掛け率は均さず、その仕入先の実率をそのまま出す（2026-09-02 ユーザー要望）
   const supRowsOf = l => {
@@ -1854,6 +1861,14 @@ function anbetsuHtml(m){
     '利益額='+NM.co+'仕入を引いたもの、利益率=利益額÷'+NM.co+'仕入、掛率(卸)=卸値÷定価。<b>実利益</b>=売上−'+NM.co+'仕入−手数料。' +
     '手数料は<b>仲介2%</b>（ピュア商会経由に回した分の定価×2%・神澤さんへ）と<b>紹介報酬</b>（卸先マスタの紹介者・報酬基準・報酬率）です。' +
     'サロン連携1%はコスモの掛け率確定待ちのため未計上。📋 を押すとその案件のサロン振り分け表が開きます</p></div>';
+}
+// メモ欄の「もっと見る／閉じる」（画面だけ。PDF・CSVは常に全文）
+function anbetsuMemoMore(id){
+  const box = document.getElementById(id), b = document.getElementById(id+'b');
+  if(!box || !b) return;
+  const open = box.style.maxHeight === 'none';
+  box.style.maxHeight = open ? '3.4em' : 'none';
+  b.textContent = open ? 'もっと見る' : '閉じる';
 }
 // CSV/PDF 用の平文メモ（画面の memoOf と同じ内容をタグなしで）
 function anbetsuMemoText(l){
