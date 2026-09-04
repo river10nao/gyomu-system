@@ -830,8 +830,8 @@ function buyUnitOf(pid, supId, supRow, brand, row){
   if(fx!=null) return {unit:fx, src:'固定', note:'固定単価'};
   const list = num((product(pid)||{})['定価（税抜）']);
   const rate = payRateOf(supRow, brand);
-  if(rate!=null && supId===PAYIDS.pure){
-    // 口座請求元の実請求単価 = サロン仕入価格×57%（円未満切捨）。2026-07-23 実請求書と全明細照合して確定。
+  if(rate!=null && supId===PAYIDS.pure && PURE_SALON57_BRANDS.includes(String(brand||'').trim())){
+    // ナプラの実請求単価 = サロン仕入価格×57%（円未満切捨）。2026-07-23 実請求書と全明細照合して確定。
     // ×0.57は浮動小数点誤差で1円ズレるため整数演算（700×0.57=398.99…対策）
     const sc = salonCost(pid);
     if(sc>0) return {unit:Math.floor(sc*57/100), src:'掛け率', note:'', rate};
@@ -845,6 +845,10 @@ function buyUnitOf(pid, supId, supRow, brand, row){
 // 単価: 仕入先（サロンマスタのディーラー/外注行）の掛け率列×定価。率が無い商品は商品マスタの仕入価格で仮単価
 const PAYIDS = { pure:'S0014', broker:'S0021', maverick:'S0022' };   // 特殊計算する行（口座請求元/仲介2%先/店販請求元）
 const BROKER_RATE = 0.02;   // 仲介手数料: 口座請求（対象ブランド分）税抜×2%（マスタの41.9%=39.9%+2%の2%側）
+// ピュア商会の請求は「サロン仕入価格×57%」だが、これは【ナプラだけ】の構図（2026-07-23 実請求書で確定）。
+// 他ブランドは仕入れマスタのピュア行の率をそのまま使う（モデニカ=48%）。
+// 以前は全ブランドに×57%を当てていて、モデニカがサロン価60%×57%=34.2%になっていた（2026-09-04 修正）
+const PURE_SALON57_BRANDS = ['ナプラ'];
 const TRANSFER_FEE_YEN = 3500;   // 精算代行の利益: サロンへの振込1回（1サロン）につき（翌月末払い）
 function payRateOf(supRow, brand){
   if(!supRow || !brand) return null;
@@ -1612,7 +1616,7 @@ function anbetsuSupply(){
     let why;
     if(u.src==='台帳') why = '回収台帳の実額';
     else if(u.src==='固定') why = '仕入固定単価 '+yen(unit);
-    else if(supId===PAYIDS.pure && salonCost(pid)>0){
+    else if(supId===PAYIDS.pure && PURE_SALON57_BRANDS.includes(String(brand||'').trim()) && salonCost(pid)>0){
       const sr = list>0 ? Math.round(salonCost(pid)/list*1000)/10 : null;
       why = 'サロン価'+(sr==null?'?':sr)+'%×57%';
     }
