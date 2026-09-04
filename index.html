@@ -2181,16 +2181,11 @@ function vOrders(){
           return '<span class="small" style="margin-left:6px;padding:2px 8px;border-radius:10px;background:var(--wash)">📦 <b>'+ds.length+'回に分けて発注</b> '+ds.map(esc).join(' ／ ')+'</span>'; })() +
         '</div>'; })() : '') +
       // 📝 案件メモ（誰でも書ける簡易メモ。2026-09-04 ユーザー要望）。
-      // 受注台帳の「メモ」列に、その受注の全明細行へ同じ内容で保存する
-      '<div style="margin-top:10px">' +
-        '<div class="row small" style="align-items:flex-start;gap:8px">' +
-          '<span style="padding-top:6px;white-space:nowrap">📝 <b>メモ</b></span>' +
-          '<textarea id="memo'+g.id+'" rows="2" placeholder="申し送り・気づいたことなど（誰でも書けます）" ' +
-            'style="flex:1;min-width:240px;padding:6px 8px;font-family:inherit;font-size:12.5px" ' +
-            'oninput="memoDirty(\''+g.id+'\')">'+esc(g.memo||'')+'</textarea>' +
-          '<button class="btn sm" id="memoBtn'+g.id+'" style="margin-top:2px" onclick="saveOrderMemo(\''+g.id+'\')">保存</button>' +
-        '</div>' +
-        (g.memo ? '' : '<div class="muted small" style="margin-left:34px">まだメモはありません</div>') +
+      // 普段はメモ本文とボタンだけの1行。ボタンを押したときだけ入力欄が開く（目立たせない）
+      '<div class="row small" id="memoWrap'+g.id+'" style="margin-top:10px;gap:8px;align-items:flex-start">' +
+        '<span id="memoView'+g.id+'" class="muted" style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word">' +
+          (g.memo ? '📝 '+esc(g.memo) : '') + '</span>' +
+        '<button class="btn sm" id="memoBtn'+g.id+'" onclick="memoOpen(\''+g.id+'\')">'+(g.memo?'📝 メモを編集':'📝 メモ')+'</button>' +
       '</div>' +
       '<div class="row" style="margin-top:10px">' +
       // 進行ガード（サーバー側と同条件）: 請求書未発行・発注日未入力の間はボタンを案内に差し替え（スルー事故防止）
@@ -2913,10 +2908,28 @@ function editOrderUI(oid){
   window.scrollTo(0,0); render();
 }
 
-// 📝 案件メモ: 入力があったら保存ボタンを目立たせる（保存し忘れ防止）
-function memoDirty(oid){
-  const b = document.getElementById('memoBtn'+oid);
-  if(b && !b.classList.contains('pri')){ b.classList.add('pri'); b.textContent='保存する'; }
+// 📝 案件メモ: 普段は本文＋ボタンだけ。ボタンで入力欄を開き、保存したら畳んで元の1行に戻す。
+// 開閉は DOM の差し替えだけで行う（render() すると案件カードが閉じてしまうため）
+function memoText(oid){
+  const g = rows('orderLedger').find(r=>String(r['受注ID']||'').trim()===oid);
+  return g ? String(g['メモ']||'') : '';
+}
+function memoRender(oid){
+  const wrap = document.getElementById('memoWrap'+oid); if(!wrap) return;
+  const v = memoText(oid);
+  wrap.innerHTML = '<span id="memoView'+oid+'" class="muted" style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word">' +
+    (v ? '📝 '+esc(v) : '') + '</span>' +
+    '<button class="btn sm" id="memoBtn'+oid+'" onclick="memoOpen(\''+oid+'\')">'+(v?'📝 メモを編集':'📝 メモ')+'</button>';
+}
+function memoOpen(oid){
+  const wrap = document.getElementById('memoWrap'+oid); if(!wrap) return;
+  const v = memoText(oid);
+  wrap.innerHTML = '<textarea id="memo'+oid+'" rows="2" placeholder="申し送り・気づいたことなど（誰でも書けます）" ' +
+      'style="flex:1;min-width:240px;padding:6px 8px;font-family:inherit;font-size:12.5px"></textarea>' +
+    '<button class="btn pri sm" id="memoBtn'+oid+'" style="margin-top:2px" onclick="saveOrderMemo(\''+oid+'\')">保存</button>' +
+    '<button class="btn sm" style="margin-top:2px" onclick="memoRender(\''+oid+'\')">やめる</button>';
+  const t = document.getElementById('memo'+oid);
+  t.value = v; t.focus(); t.setSelectionRange(v.length, v.length);
 }
 async function saveOrderMemo(oid){
   const el = document.getElementById('memo'+oid); if(!el) return;
@@ -2926,10 +2939,10 @@ async function saveOrderMemo(oid){
   try{
     await apiPost('setOrderMemo', {'受注ID':oid, 'メモ':v}, ['orderLedger']);
     toast(v.trim() ? oid+' のメモを保存しました' : oid+' のメモを消しました');
-    render();
+    memoRender(oid);   // 入力欄を畳んで、本文＋ボタンの1行に戻す
   }catch(e){
     toast(e.message, true);
-    if(btn){ btn.disabled = false; btn.textContent = '保存する'; }
+    if(btn){ btn.disabled = false; btn.textContent = '保存'; }
   }
 }
 async function saveOrderDate(oid){
