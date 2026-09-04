@@ -3160,6 +3160,11 @@ function manualBuyForm(){
     '<datalist id="mbOidList">'+allocOrderGroups().map(g=>'<option value="'+esc(g.id)+'">'+esc(g.w||'')+' '+esc(g.date||'')+'</option>').join('')+'</datalist></label>' +
     '</div>' +
     '<p class="muted small" style="margin:6px 0 0">対象受注を入れると、その受注の振分済み判定・支払い計上日（📦発注日）に紐づきます。空欄で登録した分も、後からスプシ「回収台帳」の対象受注列に受注IDを書けば同じように紐づきます。</p>' +
+    // 過去に買って支払いも済んでいる在庫を計上するときは、支払い画面に二重で載らないようにする（2026-09-04 ユーザー要望）
+    '<label class="pill" style="cursor:pointer;margin-top:8px;display:inline-block"><input type="checkbox" '+(viewState.mbPaid?'checked':'')+' onclick="viewState.mbPaid=this.checked;render()" style="width:15px;height:15px;vertical-align:-2px"> <b>💰 支払い済み（在庫計上のみ）</b></label>' +
+    (viewState.mbPaid ? '<p class="small" style="margin:6px 0 0;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--warn) 12%,transparent)">' +
+      '過去に買って支払いも終わっている在庫を、在庫台帳にだけ載せます。<b>支払い画面・仕入枠・案件別収支には計上されません</b>（区分=在庫で登録）。' +
+      '回収・検品は飛ばして<b>ロット処理待ち</b>から始まるので、ロット処理をすれば在庫に入ります。対象受注は空欄にしてください。</p>' : '') +
     '<div class="row" style="margin-top:10px;align-items:flex-end">' +
     '<label class="small grow">① JANコード列（1行=1商品。商品ID＝P0135 のように書いてもOK）<br><textarea id="mbJans" rows="4" oninput="viewState.mbJansTxt=this.value" style="width:100%;font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--axis);border-radius:8px;padding:8px" placeholder="4954835270892&#10;P0135&#10;…">'+esc(viewState.mbJansTxt||'')+'</textarea></label>' +
     '<label class="small" style="width:160px">② 数量列（同じ順）<br><textarea id="mbQtys" rows="4" oninput="viewState.mbQtyTxt=this.value" style="width:100%;font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--axis);border-radius:8px;padding:8px" placeholder="12&#10;6&#10;…">'+esc(viewState.mbQtyTxt||'')+'</textarea></label>' +
@@ -3220,8 +3225,10 @@ async function mbSubmit(){
   }
   const total = items.reduce((a,x)=>a+x.qty,0);
   const date = viewState.mbDate || new Date().toLocaleDateString('sv-SE');
-  if(!confirm('手動仕入れを登録します。\n回収先: '+salonLabel(sRow||{})+'\n仕入日: '+date+(orderIds.length?'\n対象受注: '+orderIds.join(', '):'\n対象受注: なし（後からスプシで紐づけできます）')+'\n合計 '+total+'点 を回収番号1つで「回収待ち」に登録します。よろしいですか？')) return;
-  const res = await act('commitManualPurchase', {salonId:sid, supplierId:isOut?'':(viewState.mbSup||''), date, orderIds, items}, '手動仕入れを登録しました', ['collectionLedger']);
+  const paidMode = !!viewState.mbPaid;
+  if(paidMode && orderIds.length){ toast('支払い済みの在庫計上は、対象受注を空欄にしてください', true); return; }
+  if(!confirm((paidMode?'支払い済みの在庫として登録します（支払い画面・仕入枠・案件別収支には計上されません）。\n':'手動仕入れを登録します。\n')+'回収先: '+salonLabel(sRow||{})+'\n仕入日: '+date+(orderIds.length?'\n対象受注: '+orderIds.join(', '):'\n対象受注: なし')+'\n合計 '+total+'点 を回収番号1つで「'+(paidMode?'ロット処理待ち':'回収待ち')+'」に登録します。よろしいですか？')) return;
+  const res = await act('commitManualPurchase', {salonId:sid, supplierId:isOut?'':(viewState.mbSup||''), date, orderIds, items, alreadyPaid:!!viewState.mbPaid}, viewState.mbPaid?'在庫として登録しました（支払いには計上されません）':'手動仕入れを登録しました', ['collectionLedger']);
   if(res){ viewState.mbRows=[]; viewState.mbJansTxt=''; viewState.mbQtyTxt=''; viewState.mbOids=''; toast('回収ID: '+res.collectionId+' を作成しました'); render(); }
 }
 
