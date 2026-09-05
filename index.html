@@ -198,6 +198,9 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 const GAS_URL = 'https://script.google.com/macros/s/AKfycbx6bDkmNDTgS4AWuKdJB3l5fNM39wxrK62HmUftkrEtK6QZW20_oTz79zFZfaZuXy72/exec';   // 2026-07-18 専用アカウントへ移行（旧URLはロールバック用に併存）
 // 合言葉はこのファイル（公開ページ）には置かない。照合と役割判定はGAS側の whoami アクションで行う
 const BRAND_FEE = 5000, DEFAULT_QUOTA = 200000, MTG_BRAND = 'MTG', TAX = 0.10;
+// 協力費（JINKSへの還元）の対象ブランド。これだけ数えるので1サロン最大1.5万円（2026-09-05 ユーザー指定）。
+// 「利用ブランド」欄でも赤太字にして、どれが対象か一目で分かるようにする
+const SPAY_FEE_BRANDS = ['ナプラ', 'グローバルミルボン', 'MTG'];
 // 入金が済んだ状態か（最終入金完了 or その先の納品完了。2026-07-18 納品完了追加に伴う共通判定）
 const paidDone = st=>['最終入金完了','納品完了'].includes(String(st||'').trim());
 // 旧スプシ転記フローの一括取り込みボタン表示（2026-07-18 ユーザー要望で非表示。復活はここを true にするだけ）
@@ -1171,8 +1174,13 @@ function calcSalonPay(month){
     ensure(sid,r['サロン名']).charge += salonCost(r['商品ID'])*num(r['個数']);
   });
   // 月次支払（翌月末） = 協力費 − 店販/EC請求。MTGは都度払いのため月次には含めない（別枠で参照）
-  return Object.values(bySalon).map(s=>({sid:s.sid, name:s.name, brands:[...s.brands], mtg:s.mtg, charge:s.charge,
-    fee:s.brands.size*BRAND_FEE, net:s.brands.size*BRAND_FEE - s.charge}));
+  return Object.values(bySalon).map(s=>{
+    const brands = [...s.brands];
+    // 協力費はナプラ・グローバルミルボン・MTGのみ対象（1サロン最大1.5万円。2026-09-05 ユーザー指定）
+    const feeBrands = brands.filter(b=>SPAY_FEE_BRANDS.includes(b));
+    const fee = feeBrands.length*BRAND_FEE;
+    return {sid:s.sid, name:s.name, brands, feeBrands, mtg:s.mtg, charge:s.charge, fee, net:fee - s.charge};
+  });
 }
 // 仕入の計上月: 対象受注の📦発注日を優先し、入っていなければ回収台帳の発注日で仮計上する。
 // 振り分け確定時に回収台帳へ書かれるのは「確定作業をした日」（allocation.gs）なので、月をまたいで
@@ -3495,7 +3503,7 @@ function vSalonPay(){
   const [y,m] = selMonth.split('/').map(Number);
   const due = new Date(y, m+1, 0);
   const dueStr = due.getFullYear()+'年'+(due.getMonth()+1)+'月'+due.getDate()+'日';
-  return '<h1>'+NM.spay+'支払</h1><div class="sub">サロンへの支払いは'+NM.spay+'経由。協力費（'+yen(BRAND_FEE)+'/ブランド/サロン）は<b>対象月の翌月末払い</b>。MTG代金は<b>都度払い</b>で月次には含めません</div>' +
+  return '<h1>'+NM.spay+'支払</h1><div class="sub">サロンへの支払いは'+NM.spay+'経由。協力費（'+yen(BRAND_FEE)+'/ブランド/サロン・対象は<b>'+SPAY_FEE_BRANDS.join('・')+'</b>のみ＝1サロン最大'+yen(BRAND_FEE*SPAY_FEE_BRANDS.length)+'）は<b>対象月の翌月末払い</b>。MTG代金は<b>都度払い</b>で月次には含めません</div>' +
   mtgAlertCard('spay') +   // MTGサロン振込アラート（✔振込完了ボタン。💰支払い画面とは別フラグで連動しない。2026-07-18 ユーザー指定）
   '<div class="row" style="margin-bottom:12px">対象月: '+monthPicker() +
   '<button class="btn right" onclick="exportSalonPay()">CSV出力</button>' +
@@ -3506,7 +3514,7 @@ function vSalonPay(){
   '</div>' +
   spayDoneCard(selMonth, total, due, dueStr, lines.length>0) +   // 月次支払の消し込み（2026-07-19）
   '<div class="card tblwrap"><b class="small">月次支払（翌月末に'+NM.spay+'へ振込）</b><table style="margin-top:8px"><tr><th>サロン</th><th>利用ブランド</th><th class="num">協力費</th><th class="num">店販/EC請求（差引く）</th><th class="num">差引支払額</th></tr>' +
-  (lines.map(l=>'<tr><td>'+esc(l.name)+'<div class="muted small">'+esc(l.sid)+'</div></td><td class="small">'+l.brands.map(esc).join('・')+' <span class="muted">('+l.brands.length+')</span></td>' +
+  (lines.map(l=>'<tr><td>'+esc(l.name)+'<div class="muted small">'+esc(l.sid)+'</div></td><td class="small">'+l.brands.map(b=>SPAY_FEE_BRANDS.includes(b)?'<b style="color:var(--crit)">'+esc(b)+'</b>':esc(b)).join('・')+' <span class="muted">(対象'+l.feeBrands.length+'／全'+l.brands.length+')</span></td>' +
     '<td class="num">'+yen(l.fee)+'</td><td class="num">'+(l.charge?'−'+yen(l.charge).slice(1):'—')+'</td><td class="num"><b>'+yen(l.net)+'</b></td></tr>').join('') || '<tr><td colspan="5" class="muted">この月の対象データがありません</td></tr>') +
   '</table></div>' +
   // MTG都度払いはオーダーごとにグループ表示（2026-07-18 ユーザー要望。受注に紐づかない手動仕入れ分は「受注なし」でまとめる）
@@ -3546,7 +3554,7 @@ async function issueSpayNotice(){
 function exportSalonPay(){
   const lines = calcSalonPay(selMonth);
   exportCsv(''+NM.spay+'支払_'+selMonth.replace('/','-'), ['サロンID','サロン名','利用ブランド','ブランド数','協力費','店販EC請求','差引支払額(翌月末)','MTG都度払い(参考)'],
-    lines.map(l=>[l.sid,l.name,l.brands.join('・'),l.brands.length,l.fee,l.charge,l.net,l.mtg]));
+    lines.map(l=>[l.sid,l.name,l.brands.join('・'),l.feeBrands.length,l.fee,l.charge,l.net,l.mtg]));
 }
 
 // ===== 画面: 仕入枠 =====
