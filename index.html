@@ -1155,7 +1155,9 @@ function calcSalonPay(month){
   const bySalon={};
   const ensure=(sid,name)=>bySalon[sid]||(bySalon[sid]={sid,name,brands:new Set(),mtg:0,charge:0});
   rows('collectionLedger').forEach(r=>{
-    if(monthOf(r['発注日'])!==month || String(r['区分']||'卸')!=='卸') return;
+    // サロンに発注した月でカウントする（ディーラーへの支払い時期は考えない。2026-09-05 ユーザー指定）。
+    // 他の画面と同じ buyMonthOf（受注の📦発注日を優先）に揃える
+    if(buyMonthOf(r)!==month || String(r['区分']||'卸')!=='卸') return;
     const sid=String(r['サロンID']||'').trim(); if(!sid) return;
     const s=ensure(sid,r['サロン名']); const b=brandOf(r['商品ID']);
     if(b) s.brands.add(b);
@@ -1487,7 +1489,7 @@ function vDashboard(){
     let mtgDone2=0, mtgPend2=0;   // MTG前払い（都度）: 当月発生分をMTG前払い済フラグで確定/予定に分ける
     rows('collectionLedger').forEach(r=>{ if(String(r['削除']||'').trim()!=='') return;
       if(String(r['区分']||'卸').trim()!=='卸') return;
-      if(monthOf(r['発注日'])!==m) return;
+      if(buyMonthOf(r)!==m) return;
       const pid=String(r['商品ID']||'').trim(); if(brandOf(pid)!==MTG_BRAND) return;
       const amt=salonCost(pid)*num(r['個数']);
       if(String(r['MTG前払い済']||'').trim()!=='') mtgDone2+=amt; else mtgPend2+=amt; });
@@ -3510,7 +3512,7 @@ function vSalonPay(){
   // MTG都度払いはオーダーごとにグループ表示（2026-07-18 ユーザー要望。受注に紐づかない手動仕入れ分は「受注なし」でまとめる）
   (()=>{ const by = {};
     rows('collectionLedger').forEach(r=>{
-      if(monthOf(r['発注日'])!==selMonth) return;
+      if(buyMonthOf(r)!==selMonth) return;
       if(brandOf(r['商品ID'])!==MTG_BRAND) return;
       if(String(r['区分']||'卸').trim()!=='卸') return;   // サロン建替になるのはサロンへ配った分（外注仕入は対象外）
       const sid=String(r['サロンID']||'').trim(); if(!sid) return;
