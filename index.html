@@ -3132,17 +3132,32 @@ function manualBuyForm(){
   const isOut = !!(sRow && String(sRow['種別']||'').trim()==='外注');
   const supId = isOut ? sid : (viewState.mbSup||'');
   const supRow = active.find(s=>String(s['サロンID']).trim()===supId);
-  // 参考単価: 仕入先の掛け率×定価（支払い画面と同じ）。率が無い商品は仕入価格で近似
-  const unitOfRow = r=>{ if(!r.pid) return 0;
+  // 掛け率は行ごとに出して直接直せる（2026-09-04 ユーザー要望）。
+  // 既定 = 仕入先マスタのブランド率（支払い画面と同じ）。率が引けない商品は商品マスタのAXIA掛け率で近似。
+  // 手で直した率は viewState.mbRows[i].rate（%）に持ち、登録時に単価として回収台帳へ焼き付ける
+  const defRateOf = r=>{ if(!r.pid) return null;
     const rate = payRateOf(supRow, brandOf(r.pid));
+    if(rate!=null) return Math.round(rate*1000)/10;
     const list = num((product(r.pid)||{})['定価（税抜）']);
-    return (rate!=null && list) ? Math.round(list*rate) : ownCost(r.pid); };
+    return list ? Math.round(ownCost(r.pid)/list*1000)/10 : null; };
+  const rateOfRow = r=>{ const v=num(r.rate); return (r.rate!=='' && r.rate!=null && v>0) ? v : defRateOf(r); };
+  const unitOfRow = r=>{ if(!r.pid) return 0;
+    const fx = fixedBuyUnit(r.pid); if(fx!=null && (r.rate==='' || r.rate==null)) return fx;   // 仕入固定単価（ポンプ等）
+    const pc = rateOfRow(r); const list = num((product(r.pid)||{})['定価（税抜）']);
+    return (pc!=null && list) ? Math.round(list*pc/100) : ownCost(r.pid); };
   const rws = viewState.mbRows||[];
   let sub=0;
   const trs = rws.map((r,i)=>{
     const u = unitOfRow(r); const s = u*(num(r.qty)||0); sub += s;
+    const def = defRateOf(r), pc = rateOfRow(r);
+    const edited = r.rate!=='' && r.rate!=null && num(r.rate)>0 && def!=null && num(r.rate)!==def;
+    const list = num((product(r.pid)||{})['定価（税抜）']);
     return '<tr'+(r.pid?'':' style="color:var(--crit)"')+'><td class="mono small">'+esc(r.jan)+'</td><td>'+esc(r.name)+'</td><td class="small">'+esc(r.size)+'</td>' +
+      '<td class="num small">'+(list?yen(list):'—')+'</td>' +
       '<td><input type="text" inputmode="numeric" value="'+esc(r.qty||'')+'" style="width:64px;padding:4px 8px" oninput="viewState.mbRows['+i+'].qty=this.value" onchange="render()"></td>' +
+      '<td class="num"><input type="number" step="0.1" value="'+(pc==null?'':pc)+'" placeholder="'+(def==null?'—':def)+'" ' +
+        'onchange="viewState.mbRows['+i+'].rate=this.value;render()" style="width:74px;text-align:right'+(edited?';border-color:var(--s4)':'')+'">%' +
+        (edited?'<div class="small" style="color:var(--s4)">既定 '+def+'%</div>':'') + '</td>' +
       '<td class="num">'+yen(u)+'</td><td class="num">'+yen(s)+'</td></tr>';
   }).join('');
   const bad = rws.filter(r=>!r.pid).length;
@@ -3169,7 +3184,8 @@ function manualBuyForm(){
     '<label class="small grow">① JANコード列（1行=1商品。商品ID＝P0135 のように書いてもOK）<br><textarea id="mbJans" rows="4" oninput="viewState.mbJansTxt=this.value" style="width:100%;font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--axis);border-radius:8px;padding:8px" placeholder="4954835270892&#10;P0135&#10;…">'+esc(viewState.mbJansTxt||'')+'</textarea></label>' +
     '<label class="small" style="width:160px">② 数量列（同じ順）<br><textarea id="mbQtys" rows="4" oninput="viewState.mbQtyTxt=this.value" style="width:100%;font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--axis);border-radius:8px;padding:8px" placeholder="12&#10;6&#10;…">'+esc(viewState.mbQtyTxt||'')+'</textarea></label>' +
     '<button class="btn pri" onclick="mbExpand()">③ ↓ 展開して確認</button></div>' +
-    (rws.length ? '<div class="tblwrap" style="margin-top:12px"><table><tr><th>JAN</th><th>商品名</th><th>容量</th><th>数量</th><th class="num">仕入単価（参考）</th><th class="num">小計</th></tr>'+trs+'</table></div>' +
+    (rws.length ? '<div class="tblwrap" style="margin-top:12px"><table><tr><th>JAN</th><th>商品名</th><th>容量</th><th class="num">定価</th><th>数量</th><th class="num">掛け率</th><th class="num">仕入単価</th><th class="num">小計</th></tr>'+trs+'</table></div>' +
+      '<p class="muted small" style="margin:6px 0 0">掛け率は仕入先マスタの率が既定で入ります。違うときはマスに直接入れてください（入れた率は<b>この登録だけ</b>に効き、マスタは変わりません）。単価＝定価×掛け率。</p>' +
       '<div class="row" style="margin-top:10px">' +
       (bad?'<span class="small" style="color:var(--crit)">⚠ 未登録JAN '+bad+'件（赤い行）は登録されません</span>':'') +
       '<span class="right mono">合計 <b>'+yen(sub)+'</b> <span class="muted small">税抜・'+(supRow?esc(salonLabel(supRow))+'の掛け率ベース':'仕入先未選択（仕入価格で仮）')+'</span></span></div>' +
@@ -3202,7 +3218,19 @@ async function mbSubmit(){
   const sRow = rows('salons').find(s=>String(s['サロンID']).trim()===sid);
   const isOut = !!(sRow && String(sRow['種別']||'').trim()==='外注');
   if(!isOut && !(viewState.mbSup||'')){ toast('仕入先（ディーラー）を選んでください（支払い集計に使います）', true); return; }
-  const items = (viewState.mbRows||[]).filter(r=>r.pid && num(r.qty)>0).map(r=>({pid:r.pid, name:r.name, size:r.size, qty:num(r.qty)}));
+  // 掛け率を手で直した行は、その単価を回収台帳の「仕入単価」へ焼き付ける（マスタは変えない）
+  const supRow2 = rows('salons').find(s=>String(s['サロンID']).trim()===(isOut?sid:(viewState.mbSup||'')));
+  const items = (viewState.mbRows||[]).filter(r=>r.pid && num(r.qty)>0).map(r=>{
+    const it = {pid:r.pid, name:r.name, size:r.size, qty:num(r.qty)};
+    const pc = num(r.rate);
+    if(r.rate!=='' && r.rate!=null && pc>0){
+      const list = num((product(r.pid)||{})['定価（税抜）']);
+      const def = payRateOf(supRow2, brandOf(r.pid));
+      const defPc = def!=null ? Math.round(def*1000)/10 : null;
+      if(list && pc!==defPc) it.unit = Math.round(list*pc/100);   // 既定と違う率だけ単価を送る
+    }
+    return it;
+  });
   if(!items.length){ toast('数量が1以上の商品がありません', true); return; }
   // 対象受注（任意）: 入力があれば実在チェック（サーバー側にも同じチェックあり）
   const orderIds = String(viewState.mbOids||'').split(/[,、\s]+/).map(s=>s.trim()).filter(Boolean);
