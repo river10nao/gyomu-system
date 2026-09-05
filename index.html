@@ -5728,17 +5728,21 @@ async function poDownloadAll(){
   list.forEach((w,i)=>setTimeout(()=>poDownload(String(w['卸先ID']||'').trim(), true), i*600));
   await poSaveRates(true);   // 発注書を出したら、その掛け率をマスタへ自動保存（2026-09-05 ユーザー要望）
 }
-// auto=true はダウンロード時の自動保存（差が無ければ黙って何もしない）
-async function poSaveRates(auto){
+// 画面の掛け率のうち、卸先マスタと違うものを集める（保存対象＝ボタンの案内にも使う）
+function poRateDiff(){
   const cells = [];
   poSelW().forEach(w=>{
     const wid = String(w['卸先ID']||'').trim();
     poSelB().forEach(b=>{
       const r = poRateNum(wid,b);
-      // マスタと同じ値なら送らない（無駄な書き込みと列追加を避ける）
       if(r>0 && Math.abs(num(rateFor(wid,b)) - r) > 1e-9) cells.push({wid, brand:b, rate:r});
     });
   });
+  return cells;
+}
+// auto=true はダウンロード時の自動保存（差が無ければ黙って何もしない）
+async function poSaveRates(auto){
+  const cells = poRateDiff();   // マスタと同じ値は送らない（無駄な書き込みと列追加を避ける）
   if(!cells.length){ if(!auto) toast('マスタと違う掛け率はありません'); return; }
   try{
     const d = await apiPost('saveRateCells', {cells}, ['wholesalers']);
@@ -5804,8 +5808,17 @@ function vPoForm(){
             ' oninput="poSetRate(\''+esc(wid)+'\',\''+esc(b)+'\',this.value)" onchange="render()"><span class="muted small">%</span></td>';
         }).join('') + '</tr>';
       }).join('') + '</table></div>' +
-      '<p class="muted small" style="margin-top:6px">白＝卸先マスタの掛け率／赤枠＝マスタに無いので入力が必要です。<b>ここで入れた率は発注書を出したときに卸先マスタへ自動で保存されます</b>（次回から自動で出ます）。先に保存したいときは下のボタンを押してください。</p>' +
-      '<button class="btn sm" onclick="poSaveRates()">今すぐ卸先マスタに保存する</button>';
+      '<p class="muted small" style="margin-top:6px">白＝卸先マスタの掛け率／赤枠＝マスタに無いので入力が必要です。</p>' +
+      (()=>{ const d = poRateDiff();
+        if(!d.length) return '<div class="row small" style="margin-top:8px;padding:8px 12px;border-radius:8px;background:var(--wash)">' +
+          '<span class="muted">✔ 掛け率は卸先マスタと同じです（保存の必要はありません）</span></div>';
+        // マスタと違う率があるときは、押すべきボタンとして目立たせる（2026-09-05 ユーザー要望）
+        return '<div style="margin-top:8px;padding:12px 14px;border-radius:10px;border:1.5px solid var(--warn);background:color-mix(in srgb,var(--warn) 10%,transparent)">' +
+          '<div class="small"><b>⚠ 卸掛け率が変わりました（'+d.length+'件）</b><br>' +
+          '<span class="muted">'+esc(d.map(c=>c.brand+' '+(Math.round(c.rate*1000)/10)+'%').join('／'))+'</span><br>' +
+          '<span class="muted">この率で今後も出すなら、ボタンを押して卸先マスタに保存してください（次回から自動で入ります）。' +
+          '発注書を出したときにも自動で保存されます。</span></div>' +
+          '<button class="btn pri" style="margin-top:8px" onclick="poSaveRates()">💾 この掛け率を卸先マスタに保存する（'+d.length+'件）</button></div>'; })();
   }
 
   // 卸値 < 仕入額 の商品があれば発行前に知らせる（「定価売り」の印の付け忘れ対策）
