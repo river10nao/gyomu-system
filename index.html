@@ -5653,7 +5653,13 @@ function poBuild(wid){
     tot.push({f:'SUM('+L.qty+first+':'+L.qty+last+')', cv:0, s:XLS.totalNum});
     tot.push({f:'SUM('+L.amt+first+':'+L.amt+last+')', cv:0, s:XLS.total});
     rws.push(tot);
-    sheets.push({name:nameOf[b], cols:L.colw, rows:rws, freeze:PO_HEADER_ROWS, protect:true});
+    // ─ 一覧にない商品の追記欄（2026-09-05 ユーザー要望）。
+    // 定価が無い業務用サイズなど発注書に載らない商品があるため、その場で書ける欄を合計の下に用意する
+    rws.push([]);
+    rws.push([{v:'※ ご希望の商品が上の一覧にない場合は、下の空欄に商品名・容量・数量をご記入いただくか、担当営業までお申し付けください。取り寄せ可否をご案内いたします。', s:XLS.note}]);
+    rws.push(['商品名','容量','数量','ご要望・備考'].map(h=>({v:h, s:XLS.thead})));
+    for(let k=0;k<5;k++) rws.push([0,0,0,0].map(()=>({v:null, s:XLS.input})));
+    sheets.push({name:nameOf[b], cols:L.colw, rows:rws, freeze:PO_HEADER_ROWS});   // シート保護なし（追記欄に自由に書けるように。2026-09-05 ユーザー要望）
     info.push({brand:b, sheet:nameOf[b], totalRow:totalRow, count:items.length, qtyCol:L.qty, amtCol:L.amt});
   });
 
