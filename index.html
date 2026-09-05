@@ -5657,7 +5657,7 @@ function poBuild(wid){
     // 発注書に載らない商品があるため、本表と同じ列構成の空欄を合計の下に用意する。
     // 卸値・金額は本表と同じ数式にしておき、定価と掛け率が入れば自動で出る（決めるのはAXIA側）
     rws.push([]);
-    rws.push([{v:'※ ご希望の商品が上の一覧にない場合は、下の空欄に商品名・容量・JANコード・希望数量をご記入いただくか、担当営業までお申し付けください。取り寄せ可否と価格をご案内いたします。', s:XLS.note}]);
+    rws.push([{v:'※ ご希望の商品が上の一覧にない場合は、下の空欄に 商品名・容量・JANコード・定価（税抜）・希望数量 をご記入ください。卸値と金額は自動で計算されます。ご不明な場合は空欄のままで結構です（担当営業がご案内します）。', s:XLS.note}]);
     rws.push(L.head.map(h=>({v:h, s:XLS.thead})));
     for(let k=0;k<5;k++){
       const er = rws.length+1;
@@ -5665,8 +5665,9 @@ function poBuild(wid){
         {v:null, s:XLS.input},   // 商品名
         {v:null, s:XLS.input},   // 容量
         {v:null, s:XLS.input},   // JANコード
-        {v:null, s:XLS.yen},     // 定価（税抜）… AXIA側で記入
-        {v:null, s:XLS.pct},     // 掛け率   … AXIA側で記入
+        {v:null, s:XLS.input},   // 定価（税抜）… 卸先に入れてもらう
+        // 掛け率はこのブランドの率をあらかじめ入れておく（定価と数量を入れれば卸値・金額が出るように）
+        {v:rate, s:XLS.pct},
         {f:'IF(OR(D'+er+'="",E'+er+'=""),"",ROUND(D'+er+'*E'+er+',0))', s:XLS.yen}
       ];
       if(L.iri) line.push({v:null, s:XLS.num});
@@ -5748,17 +5749,28 @@ async function poSaveRates(auto){
 }
 
 // 定価が空の商品は単価が出せないので発注書に載せられない。黙って落とすと数が合わなくなるので画面に出す
+// 定価が無くて発注書に載らない商品の注記（2026-09-05 ユーザー指定）。
+// 業務用サイズなど定価が存在しない商品は「入れない」運用なので、警告ではなく事実の案内にする。
+// 商品名はクリックで開く（普段は1行に畳んでおく）
 function poSkipNote(){
   const sel = poSelB();
   if(!sel.length) return '';
-  const bad = sel.map(b=>{
-    const n = rows('products').filter(p=>String(p['カテゴリー']||'').trim()===b
-      && !(num(p['定価（税抜）'])>0) && !String(p['ストップ']||'').trim()).length;
-    return n ? b+' '+n+'件' : '';
-  }).filter(Boolean);
-  return bad.length
-    ? '<p class="small" style="color:var(--serious)">⚠ 定価（税抜）が空のため発注書に載らない商品があります: '+bad.map(esc).join('／')+'。マスタに定価を入れると載ります。</p>'
-    : '';
+  const groups = sel.map(b=>({
+    brand: b,
+    items: rows('products').filter(p=>String(p['カテゴリー']||'').trim()===b
+      && !(num(p['定価（税抜）'])>0) && !String(p['ストップ']||'').trim())
+  })).filter(g=>g.items.length);
+  if(!groups.length) return '';
+  const total = groups.reduce((a,g)=>a+g.items.length,0);
+  return '<details class="small" style="margin-top:6px;padding:8px 10px;border-radius:8px;background:var(--wash)">' +
+    '<summary style="cursor:pointer">定価未設定のため発注書に載らない商品が <b>'+total+'件</b> あります（'+
+      groups.map(g=>esc(g.brand)+' '+g.items.length+'件').join('／')+'） — クリックで商品名</summary>' +
+    '<div class="muted" style="margin-top:6px">これらは定価が決まっていない商品です（業務用サイズなど）。' +
+      '<b>注文が入ったらディーラーへ価格を確認してください。</b>卸先には発注書の「一覧にない商品」の追記欄からご相談いただけます。</div>' +
+    groups.map(g=>'<div style="margin-top:6px"><b>'+esc(g.brand)+'</b>' +
+      g.items.map(p=>'<div class="muted" style="margin-left:10px">・'+esc(p['商品名'])+' '+esc(p['容量']||'')+'</div>').join('') +
+      '</div>').join('') +
+    '</details>';
 }
 function vPoForm(){
   const s = poS();
