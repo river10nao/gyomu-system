@@ -2329,11 +2329,13 @@ function vOrders(){
       '</details>';
   }
 }
-function tabsHtml(entity, cur, counts, extraTabs, activeExtras, extraBadges){
+function tabsHtml(entity, cur, counts, extraTabs, activeExtras, extraBadges, omitTabs){
   const flow = FLOW[entity];
   const done = new Set([flow[flow.length-1]].concat(extraTabs||[]));   // 終端ステータス（extraTabs=ロット処理なし等も終端）は目立たせない
   (activeExtras||[]).forEach(t=>done.delete(t));                        // 例外: EC出品中は販売進行中なので数字を目立たせる
-  const tabs = ['すべて'].concat(flow).concat(extraTabs||[]);
+  // omitTabs: タブとしては出さないステータス（回収の終端＝下の「✅完了分」に畳むため。2026-09-05 ユーザー指定）
+  const omit = new Set(omitTabs||[]);
+  const tabs = ['すべて'].concat(flow).concat(extraTabs||[]).filter(t=>!omit.has(t));
   return '<div class="tabs">' + tabs.map(t=>{
     const n = counts[t]||0;
     const hot = t!=='すべて' && !done.has(t) && n>0;   // 未完了ステータスに残件あり = まだ終わっていない案件
@@ -3058,7 +3060,9 @@ async function handoverUI(id){
 
 // ===== 画面: 回収・検品 =====
 function vCollection(){
-  const tab = viewState.tab || 'すべて';
+  // 終端ステータス（在庫台帳へ入庫済み）はタブを出さず、下の「✅完了分」に畳む（2026-09-05 ユーザー指定）
+  const DONE_C = ['ロット処理済み','ロット処理なし'];
+  const tab = (DONE_C.includes(viewState.tab) ? 'すべて' : (viewState.tab || 'すべて'));
   const groups = {};
   rows('collectionLedger').forEach(r=>{ const id=r['回収ID']; if(!id) return;
     if(!groups[id]) groups[id]={id, rows:[], st:r['ステータス'], date:r['発注日'], salon:r['サロン名'], kubun:r['区分']};
@@ -3086,6 +3090,9 @@ function vCollection(){
   const delBulk = '<button class="btn sm" style="color:var(--crit)" onclick="bulkDelete(\'collection\')">🗑 選択をまとめて削除</button>';
   // ロット処理なしの一括は「ロット処理待ち」タブでだけ出す（検品前の箱に誤って使わないように）
   const noLotBulk = (tab==='ロット処理待ち' ? '<button class="btn sm" onclick="bulkAdvance(\'collection\',\'ロット処理なし\')">✔ 選択をロット処理なしで入庫</button>' : '') + delBulk;
+  // 完了分（入庫済み）は下に畳む。開いたときだけカードHTMLを組み立てる（件数が積み上がるので描画を軽くするため）
+  const doneAllC = list.filter(g=>DONE_C.includes(g.st));
+  const activeListC = list.filter(g=>!DONE_C.includes(g.st));
 
   return '<h1>サロン回収・検品</h1><div class="sub">検品→「ロット処理済み」または「ロット処理なし」で在庫台帳へ自動入庫されます（1回収 = 1サロン = 1箱）</div>' +
   '<div class="row" style="margin-bottom:12px">' +
@@ -3102,9 +3109,16 @@ function vCollection(){
       allSups.map(s=>'<option '+(s===ssel?'selected':'')+'>'+esc(s)+'</option>').join('')+'</select></label>' +
     ((q||bsel!=='すべて'||ssel!=='すべて') ? '<span class="small muted">'+list.length+'件ヒット</span><button class="btn sm" onclick="viewState.q=\'\';viewState.cBrand=\'すべて\';viewState.cSup=\'すべて\';render()">✕ クリア</button>' : '') +
   '</div>' +
-  tabsHtml('collection', tab, counts, ['ロット処理なし']) +
-  '<div class="row" style="margin-bottom:10px">'+bulkBar('collection', list.map(g=>g.id), noLotBulk, terminalTab)+'</div>' +
-  (list.map(g=>{
+  tabsHtml('collection', tab, counts, ['ロット処理なし'], null, null, DONE_C) +
+  '<div class="row" style="margin-bottom:10px">'+bulkBar('collection', activeListC.map(g=>g.id), noLotBulk, terminalTab)+'</div>' +
+  (activeListC.map(collCard).join('') || (doneAllC.length ? '' : '<p class="muted">該当する回収がありません</p>')) +
+  (doneAllC.length ? '<details class="ordcard" '+(viewState.cDoneOpen?'open':'')+' ontoggle="viewState.cDoneOpen=this.open;render()" style="background:color-mix(in srgb,var(--good) 5%,transparent);border-color:color-mix(in srgb,var(--good) 30%,var(--grid))">' +
+    '<summary class="small" style="color:var(--good);font-weight:700">✅ 完了分・入庫済み（'+doneAllC.length+'件）— クリックで開閉</summary>' +
+    (viewState.cDoneOpen ? '<div style="margin-top:10px">'+doneAllC.map(collCard).join('')+'</div>' : '') +
+    '</details>' : '') +
+  trashSection('collection', 'collectionLedger', '回収ID', r=>String(r['サロン名']||'')+' '+String(r['発注日']||''));
+
+  function collCard(g){
     const qty = g.rows.reduce((a,r)=>a+num(r['個数']),0);
     const done = g.st==='ロット処理済み' || g.st==='ロット処理なし';
     // ロット処理なしボタン: 検品完了後（ロット処理待ち）のみ。検品は必ず通す（2026-07-14 指定）
@@ -3127,8 +3141,7 @@ function vCollection(){
       '<div class="row" style="margin-top:10px">' + advanceBtn('collection', g.id, g.st) + noLotBtn +
       rollbackBtn('collection', g.id, g.st) +
       deleteBtn('collection', g.id) + '</div></details>';
-  }).join('') || '<p class="muted">該当する回収がありません</p>') +
-  trashSection('collection', 'collectionLedger', '回収ID', r=>String(r['サロン名']||'')+' '+String(r['発注日']||''));
+  }
 }
 // ➕ 手動仕入れ（受注なし・Task#35 2026-07-18）: 受注に紐づかない仕入れを回収台帳へ直接登録するフォーム。
 // 受注の案件作成と同じ「JAN列＋数量列を貼って展開」方式。登録後は通常の回収→検品→入庫フロー
