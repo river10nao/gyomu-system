@@ -5653,12 +5653,27 @@ function poBuild(wid){
     tot.push({f:'SUM('+L.qty+first+':'+L.qty+last+')', cv:0, s:XLS.totalNum});
     tot.push({f:'SUM('+L.amt+first+':'+L.amt+last+')', cv:0, s:XLS.total});
     rws.push(tot);
-    // ─ 一覧にない商品の追記欄（2026-09-05 ユーザー要望）。
-    // 定価が無い業務用サイズなど発注書に載らない商品があるため、その場で書ける欄を合計の下に用意する
+    // ─ 一覧にない商品の追記欄（2026-09-05 ユーザー要望）。定価が無い業務用サイズなど
+    // 発注書に載らない商品があるため、本表と同じ列構成の空欄を合計の下に用意する。
+    // 卸値・金額は本表と同じ数式にしておき、定価と掛け率が入れば自動で出る（決めるのはAXIA側）
     rws.push([]);
-    rws.push([{v:'※ ご希望の商品が上の一覧にない場合は、下の空欄に商品名・容量・数量をご記入いただくか、担当営業までお申し付けください。取り寄せ可否をご案内いたします。', s:XLS.note}]);
-    rws.push(['商品名','容量','数量','ご要望・備考'].map(h=>({v:h, s:XLS.thead})));
-    for(let k=0;k<5;k++) rws.push([0,0,0,0].map(()=>({v:null, s:XLS.input})));
+    rws.push([{v:'※ ご希望の商品が上の一覧にない場合は、下の空欄に商品名・容量・JANコード・希望数量をご記入いただくか、担当営業までお申し付けください。取り寄せ可否と価格をご案内いたします。', s:XLS.note}]);
+    rws.push(L.head.map(h=>({v:h, s:XLS.thead})));
+    for(let k=0;k<5;k++){
+      const er = rws.length+1;
+      const line = [
+        {v:null, s:XLS.input},   // 商品名
+        {v:null, s:XLS.input},   // 容量
+        {v:null, s:XLS.input},   // JANコード
+        {v:null, s:XLS.yen},     // 定価（税抜）… AXIA側で記入
+        {v:null, s:XLS.pct},     // 掛け率   … AXIA側で記入
+        {f:'IF(OR(D'+er+'="",E'+er+'=""),"",ROUND(D'+er+'*E'+er+',0))', s:XLS.yen}
+      ];
+      if(L.iri) line.push({v:null, s:XLS.num});
+      line.push({v:null, s:XLS.input});   // 希望数量
+      line.push({f:'IF(OR('+L.qty+er+'="",F'+er+'=""),"",F'+er+'*'+L.qty+er+')', s:XLS.yen});
+      rws.push(line);
+    }
     sheets.push({name:nameOf[b], cols:L.colw, rows:rws, freeze:PO_HEADER_ROWS});   // シート保護なし（追記欄に自由に書けるように。2026-09-05 ユーザー要望）
     info.push({brand:b, sheet:nameOf[b], totalRow:totalRow, count:items.length, qtyCol:L.qty, amtCol:L.amt});
   });
