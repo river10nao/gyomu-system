@@ -624,7 +624,7 @@ function exportTable(name, sheetName, filter){
 // ===== ナビ =====
 // ナビは関数で組む（サロン支払のラベルにサーバーから受け取る名称を使うため、ログイン後に評価する）
 const NAVS = ()=>[
-  ['dashboard','📊 ダッシュボード'], ['orders','📋 受注'], ['poform','📄 発注書'], ['allocation','🧮 振り分け'],
+  ['dashboard','📊 ダッシュボード'], ['poform','📄 発注書'], ['orders','📋 受注'], ['allocation','🧮 振り分け'],
   ['collection','📦 回収・検品'],
   ['stock','🏷 在庫'], ['shipments','🚚 出荷'], ['hanbai','🛍 店販/EC'],
   ['payments','💰 '+NM.co+'支払い'],
@@ -5684,7 +5684,8 @@ function poBuild(wid){
   return { bytes: xlBuild(sheets), filename: fname, brands: info };
 }
 
-function poDownload(wid){
+// skipSave=true は一括ダウンロードから呼ぶとき（保存は poDownloadAll 側で1回だけ行う）
+function poDownload(wid, skipSave){
   try{
     const miss = poMissing().filter(m=>m.wid===wid);
     if(miss.length){ toast('掛け率が未入力です（'+miss.map(m=>m.brand).join('・')+'）。④で入れてください', true); return; }
@@ -5694,16 +5695,19 @@ function poDownload(wid){
     const a = document.createElement('a');
     a.href = url; a.download = r.filename; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=>URL.revokeObjectURL(url), 2000);
+    if(!skipSave) poSaveRates(true);   // 出したらその掛け率をマスタへ自動保存（2026-09-05 ユーザー要望）
   }catch(e){ toast(e.message, true); }
 }
-function poDownloadAll(){
+async function poDownloadAll(){
   const list = poSelW();
   if(!list.length){ toast('卸先を選んでください', true); return; }
   if(poMissing().length){ toast('掛け率が未入力の組み合わせがあります。④で入れてください', true); return; }
   // zipにはまとめず1件ずつ落とす（2026-08-24 ユーザー指定）。連続ダウンロードがブラウザに弾かれないよう間隔を空ける
-  list.forEach((w,i)=>setTimeout(()=>poDownload(String(w['卸先ID']||'').trim()), i*600));
+  list.forEach((w,i)=>setTimeout(()=>poDownload(String(w['卸先ID']||'').trim(), true), i*600));
+  await poSaveRates(true);   // 発注書を出したら、その掛け率をマスタへ自動保存（2026-09-05 ユーザー要望）
 }
-async function poSaveRates(){
+// auto=true はダウンロード時の自動保存（差が無ければ黙って何もしない）
+async function poSaveRates(auto){
   const cells = [];
   poSelW().forEach(w=>{
     const wid = String(w['卸先ID']||'').trim();
@@ -5713,13 +5717,13 @@ async function poSaveRates(){
       if(r>0 && Math.abs(num(rateFor(wid,b)) - r) > 1e-9) cells.push({wid, brand:b, rate:r});
     });
   });
-  if(!cells.length){ toast('マスタと違う掛け率はありません'); return; }
+  if(!cells.length){ if(!auto) toast('マスタと違う掛け率はありません'); return; }
   try{
     const d = await apiPost('saveRateCells', {cells}, ['wholesalers']);
     poS().rate = {};   // マスタが正になったので手入力の上書きは捨てる
-    toast('掛け率を'+d.saved+'件保存しました' + (d.addedColumns&&d.addedColumns.length ? '（新しい列: '+d.addedColumns.join('・')+'）' : ''));
+    toast('掛け率を卸先マスタに'+d.saved+'件保存しました（次回から自動で出ます）' + (d.addedColumns&&d.addedColumns.length ? ' ※新しい列: '+d.addedColumns.join('・') : ''));
     render();
-  }catch(e){ toast(e.message, true); }
+  }catch(e){ toast('掛け率のマスタ保存に失敗しました（発注書の出力は完了しています）: '+e.message, true); }
 }
 
 // 定価が空の商品は単価が出せないので発注書に載せられない。黙って落とすと数が合わなくなるので画面に出す
@@ -5767,8 +5771,8 @@ function vPoForm(){
             ' oninput="poSetRate(\''+esc(wid)+'\',\''+esc(b)+'\',this.value)" onchange="render()"><span class="muted small">%</span></td>';
         }).join('') + '</tr>';
       }).join('') + '</table></div>' +
-      '<p class="muted small" style="margin-top:6px">白＝卸先マスタの掛け率／赤枠＝マスタに無いので入力が必要です。ここで入れた率はこの発注書にだけ効きます（「マスタに保存」を押すとマスタにも入り、次回から自動で出ます）。</p>' +
-      '<button class="btn sm" onclick="poSaveRates()">この掛け率を卸先マスタに保存する</button>';
+      '<p class="muted small" style="margin-top:6px">白＝卸先マスタの掛け率／赤枠＝マスタに無いので入力が必要です。<b>ここで入れた率は発注書を出したときに卸先マスタへ自動で保存されます</b>（次回から自動で出ます）。先に保存したいときは下のボタンを押してください。</p>' +
+      '<button class="btn sm" onclick="poSaveRates()">今すぐ卸先マスタに保存する</button>';
   }
 
   // 卸値 < 仕入額 の商品があれば発行前に知らせる（「定価売り」の印の付け忘れ対策）
