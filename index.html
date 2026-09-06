@@ -5532,7 +5532,9 @@ async function allocFixApply(){
     const r = await apiPost('fixAllocation', {'回収ID一覧':allocFixPayload(), '理由':AFIX.why},
       ['collectionLedger','stock','stockLog']);
     toast('修正しました（更新'+r['更新']+'・追加'+r['追加']+'・削除'+r['削除']+'／在庫'+(r['在庫更新']||0)+'ロット）');
-    try{ await apiPost('addNotice', {'内容':'【振り分け修正】'+AFIX.brand+'（'+AFIX.kids.join(',')+'）: '+AFIX.why}, ['notices']); }catch(e){}
+    try{ await apiPost('addNotice', {'種類':'振り分け修正',
+      'タイトル':'【振り分け修正】'+AFIX.brand+'（'+AFIX.kids.join(',')+'）',
+      '本文': AFIX.why+'／更新'+r['更新']+'・追加'+r['追加']+'・削除'+r['削除']+'・在庫'+(r['在庫更新']||0)+'ロット'}, ['notices']); }catch(e){}
     AFIX = null; render();
   }catch(e){ toast(String(e.message||e), true); }
 }
