@@ -5415,14 +5415,19 @@ function allocFixOpen(brand, kidsCsv){
   ls.forEach(r=>{ const pid=String(r['商品ID']||'').trim(); if(!pid||seen[pid]) return; seen[pid]=1;
     items.push({pid, name:String(r['商品名']||''), size:String(r['容量']||'')}); });
   items.sort((a,b)=>a.name.localeCompare(b.name,'ja'));
-  const m = {}, salon = {}, st = {}, stocked = {};
-  kids.forEach(k=>m[k]={});
-  ls.forEach(r=>{ const k=String(r['回収ID']).trim();
-    m[k][String(r['商品ID']||'').trim()] = num(r['個数']);
+  const m = {}, salon = {}, st = {}, stocked = {}, floor = {};
+  kids.forEach(k=>{ m[k]={}; floor[k]={}; });
+  // 出庫済み（＝もう出荷して在庫から引いた分）は減らせない。ロットごとの出庫済を下限として持っておく
+  const outBy = {};
+  rows('stock').forEach(r=>{ const z=String(r['在庫ID']||'').trim(); if(z) outBy[z]=num(r['出庫済']); });
+  ls.forEach(r=>{ const k=String(r['回収ID']).trim(), pid=String(r['商品ID']||'').trim();
+    m[k][pid] = num(r['個数']);
+    const z = String(r['在庫ID']||'').trim();
+    floor[k][pid] = z ? (outBy[z]||0) : 0;
     salon[k] = String(r['サロン名']||'');
     st[k] = String(r['ステータス']||'');
-    if(String(r['在庫ID']||'').trim()) stocked[k] = true; });
-  AFIX = {brand, kids, items, m, orig:JSON.parse(JSON.stringify(m)), salon, st, stocked, why:'', prev:null};
+    if(z) stocked[k] = true; });
+  AFIX = {brand, kids, items, m, orig:JSON.parse(JSON.stringify(m)), salon, st, stocked, floor, why:'', prev:null};
   window.scrollTo(0,0); render();
 }
 function allocFixClose(){ AFIX = null; render(); }
@@ -5439,6 +5444,12 @@ function allocFixTotals(){
     AFIX.kids.forEach(k=>{ o[i.pid]+=num(AFIX.orig[k][i.pid]); n[i.pid]+=num(AFIX.m[k][i.pid]); }); });
   return {o, n};
 }
+// 全てのマスが「出荷済み＝これ以上減らせない」かどうか
+function allocFixAllShipped(){
+  return AFIX.items.every(i=>AFIX.kids.every(k=>{
+    const q = num(AFIX.orig[k][i.pid]);
+    return q===0 || num((AFIX.floor[k]||{})[i.pid]) >= q; }));
+}
 function allocFixHtml(){
   const T = allocFixTotals();
   const bad = AFIX.items.filter(i=>T.o[i.pid]!==T.n[i.pid]);
@@ -5447,6 +5458,10 @@ function allocFixHtml(){
   let h = '<h1>振り分けの修正 <span class="muted">'+esc(AFIX.brand)+'</span></h1>' +
     '<div class="sub">確定済みの振り分けです。<b>サロン間の付け替えだけ</b>できます（商品ごとの合計は変えられません）。'+
     (anyStocked?'入庫済みのため、直すと在庫台帳のロットも一緒に直ります。':'')+'</div>' +
+    '<p class="small" style="margin:0 0 10px;color:var(--crit);font-weight:700">⚠ すでに出荷した分は減らせません（🚚 が付いているマスがそれです）。数そのものを減らすときは、受注画面の「📉 欠品で減らす」を使ってください。</p>' +
+    // 全部出荷済みだと1マスも動かせない。触ってから気づくのは無駄なので先に出す
+    (allocFixAllShipped() ? '<div class="card" style="border:1.5px solid var(--serious);margin-bottom:10px"><b class="small" style="color:var(--serious)">この振り分けはすでに全て出荷済みです</b>' +
+      '<p class="small" style="margin:6px 0 0">減らせるマスが1つもないため、付け替えはできません。表の確認と 🖨 印刷にお使いください。</p></div>' : '') +
     '<div class="row" style="margin-bottom:10px"><button class="btn" onclick="allocFixClose()">← 戻る</button>' +
     '<button class="btn sm" onclick="allocPrintDone(\''+esc(AFIX.brand)+'\',\''+AFIX.kids.join(',')+'\')">🖨 印刷用を開く</button></div>';
   // 商品が数十行になるので、サロン名のヘッダーは固定して見えるようにする
@@ -5457,11 +5472,28 @@ function allocFixHtml(){
       const ng = T.o[i.pid]!==T.n[i.pid];
       return '<tr><td>'+esc(i.name)+' <span class="muted small">'+esc(i.size)+'</span></td>' +
         AFIX.kids.map(k=>{ const v=num(AFIX.m[k][i.pid]), was=num(AFIX.orig[k][i.pid]);
-          return '<td class="num"><input type="number" min="0" value="'+v+'" style="width:64px;text-align:right'+(v!==was?';background:color-mix(in srgb,var(--s1) 22%,transparent);font-weight:700':'')+'" onchange="allocFixSet(\''+k+'\',\''+i.pid+'\',this.value)">'+
-            (v!==was?'<br><span class="muted small">元 '+was+'</span>':'')+'</td>'; }).join('') +
+          const fl = num((AFIX.floor[k]||{})[i.pid]);   // 出庫済み＝ここまでしか減らせない
+          const under = fl>0 && v<fl;
+          return '<td class="num"><input type="number" min="'+fl+'" value="'+v+'" style="width:64px;text-align:right'+
+            (under?';background:color-mix(in srgb,var(--crit) 25%,transparent);font-weight:700'
+                  :(v!==was?';background:color-mix(in srgb,var(--s1) 22%,transparent);font-weight:700':''))+
+            '" onchange="allocFixSet(\''+k+'\',\''+i.pid+'\',this.value)">'+
+            (v!==was?'<br><span class="muted small">元 '+was+'</span>':'')+
+            (fl>0?'<br><span class="small" style="color:'+(under?'var(--crit)':'var(--muted,#888)')+'">🚚出荷済 '+fl+'</span>':'')+'</td>'; }).join('') +
         '<td class="num"'+(ng?' style="color:var(--crit);font-weight:700"':'')+'>'+T.n[i.pid]+'</td>' +
         '<td class="num muted">'+T.o[i.pid]+'</td></tr>';
     }).join('') + '</table></div>';
+  // 出庫済みを下回る指定（サーバーでも弾くが、押す前に気づけるように画面でも止める）
+  const under = [];
+  AFIX.items.forEach(i=>AFIX.kids.forEach(k=>{
+    const fl=num((AFIX.floor[k]||{})[i.pid]);
+    if(fl>0 && num(AFIX.m[k][i.pid])<fl) under.push({k, i, fl, v:num(AFIX.m[k][i.pid])}); }));
+  if(under.length){
+    h += '<div class="card" style="border:1.5px solid var(--crit);margin-top:10px"><b class="small" style="color:var(--crit)">🚚 すでに出荷した分は減らせません</b>' +
+      '<p class="small" style="margin:6px 0 0">'+under.map(u=>esc(AFIX.salon[u.k]||u.k)+'／'+esc(u.i.name)+'：出荷済 '+u.fl+' 点なので '+u.v+' には減らせません').join('<br>')+'</p>' +
+      '<p class="muted small" style="margin:6px 0 0">出荷を取り消すか、返品として在庫を調整してから直してください</p></div>';
+    return h;
+  }
   if(bad.length){
     h += '<div class="card" style="border:1.5px solid var(--crit);margin-top:10px"><b class="small" style="color:var(--crit)">合計が変わっています。付け替えだけにしてください</b>' +
       '<p class="small" style="margin:6px 0 0">'+bad.map(i=>esc(i.name)+'：'+T.o[i.pid]+' → '+T.n[i.pid]).join('<br>')+'</p>' +
