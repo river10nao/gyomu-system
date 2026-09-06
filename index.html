@@ -4265,6 +4265,7 @@ function allocOutFill(idx){
   render();
 }
 function vAllocation(){
+  if(AFIX) return allocFixHtml();   // 確定後の振り分けを見る・直す画面（2026-09-06）
   const needSetup = !((DB.products&&DB.products.headers)||[]).includes('入数（箱）');
   const cov = allocCoverage();   // 入れ込み済みの受注×ブランド（数量ベース。済み=背景色つき表示・消さない）
   const orderGroups = allocOrderGroups();
@@ -4341,7 +4342,8 @@ function vAllocation(){
       (lc.warning?'<div class="small" style="color:var(--serious);margin-top:5px">⚠ '+esc(lc.warning)+'</div>':'')+'</div>' +
       '<div class="right row">' +
       ((lc.batches||[]).length>1 ? lc.batches.map(b=>'<button class="btn sm" onclick="allocPrintDone(\''+esc(lc.brand)+'\',\''+b.ids.map(esc).join(',')+'\')">🖨 '+b.no+'回目</button>').join('') : '') +
-      (lc.printable&&lc.ids&&lc.ids.length?'<button class="btn sm" onclick="allocPrintDone(\''+esc(lc.brand)+'\',\''+lc.ids.map(esc).join(',')+'\')">🖨 '+((lc.batches||[]).length>1?'まとめて':'印刷用を開く')+'</button>':'') +
+      (lc.printable&&lc.ids&&lc.ids.length?'<button class="btn sm" onclick="allocPrintDone(\''+esc(lc.brand)+'\',\''+lc.ids.map(esc).join(',')+'\')">🖨 '+((lc.batches||[]).length>1?'まとめて':'印刷用を開く')+'</button>' +
+        '<button class="btn sm" onclick="allocFixOpen(\''+esc(lc.brand)+'\',\''+lc.ids.map(esc).join(',')+'\')">📋 表</button>':'') +
       '<button class="btn sm" onclick="ALLOC.lastCommit=null;render()">閉じる</button></div></div></div>';
   }
   if(!selIds.length) return html;
@@ -4410,8 +4412,9 @@ function vAllocation(){
     const ks = new Set(); selOrders.forEach(r=>{ const e=(cov[String(r['受注ID']).trim()]||{})[brand]; if(e) e.kids.forEach(k=>ks.add(k)); });
     html += '<div class="card" style="opacity:.8"><b class="small">✅ '+esc(brand)+' は回収・検品へ入れ込み済みです</b>' +
       '<p class="small" style="margin:6px 0 0"><b>回収ID: '+esc(kFmt(ks)||'—')+'</b>（回収・検品画面で確認できます）</p>' +
-      '<div class="row" style="margin-top:8px"><button class="btn sm" onclick="allocPrintDone(\''+esc(brand)+'\',\''+[...ks].join(',')+'\')">🖨 印刷用を開く（PDF保存）</button></div>' +
-      '<p class="muted small" style="margin:6px 0 0">やり直す場合は回収・検品側で該当の回収を削除するとここが再び操作できるようになります（一部だけ削除すると数が合わない警告が出ます）</p>' +
+      '<div class="row" style="margin-top:8px"><button class="btn sm" onclick="allocPrintDone(\''+esc(brand)+'\',\''+[...ks].join(',')+'\')">🖨 印刷用を開く（PDF保存）</button>' +
+      '<button class="btn sm" onclick="allocFixOpen(\''+esc(brand)+'\',\''+[...ks].join(',')+'\')">📋 表を見る・直す</button></div>' +
+      '<p class="muted small" style="margin:6px 0 0">「📋 表を見る・直す」で確定した振り分けを表で開けます。直せるのはサロン間の付け替えだけです（数そのものを変えるときは受注側を直してやり直し）</p>' +
       prevHtml + '</div>';
     return html;
   }
@@ -4611,6 +4614,8 @@ function vAllocation(){
         : overTotal>0
         ? '<button class="btn sm right" style="opacity:.55" onclick="toast(\'受注数より '+overTotal+'点 多く割り振っています。減らしてから確定してください\', true)">✅ 確定して回収データを作成</button>'
         : '<button class="btn pri sm right" onclick="allocCommitAll()">✅ 確定して回収データを作成'+(allocSplit(r)?'（'+allocSplit(r).n+'回に分けて）':'')+'</button>')+'</div>' +
+      '<p class="small" style="margin:6px 0 0;color:var(--crit);font-weight:700">⚠ 確定するとこの振り分けで発注・回収が動きます。数が合っているか、もう一度だけ確かめてください。</p>' +
+      '<p class="muted small" style="margin:2px 0 0">確定後もサロン間の付け替えは直せますが（📋 表を見る・直す）、入庫後は在庫台帳まで書き換わります。出荷済みの分は直せません。</p>' +
       // 下書きを再開したあとに受注を直していると、ここで気づける（必要数は写真のままなので追随しない）
       (()=>{ const dif = allocNeedDiff(brand); if(!dif.length) return '';
         return '<div style="margin-top:8px;padding:10px 12px;border:1.5px solid var(--s4);border-radius:10px;background:color-mix(in srgb,var(--s4) 8%,transparent)">' +
@@ -5303,7 +5308,7 @@ async function allocCommit(){
     splitUsed ? '\n仕入先（枠ごと）:\n' + lines.filter(l=>!l.out).map(l=>'　'+slotName(names,l.slot)+' ← '+supLabelOf(l.supplierId)).join('\n')
               : (r.supplier ? '\n仕入先: '+supLabelOf(r.supplier) : '');
   const batchText = sp ? '\n📦 発注 '+((_B||0)+1)+'回目／全'+sp.n+'回（発注日 '+String(sp.dates[_B||0]).replace(/-/g,'/')+'）' : '';
-  if(!ALLOC._skipConfirm && !confirm(brand+' の割り振りを確定します。'+batchText+'\n対象受注: '+selIds.join(', ')+supText+'\nサロン '+salonCount+'枠・合計 '+total+'点'+(outTotal?'（うち🤝外注 '+outTotal+'点）':'')+(stockTotal?'＋📦在庫充当 '+stockTotal+'点（確定時に在庫から確保）':'')+' を「回収待ち」で回収・検品に登録します。\n\n⚠ 確定後は、この画面での振り分けの修正はできません（直す場合は回収・検品側で該当の回収を削除してやり直しになります）。よろしいですか？')) return;
+  if(!ALLOC._skipConfirm && !confirm('⚠ 数は合っていますか？\n確定するとこの振り分けで発注・回収が動きます。\n\n'+brand+' の割り振りを確定します。'+batchText+'\n対象受注: '+selIds.join(', ')+supText+'\nサロン '+salonCount+'枠・合計 '+total+'点'+(outTotal?'（うち🤝外注 '+outTotal+'点）':'')+(stockTotal?'＋📦在庫充当 '+stockTotal+'点（確定時に在庫から確保）':'')+' を「回収待ち」で回収・検品に登録します。')) return;
   // 仕入れマスタに掛け率が無かった仕入先は、②で入れた率を覚えさせる（2026-09-02 ユーザー要望）。
   // 上書きは従来どおり「今回の振り分けだけ」に効く。マスタが空欄だったときに限り、その値を初期値として残す
   const buyRateLearn = (()=>{
@@ -5367,7 +5372,7 @@ async function allocCommitAll(){
   const noDate = sp.dates.filter(d=>!String(d||'').trim());
   if(noDate.length){ toast('発注日が未入力のバッチがあります（'+noDate.length+'件）。全部入れてから確定してください', true); return; }
   const plan = sp.dates.map((d,i)=>'　'+(i+1)+'回目: '+String(d).replace(/-/g,'/')+'（'+allocSplitTotals(r,i).qty+'点 / '+yen(allocSplitTotals(r,i).yen)+'）').join('\n');
-  if(!confirm(brand+' を '+sp.n+'回に分けて確定します。\n'+plan+'\n\n回収IDは回ごとに分かれ、それぞれの発注日で記録されます。\n⚠ 確定後はこの画面での修正はできません。よろしいですか？')) return;
+  if(!confirm('⚠ 数は合っていますか？\n確定するとこの振り分けで発注・回収が動きます。\n\n'+brand+' を '+sp.n+'回に分けて確定します。\n'+plan+'\n\n回収IDは回ごとに分かれ、それぞれの発注日で記録されます。')) return;
   const selIds = Object.keys(ALLOC.sel).filter(k=>ALLOC.sel[k]);
   ALLOC._skipConfirm = true;
   let done = 0;
@@ -5391,6 +5396,147 @@ async function allocCommitAll(){
   toast(sp.n+'回に分けて確定しました（発注日: '+sp.dates.map(d=>String(d).replace(/-/g,'/')).join(' ／ ')+'）');
   render();
 }
+// ===== 確定後の振り分けを見る・直す（2026-09-06 ユーザー要望） =====
+// 下書きの「再開」と同じ感覚で、確定済みの振り分けを表で開いて数を直せるようにする。
+// 直せるのは【サロン間の付け替えだけ】。商品ごとの合計は変えられない（受注・在庫と食い違うため）。
+// 入庫済みの分は在庫台帳のロットも一緒に直す。実際の判定と書き込みはサーバー（applyCollectionFix_）が行い、
+// ここは表示と、押す前に「何がどう変わるか」を見せる役割。
+let AFIX = null;   // {brand, kids:[], items:[], m:{kid:{pid:qty}}, orig:{...}, salon:{kid:名前}, st:{kid:ステータス}, prev:検算結果}
+
+function allocFixOpen(brand, kidsCsv){
+  const kidSet = new Set(String(kidsCsv).split(',').map(s=>s.trim()).filter(Boolean));
+  const ls = rows('collectionLedger').filter(r=>kidSet.has(String(r['回収ID']||'').trim()));
+  if(!ls.length){ toast('回収台帳に該当の回収が見つかりません', true); return; }
+  const kids = [...new Set(ls.map(r=>String(r['回収ID']).trim()))].sort();
+  const items = [], seen = {};
+  ls.forEach(r=>{ const pid=String(r['商品ID']||'').trim(); if(!pid||seen[pid]) return; seen[pid]=1;
+    items.push({pid, name:String(r['商品名']||''), size:String(r['容量']||'')}); });
+  items.sort((a,b)=>a.name.localeCompare(b.name,'ja'));
+  const m = {}, salon = {}, st = {}, stocked = {};
+  kids.forEach(k=>m[k]={});
+  ls.forEach(r=>{ const k=String(r['回収ID']).trim();
+    m[k][String(r['商品ID']||'').trim()] = num(r['個数']);
+    salon[k] = String(r['サロン名']||'');
+    st[k] = String(r['ステータス']||'');
+    if(String(r['在庫ID']||'').trim()) stocked[k] = true; });
+  AFIX = {brand, kids, items, m, orig:JSON.parse(JSON.stringify(m)), salon, st, stocked, why:'', prev:null};
+  window.scrollTo(0,0); render();
+}
+function allocFixClose(){ AFIX = null; render(); }
+function allocFixSet(kid, pid, v){
+  if(!AFIX) return;
+  AFIX.m[kid][pid] = Math.max(0, Math.floor(num(v)));
+  AFIX.prev = null;   // 数を触ったら検算結果は無効
+  render();
+}
+// 商品ごとの合計（元 / 今）。この2つが全商品で一致していないと確定できない
+function allocFixTotals(){
+  const o = {}, n = {};
+  AFIX.items.forEach(i=>{ o[i.pid]=0; n[i.pid]=0;
+    AFIX.kids.forEach(k=>{ o[i.pid]+=num(AFIX.orig[k][i.pid]); n[i.pid]+=num(AFIX.m[k][i.pid]); }); });
+  return {o, n};
+}
+function allocFixHtml(){
+  const T = allocFixTotals();
+  const bad = AFIX.items.filter(i=>T.o[i.pid]!==T.n[i.pid]);
+  const changed = AFIX.kids.some(k=>AFIX.items.some(i=>num(AFIX.orig[k][i.pid])!==num(AFIX.m[k][i.pid])));
+  const anyStocked = AFIX.kids.some(k=>AFIX.stocked[k]);
+  let h = '<h1>振り分けの修正 <span class="muted">'+esc(AFIX.brand)+'</span></h1>' +
+    '<div class="sub">確定済みの振り分けです。<b>サロン間の付け替えだけ</b>できます（商品ごとの合計は変えられません）。'+
+    (anyStocked?'入庫済みのため、直すと在庫台帳のロットも一緒に直ります。':'')+'</div>' +
+    '<div class="row" style="margin-bottom:10px"><button class="btn" onclick="allocFixClose()">← 戻る</button>' +
+    '<button class="btn sm" onclick="allocPrintDone(\''+esc(AFIX.brand)+'\',\''+AFIX.kids.join(',')+'\')">🖨 印刷用を開く</button></div>';
+  // 商品が数十行になるので、サロン名のヘッダーは固定して見えるようにする
+  h += '<div class="tblwrap sticky"><table><tr><th>商品</th>' +
+    AFIX.kids.map(k=>'<th class="num">'+esc(AFIX.salon[k]||k)+'<br><span class="muted small">'+esc(k)+(AFIX.stocked[k]?' 📦入庫済':'')+'</span></th>').join('') +
+    '<th class="num">合計</th><th class="num">元の合計</th></tr>' +
+    AFIX.items.map(i=>{
+      const ng = T.o[i.pid]!==T.n[i.pid];
+      return '<tr><td>'+esc(i.name)+' <span class="muted small">'+esc(i.size)+'</span></td>' +
+        AFIX.kids.map(k=>{ const v=num(AFIX.m[k][i.pid]), was=num(AFIX.orig[k][i.pid]);
+          return '<td class="num"><input type="number" min="0" value="'+v+'" style="width:64px;text-align:right'+(v!==was?';background:color-mix(in srgb,var(--s1) 22%,transparent);font-weight:700':'')+'" onchange="allocFixSet(\''+k+'\',\''+i.pid+'\',this.value)">'+
+            (v!==was?'<br><span class="muted small">元 '+was+'</span>':'')+'</td>'; }).join('') +
+        '<td class="num"'+(ng?' style="color:var(--crit);font-weight:700"':'')+'>'+T.n[i.pid]+'</td>' +
+        '<td class="num muted">'+T.o[i.pid]+'</td></tr>';
+    }).join('') + '</table></div>';
+  if(bad.length){
+    h += '<div class="card" style="border:1.5px solid var(--crit);margin-top:10px"><b class="small" style="color:var(--crit)">合計が変わっています。付け替えだけにしてください</b>' +
+      '<p class="small" style="margin:6px 0 0">'+bad.map(i=>esc(i.name)+'：'+T.o[i.pid]+' → '+T.n[i.pid]).join('<br>')+'</p>' +
+      '<p class="muted small" style="margin:6px 0 0">数そのものを増減させたいときは、受注側の個数を直してから振り分けをやり直してください</p></div>';
+    return h;
+  }
+  if(!changed){ h += '<p class="muted" style="margin-top:10px">数を直すと、ここに確認ボタンが出ます</p>'; return h; }
+  h += '<div class="card" style="margin-top:10px"><label class="small">修正理由（必須・ログに残ります）<br>' +
+    '<input class="search" style="width:100%;max-width:560px;margin-top:4px" value="'+esc(AFIX.why)+'" placeholder="例: 検品でBETSの数え間違いが判明したため" onchange="AFIX.why=this.value">' +
+    '</label><div class="row" style="margin-top:8px">' +
+    '<button class="btn pri" onclick="allocFixPreview()">🔍 何がどう変わるか確認する</button></div></div>';
+  if(AFIX.prev){
+    const p = AFIX.prev.plan || {};
+    h += '<div class="card" style="border:1.5px solid var(--s1);margin-top:10px"><b class="small">この内容で書き換えます（まだ書き込んでいません）</b>' +
+      '<div class="tblwrap" style="margin-top:6px"><table><tr><th>回収</th><th>商品</th><th class="num">変更</th></tr>' +
+      (p.update||[]).map(u=>'<tr><td>'+esc(u.kid)+' '+esc(AFIX.salon[u.kid]||'')+'</td><td>'+esc(pname(u.pid))+'</td><td class="num">'+u.was+' → <b>'+u.qty+'</b></td></tr>').join('') +
+      (p.add||[]).map(a=>'<tr><td>'+esc(a.kid)+' '+esc(AFIX.salon[a.kid]||'')+'</td><td>'+esc(pname(a.pid))+'</td><td class="num">追加 <b>'+a.qty+'</b></td></tr>').join('') +
+      (p.del||[]).map(d=>'<tr><td>'+esc(d.kid)+' '+esc(AFIX.salon[d.kid]||'')+'</td><td>'+esc(pname(d.pid))+'</td><td class="num">'+d.was+' → <b>削除</b></td></tr>').join('') +
+      '</table></div>' +
+      ((p.stock||[]).length ? '<div class="tblwrap" style="margin-top:8px"><table><tr><th>在庫ロット</th><th class="num">入庫数</th></tr>' +
+        p.stock.map(s=>'<tr><td>'+esc(s.zid)+' <span class="muted small">'+esc(s.label)+'</span></td><td class="num">'+s.from+' → <b>'+s.to+'</b></td></tr>').join('') +
+        '</table></div><p class="muted small" style="margin:6px 0 0">残数は「入庫数 −出庫」の自動計算なので、入庫数を直せば残数も正しくなります</p>'
+        : '<p class="muted small" style="margin:6px 0 0">まだ入庫していないため、在庫台帳への影響はありません</p>') +
+      allocFixWarnHtml() +
+      '<div class="row" style="margin-top:10px"><button class="btn pri" onclick="allocFixApply()">✅ この内容で修正する</button>' +
+      '<button class="btn sm" onclick="AFIX.prev=null;render()">やめる</button></div></div>';
+  }
+  return h;
+}
+// 減らした結果、まだ出荷していない案件が在庫不足になるなら先に知らせる（止めはしない）
+function allocFixWarnHtml(){
+  const dec = {};
+  AFIX.items.forEach(i=>{ AFIX.kids.forEach(k=>{
+    const d = num(AFIX.orig[k][i.pid]) - num(AFIX.m[k][i.pid]);
+    if(d>0 && AFIX.stocked[k]) dec[i.pid] = (dec[i.pid]||0) + d; }); });
+  const pids = Object.keys(dec);
+  if(!pids.length) return '';
+  const avail = {};
+  rows('stock').forEach(r=>{ if(String(r['区分']||'').trim()==='店販') return;
+    const pid=String(r['商品ID']||'').trim(); if(!pid) return;
+    avail[pid] = (avail[pid]||0) + num(r['残数']); });
+  const shipped = new Set(rows('shipments').map(s=>String(s['受注ID']||'').trim()));
+  const need = {};
+  rows('orderLedger').forEach(r=>{ const oid=String(r['受注ID']||'').trim();
+    if(!oid || shipped.has(oid)) return;
+    const pid=String(r['商品ID']||'').trim(); if(!pid) return;
+    need[pid] = (need[pid]||0) + num(r['個数']); });
+  const risk = pids.filter(p=>(need[p]||0) > (avail[p]||0) - dec[p]);
+  if(!risk.length) return '';
+  return '<p class="small" style="margin:8px 0 0;color:var(--serious)"><b>⚠ 出荷前の案件が在庫不足になります</b><br>' +
+    risk.map(p=>esc(pname(p))+'：在庫 '+((avail[p]||0)-dec[p])+' 点 / 未出荷の必要数 '+(need[p]||0)+' 点').join('<br>') +
+    '<br><span class="muted">出荷しようとした時点でエラーになります。追加で仕入れるか、案件の数量を調整してください</span></p>';
+}
+function pname(pid){ const p=rows('products').find(x=>String(x['商品ID']).trim()===pid);
+  return p ? String(p['商品名']||'')+' '+String(p['容量']||'') : pid; }
+function allocFixPayload(){
+  const list = {};
+  AFIX.kids.forEach(k=>{ list[k]={}; AFIX.items.forEach(i=>{ list[k][i.pid] = num(AFIX.m[k][i.pid]); }); });
+  return list;
+}
+async function allocFixPreview(){
+  if(!String(AFIX.why||'').trim()){ toast('修正理由を入力してください', true); return; }
+  try{
+    const r = await apiPost('fixAllocation', {'回収ID一覧':allocFixPayload(), '理由':AFIX.why, dryRun:true});
+    AFIX.prev = r; render();
+  }catch(e){ toast(String(e.message||e), true); }
+}
+async function allocFixApply(){
+  if(!confirm('この内容で修正します。回収台帳と在庫台帳の両方が書き換わります。よろしいですか？')) return;
+  try{
+    const r = await apiPost('fixAllocation', {'回収ID一覧':allocFixPayload(), '理由':AFIX.why},
+      ['collectionLedger','stock','stockLog']);
+    toast('修正しました（更新'+r['更新']+'・追加'+r['追加']+'・削除'+r['削除']+'／在庫'+(r['在庫更新']||0)+'ロット）');
+    try{ await apiPost('addNotice', {'内容':'【振り分け修正】'+AFIX.brand+'（'+AFIX.kids.join(',')+'）: '+AFIX.why}, ['notices']); }catch(e){}
+    AFIX = null; render();
+  }catch(e){ toast(String(e.message||e), true); }
+}
+
 // 振り分け下書き: 保存（1ブランド=1下書き・上書き）／再開／削除
 async function allocSaveDraft(){
   const brand = ALLOC.brand;
