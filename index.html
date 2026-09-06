@@ -5490,17 +5490,24 @@ function allocFixHtml(){
 }
 // 減らした結果、まだ出荷していない案件が在庫不足になるなら先に知らせる（止めはしない）
 function allocFixWarnHtml(){
+  // 入庫済みロットの増減を差し引きした「正味の変化」で見る。
+  // 入庫済み同士の付け替えなら総在庫は動かないので、増加分を無視すると誤警告になる（2026-09-06 レビュー指摘）
   const dec = {};
-  AFIX.items.forEach(i=>{ AFIX.kids.forEach(k=>{
-    const d = num(AFIX.orig[k][i.pid]) - num(AFIX.m[k][i.pid]);
-    if(d>0 && AFIX.stocked[k]) dec[i.pid] = (dec[i.pid]||0) + d; }); });
+  AFIX.items.forEach(i=>{ let net=0;
+    AFIX.kids.forEach(k=>{ if(!AFIX.stocked[k]) return;
+      net += num(AFIX.orig[k][i.pid]) - num(AFIX.m[k][i.pid]); });
+    if(net>0) dec[i.pid] = net; });
   const pids = Object.keys(dec);
   if(!pids.length) return '';
+  // 卸の出荷で引き去れるのは 区分=卸 または 空欄 のロットだけ（サーバーのFIFOと同じ条件）
   const avail = {};
-  rows('stock').forEach(r=>{ if(String(r['区分']||'').trim()==='店販') return;
+  rows('stock').forEach(r=>{ const ku=String(r['区分']||'').trim();
+    if(ku!=='' && ku!=='卸') return;
     const pid=String(r['商品ID']||'').trim(); if(!pid) return;
     avail[pid] = (avail[pid]||0) + num(r['残数']); });
-  const shipped = new Set(rows('shipments').map(s=>String(s['受注ID']||'').trim()));
+  // 出荷済み＝在庫を引き去り済みの受注だけ除外する（出荷行があるだけでは引去前のことがある）
+  const shipped = new Set(rows('shipments').filter(s=>String(s['ステータス']||'').trim()==='出荷完了')
+    .map(s=>String(s['受注ID']||'').trim()));
   const need = {};
   rows('orderLedger').forEach(r=>{ const oid=String(r['受注ID']||'').trim();
     if(!oid || shipped.has(oid)) return;
@@ -5519,19 +5526,27 @@ function allocFixPayload(){
   AFIX.kids.forEach(k=>{ list[k]={}; AFIX.items.forEach(i=>{ list[k][i.pid] = num(AFIX.m[k][i.pid]); }); });
   return list;
 }
+// 画面を開いた時点の数量。サーバーはこれと今の台帳を突き合わせ、
+// 別の人が先に直していたら「開き直してください」で止める（2026-09-06 レビュー指摘）
+function allocFixSnapshot(){
+  const list = {};
+  AFIX.kids.forEach(k=>{ list[k]={}; AFIX.items.forEach(i=>{ list[k][i.pid] = num(AFIX.orig[k][i.pid]); }); });
+  return list;
+}
 async function allocFixPreview(){
   if(!String(AFIX.why||'').trim()){ toast('修正理由を入力してください', true); return; }
   try{
-    const r = await apiPost('fixAllocation', {'回収ID一覧':allocFixPayload(), '理由':AFIX.why, dryRun:true});
+    const r = await apiPost('fixAllocation', {'回収ID一覧':allocFixPayload(), '現状':allocFixSnapshot(), '理由':AFIX.why, dryRun:true});
     AFIX.prev = r; render();
   }catch(e){ toast(String(e.message||e), true); }
 }
 async function allocFixApply(){
   if(!confirm('この内容で修正します。回収台帳と在庫台帳の両方が書き換わります。よろしいですか？')) return;
   try{
-    const r = await apiPost('fixAllocation', {'回収ID一覧':allocFixPayload(), '理由':AFIX.why},
+    const r = await apiPost('fixAllocation', {'回収ID一覧':allocFixPayload(), '現状':allocFixSnapshot(), '理由':AFIX.why},
       ['collectionLedger','stock','stockLog']);
-    toast('修正しました（更新'+r['更新']+'・追加'+r['追加']+'・削除'+r['削除']+'／在庫'+(r['在庫更新']||0)+'ロット）');
+    const nl = (r['新規ロット']||[]).length;
+    toast('修正しました（更新'+r['更新']+'・追加'+r['追加']+'・削除'+r['削除']+'／在庫 更新'+(r['在庫更新']||0)+'ロット'+(nl?'・新規'+nl+'ロット':'')+'）');
     try{ await apiPost('addNotice', {'種類':'振り分け修正',
       'タイトル':'【振り分け修正】'+AFIX.brand+'（'+AFIX.kids.join(',')+'）',
       '本文': AFIX.why+'／更新'+r['更新']+'・追加'+r['追加']+'・削除'+r['削除']+'・在庫'+(r['在庫更新']||0)+'ロット'}, ['notices']); }catch(e){}
