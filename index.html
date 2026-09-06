@@ -2147,9 +2147,9 @@ function alertsHtml(){
   if(!n) return '<div class="card"><span class="small" style="color:var(--good)"><b>✅ 要対応はありません</b></span>' +
     '<span class="muted small">　停滞案件・入金期限切れなし（しきい値はスプシ「アラート設定」シートで変更できます）</span></div>';
   return '<div class="card" style="border:1.5px solid var(--crit)"><b class="small" style="color:var(--crit)">⚠ 要対応 '+n+'件</b>' +
-  (al.overdue.length ? '<div class="tblwrap" style="margin-top:8px"><table><tr><th>入金期限切れ</th><th>卸先</th><th>種類</th><th>期限</th><th class="num">超過</th><th class="num">金額(税込)</th><th>今の状態</th></tr>' +
+  (al.overdue.length ? '<div class="tblwrap" style="margin-top:8px"><table><tr><th>入金期限切れ</th><th>卸先</th><th>種類</th><th>期限</th><th class="num">超過<br><span class="muted small">営業日</span></th><th class="num">金額(税込)</th><th>今の状態</th></tr>' +
     al.overdue.map(o=>'<tr><td class="mono">'+esc(o.docNo)+'</td><td>'+esc(o.name)+'</td><td class="small">'+esc(o.kind)+'</td><td class="small">'+esc(o.due)+'</td>' +
-      '<td class="num" style="color:var(--crit)"><b>'+o.days+'日</b></td><td class="num">'+yen(o.amount)+'</td><td>'+pill(o.status)+'</td></tr>').join('')+'</table></div>' : '') +
+      '<td class="num" style="color:var(--crit)"><b>'+o.days+'営業日</b></td><td class="num">'+yen(o.amount)+'</td><td>'+pill(o.status)+'</td></tr>').join('')+'</table></div>' : '') +
   (pb.length ? '<div class="tblwrap" style="margin-top:8px"><table><tr><th>振り分けの一部が回収・検品で削除されています（数が合いません）</th><th>卸先</th><th>ブランド</th><th>残っている回収</th><th>削除された回収</th><th></th></tr>' +
     pb.map(o=>'<tr><td class="mono">受注 '+esc(o.id)+'</td><td>'+esc(o.w)+'</td><td class="small">'+esc(o.brand)+'</td><td class="mono small">'+esc(o.kids||'—')+'</td>' +
       '<td class="mono small" style="color:var(--crit)">'+esc(o.del)+'</td><td><button class="btn sm" onclick="go(\'allocation\');render()">🧮 振り分けへ</button></td></tr>').join('') +
@@ -2157,7 +2157,7 @@ function alertsHtml(){
   (al.stalled.length ? '<div class="tblwrap" style="margin-top:8px"><table><tr><th>止まっている案件</th><th>相手</th><th>状態</th><th class="num">経過</th></tr>' +
     al.stalled.map(s=>'<tr><td class="mono">'+esc(s.label)+' '+esc(s.id)+'</td><td>'+esc(s.name)+'</td><td>'+pill(s.status)+'</td>' +
       '<td class="num" style="color:var(--warn)"><b>'+s.days+'日</b><span class="muted small">（目安'+s.threshold+'日）</span></td></tr>').join('')+'</table></div>' : '') +
-  '<p class="muted small" style="margin-top:6px">しきい値はスプシ「アラート設定」シートの日数を書き換えるだけで変わります</p></div>';
+  '<p class="muted small" style="margin-top:6px">入金期限の超過は<b>営業日</b>で数えます（土日は数えません。祝日は含みます）。止まっている案件の「経過」は暦日です。しきい値はスプシ「アラート設定」シートの日数を書き換えるだけで変わります</p></div>';
 }
 function gauge(label, val, target){
   const r = target>0 ? Math.min(val/target,1) : 0;
