@@ -201,13 +201,16 @@ const BRAND_FEE = 5000, DEFAULT_QUOTA = 200000, MTG_BRAND = 'MTG', TAX = 0.10;
 // 協力費（JINKSへの還元）の対象ブランド。これだけ数えるので1サロン最大1.5万円（2026-09-05 ユーザー指定）。
 // 「利用ブランド」欄でも赤太字にして、どれが対象か一目で分かるようにする
 const SPAY_FEE_BRANDS = ['ナプラ', 'グローバルミルボン', 'MTG'];
-// 協力費を払わないサロン（神澤サロン=自社サロンではない / MIRA=特別対応）。
-// このファイルは公開ページなのでサロン名は直書きせず、ログイン後に whoami から受け取る（2026-09-07）
-let COOP_OFF = {sids:[], names:[]};
-const coopFeeOff = (sid,name)=>{
-  if(COOP_OFF.sids.includes(String(sid||'').trim())) return true;
-  const n = String(name||'').trim().toUpperCase();
-  return COOP_OFF.names.some(x=>String(x).trim().toUpperCase()===n);
+// 協力費を払わないサロン（2026-09-07 ユーザー指定）。
+//   ① 連携ディーラー=S0021（神澤さん）のサロン全部 … 資金繰りの「🤝 神澤さん連携サロン」と同じ括り
+//   ② MIRA（S0078） … 特別対応
+// このファイルは公開ページなのでIDを直書きせず、ログイン後に whoami から受け取る
+let COOP_OFF = {sids:[], links:[]};
+const coopFeeOff = sid=>{
+  const id = String(sid||'').trim();
+  if(COOP_OFF.sids.includes(id)) return true;
+  const link = String((rows('salons').find(x=>String(x['サロンID']||'').trim()===id)||{})['連携ディーラー']||'').trim();
+  return !!link && COOP_OFF.links.includes(link);
 };
 // 入金が済んだ状態か（最終入金完了 or その先の納品完了。2026-07-18 納品完了追加に伴う共通判定）
 const paidDone = st=>['最終入金完了','納品完了'].includes(String(st||'').trim());
@@ -1185,7 +1188,7 @@ function calcSalonPay(month){
   return Object.values(bySalon).map(s=>{
     const brands = [...s.brands];
     // 協力費はナプラ・グローバルミルボン・MTGのみ対象（1サロン最大1.5万円。2026-09-05 ユーザー指定）
-    const coopOff = coopFeeOff(s.sid, s.name);   // 神澤サロン・MIRA は協力費なし（2026-09-07）
+    const coopOff = coopFeeOff(s.sid);   // 神澤さん連携サロン・MIRA は協力費なし（2026-09-07）
     const feeBrands = coopOff ? [] : brands.filter(b=>SPAY_FEE_BRANDS.includes(b));
     const fee = feeBrands.length*BRAND_FEE;
     return {sid:s.sid, name:s.name, brands, feeBrands, mtg:s.mtg, charge:s.charge, fee, coopOff, net:fee - s.charge};
