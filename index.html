@@ -1923,7 +1923,7 @@ function anbetsuHtml(m){
     '<button class="btn sm right" onclick="exportAnbetsu()">CSV出力</button>' +
     '<button class="btn sm" onclick="printAnbetsu()">🖨 PDF出力</button></div>' +
     '<table class="anbetsu" style="margin-top:8px;min-width:1560px"><tr><th style="min-width:110px">メーカー</th><th style="min-width:130px">卸先</th>' +
-    '<th class="num">掛率(卸)</th><th class="num" style="min-width:110px">総売上</th><th class="num" style="min-width:110px">仕入先売上</th>' +
+    '<th class="num">掛率(卸)</th><th class="num" style="min-width:110px">総売上</th><th class="num" style="min-width:110px">仕入ごとの売上</th>' +
     '<th class="num">掛率（仕入）</th><th class="num" style="min-width:100px">'+NM.co+'仕入</th><th style="min-width:160px">仕入先</th>' +
     '<th class="num" style="min-width:95px">利益額</th><th class="num">利益率</th><th class="num" style="min-width:160px">手数料</th>' +
     '<th class="num" style="min-width:100px">実利益</th><th class="num">実利益率</th><th>状態</th><th>受注ID</th><th></th>' +
@@ -1934,7 +1934,7 @@ function anbetsuHtml(m){
       '<td class="num"><b>'+yen(profit(t))+'</b></td><td class="num"><b>'+pct(t.cost>0?profit(t)/t.cost:null)+'</b></td>' +
       '<td class="num"><b style="color:var(--crit)">'+(t.fee?'−'+yen(t.fee):'—')+'</b></td>' +
       '<td class="num"><b>'+yen(t.net)+'</b></td><td class="num"><b>'+pct(t.cost>0?t.net/t.cost:null)+'</b></td><td colspan="4"></td></tr>' : '') +
-    '</table><p class="muted small" style="margin-top:6px"><b>仕入先売上・仕入・利益・手数料・実利益は仕入先ごと</b>（仕入先売上＝その仕入先から仕入れた本数×卸値。足すと総売上）。神澤さんの仲介2%はピュア商会の段から、紹介報酬は最初の段から引きます。実利益率＝実利益÷'+NM.co+'仕入。<br>仕入額は<b>実額</b>（回収台帳の仕入先×仕入先マスタの掛け率。支払い画面と同じ計算）。まだ振り分けていない分だけ商品マスタの仕入価格で仮置きし「仮」と出します（振り分けを確定すると自動で実額に入れ替わります' +
+    '</table><p class="muted small" style="margin-top:6px"><b>仕入ごとの売上・仕入・利益・手数料・実利益は仕入先ごと</b>（仕入ごとの売上＝その仕入先から仕入れた本数×卸値。足すと総売上）。神澤さんの仲介2%はピュア商会の段から、紹介報酬は最初の段から引きます。実利益率＝実利益÷'+NM.co+'仕入。<br>仕入額は<b>実額</b>（回収台帳の仕入先×仕入先マスタの掛け率。支払い画面と同じ計算）。まだ振り分けていない分だけ商品マスタの仕入価格で仮置きし「仮」と出します（振り分けを確定すると自動で実額に入れ替わります' +
     (provTotal?'。今月の仮置き '+yen(provTotal):'') + '）。余剰在庫から充当した分は「📦 余剰在庫」の段に商品マスタの仕入価格で出します。<b>仕入先は1社1段</b>で、掛率（仕入）はその仕入先の実率です（均していません）。合計行の掛率（仕入）だけは全体の'+NM.co+'仕入÷定価。<br>' +
     '利益額='+NM.co+'仕入を引いたもの、利益率=利益額÷'+NM.co+'仕入、掛率(卸)=卸値÷定価。<b>実利益</b>=売上−'+NM.co+'仕入−手数料。' +
     '手数料は<b>仲介2%</b>（ピュア商会経由に回した分の定価×2%・神澤さんへ）と<b>紹介報酬</b>（卸先マスタの紹介者・報酬基準・報酬率）です。' +
@@ -1981,7 +1981,7 @@ function exportAnbetsu(){
         '', l.st, l.oid, '仕入先ごとの段の合計', '']);
   });
   exportCsv('案件別収支_'+selMonth.replace('/','-'),
-    ['メーカー','卸先','掛率(卸)','総売上(卸値税抜)','仕入先売上','掛率（仕入）',''+NM.co+'仕入','仕入先',
+    ['メーカー','卸先','掛率(卸)','総売上(卸値税抜)','仕入ごとの売上','掛率（仕入）',''+NM.co+'仕入','仕入先',
      '利益額','利益率','手数料','手数料の内訳','実利益','実利益率','仕入形態','状態','受注ID','備考','メモ'], out);
 }
 function printAnbetsu(){
@@ -2045,7 +2045,7 @@ function printAnbetsu(){
     'tr{page-break-inside:avoid}@media print{button{display:none}}</style></head><body>' +
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
     '<h1>案件別収支（'+esc(m)+'）</h1>' +
-    '<table class="anbetsu"><tr><th>メーカー</th><th>卸先</th><th class="num">掛率(卸)</th><th class="num">総売上</th><th class="num">仕入先売上</th>' +
+    '<table class="anbetsu"><tr><th>メーカー</th><th>卸先</th><th class="num">掛率(卸)</th><th class="num">総売上</th><th class="num">仕入ごとの売上</th>' +
     '<th class="num">掛率（仕入）</th><th class="num">'+NM.co+'仕入</th><th>仕入先</th>' +
     '<th class="num">利益額</th><th class="num">利益率</th><th class="num">手数料</th><th class="num">実利益</th><th class="num">実利益率</th>' +
     '<th>状態</th><th>受注ID</th><th>メモ</th></tr>' +
