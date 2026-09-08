@@ -2262,6 +2262,7 @@ function vOrders(){
 
   function cardHtml(g){
     const total = g.rows.reduce((a,r)=>a+num(r['小計（税抜）']),0);
+    const totalQty = g.rows.reduce((a,r)=>a+num(r['個数']),0);   // 案件の合計本数（2026-09-08 ユーザー要望）
     const ship = shipsByOrder[g.id];
     // 出荷作成は回収・在庫が進んだ段階（最終入金待ち以降）のみ（サーバー側でも同条件でガード）
     const canShip = !ship && ['最終入金待ち','最終入金完了'].includes(g.st);
@@ -2271,11 +2272,12 @@ function vOrders(){
     const allDone = g.st==='納品完了';
     return '<details class="ordcard" '+(isOpen?'open':'')+(allDone?' style="background:color-mix(in srgb,var(--good) 7%,transparent);border-color:color-mix(in srgb,var(--good) 30%,var(--grid))"':'')+' ontoggle="(viewState.open=viewState.open||{})[\''+g.id+'\']=this.open"><summary>' + selBox(g.id) +
       '<b>'+g.id+'</b> '+orderPill(g.st, g.pay)+(allDone?' <span class="small" style="color:var(--good);font-weight:700">✅完了</span>':'')+' '+readyBadge(g, ship)+(g.via?' <span class="pill" style="background:color-mix(in srgb,var(--s5) 14%,transparent);color:var(--s5)">🔁 '+NM.via+'経由</span>':'')+' <span>'+esc(g.w)+'</span><span class="muted small">'+esc(g.date)+' / '+esc(g.pay||'')+' / '+esc(g.form||'')+'</span>' +
-      '<span class="right mono"><b>'+yen(total)+'</b> <span class="muted small">税抜</span></span></summary>' +
+      '<span class="right mono"><span class="muted small">'+totalQty+'点 / </span><b>'+yen(total)+'</b> <span class="muted small">税抜</span></span></summary>' +
       '<div style="margin-top:10px">'+journeyHtml(g, ship)+'</div>' +
       '<div class="tblwrap" style="margin-top:8px"><table><tr><th>JAN</th><th>商品</th><th>容量</th><th class="num">個数</th><th class="num">定価</th><th class="num">掛率</th><th class="num">卸値</th><th class="num">小計(税抜)</th></tr>' +
       // JANは受注台帳に持っていないので商品IDで商品マスタから引く（マスタ未登録の商品は空欄）
       g.rows.map(r=>'<tr><td class="mono small">'+esc(String((product(String(r['商品ID']||'').trim())||{})['JANコード']||''))+'</td><td>'+esc(r['商品名'])+'</td><td>'+esc(r['容量'])+'</td><td class="num">'+r['個数']+'</td><td class="num">'+yen(num(r['定価（税抜）']))+'</td><td class="num">'+(isNaN(num(r['掛け率']))||String(r['掛け率']).trim()===''?esc(r['掛け率']):pctDisp(num(r['掛け率'])))+'</td><td class="num">'+yen(num(r['卸値（税抜）']))+'</td><td class="num">'+yen(num(r['小計（税抜）']))+'</td></tr>').join('') +
+      '<tr><td colspan="3" class="right"><b>合計</b></td><td class="num"><b>'+totalQty+'</b></td><td colspan="3"></td><td class="num"><b>'+yen(total)+'</b></td></tr>' +
       '</table></div>' +
       // 発注日はステータスボタンの真上。未入力のまま回収中へ進めない（スルー事故防止。サーバー側にも同じガード。2026-07-17 ユーザー指定）
       (FLOW.order.indexOf(g.st)>=2 ? (()=>{ const ordEmpty = !String(g.ord||'').trim();
@@ -5885,7 +5887,7 @@ function poBuild(wid){
     const pad = ()=>({v:null, s:XLS.text});
     const tot = [pad(),pad(),pad(),pad(),pad(),pad()];
     if(L.iri) tot.push(pad());
-    tot[tot.length-1] = {v:'合計', s:XLS.totalLbl};
+    tot[tot.length-1] = {v:'小計（上記一覧）', s:XLS.totalLbl};
     tot.push({f:'SUM('+L.qty+first+':'+L.qty+last+')', cv:0, s:XLS.totalNum});
     tot.push({f:'SUM('+L.amt+first+':'+L.amt+last+')', cv:0, s:XLS.total});
     rws.push(tot);
@@ -5911,8 +5913,20 @@ function poBuild(wid){
       line.push({f:'IF(OR('+L.qty+er+'="",F'+er+'=""),"",F'+er+'*'+L.qty+er+')', s:XLS.yen});
       rws.push(line);
     }
+    // 追記欄は小計行より下にあるため、そのままでは合計に入らない（表紙の数量・金額が追記分だけ少なくなる。
+    // 2026-09-08 ユーザー指摘）。一覧＋追記を足した「合計」を最終行に置き、表紙はこの行を参照する
+    const exLast = rws.length, exFirst = exLast - 4;   // 直前に積んだ追記欄5行
+    const grand = [pad(),pad(),pad(),pad(),pad(),pad()];
+    if(L.iri) grand.push(pad());
+    grand[grand.length-1] = {v:'合計', s:XLS.totalLbl};
+    grand.push({f:'SUM('+L.qty+first+':'+L.qty+last+')+SUM('+L.qty+exFirst+':'+L.qty+exLast+')', cv:0, s:XLS.totalNum});
+    grand.push({f:'SUM('+L.amt+first+':'+L.amt+last+')+SUM('+L.amt+exFirst+':'+L.amt+exLast+')', cv:0, s:XLS.total});
+    rws.push([]);
+    rws.push(grand);
+    const grandRow = rws.length;
+
     sheets.push({name:nameOf[b], cols:L.colw, rows:rws, freeze:PO_HEADER_ROWS});   // シート保護なし（追記欄に自由に書けるように。2026-09-05 ユーザー要望）
-    info.push({brand:b, sheet:nameOf[b], totalRow:totalRow, count:items.length, qtyCol:L.qty, amtCol:L.amt});
+    info.push({brand:b, sheet:nameOf[b], totalRow:grandRow, count:items.length, qtyCol:L.qty, amtCol:L.amt});
   });
 
   // 表紙: 宛先・希望納期と、ブランドごとの合計（明細タブの合計行を参照＝入力すると自動で動く）
@@ -5923,20 +5937,21 @@ function poBuild(wid){
   c.push([{v:'発行日', s:XLS.label},{v:issued}]);
   c.push([{v:'希望納期', s:XLS.label},{v:due}]);
   c.push([]);
-  c.push([{v:'ブランド', s:XLS.thead},{v:'品目数', s:XLS.thead},{v:'数量合計', s:XLS.thead},{v:'金額合計（税抜）', s:XLS.thead}]);
+  // 品目数の列は 2026-09-08 に削除（発注の判断に使わないため）。以降は B=数量合計 / C=金額合計
+  c.push([{v:'ブランド', s:XLS.thead},{v:'数量合計', s:XLS.thead},{v:'金額合計（税抜）', s:XLS.thead}]);
   const cFirst = c.length+1;
   info.forEach(x=>{
-    c.push([{v:x.brand, s:XLS.text},{v:x.count, s:XLS.num},
+    c.push([{v:x.brand, s:XLS.text},
       {f:"'"+x.sheet+"'!"+x.qtyCol+x.totalRow, cv:0, s:XLS.totalNum},
       {f:"'"+x.sheet+"'!"+x.amtCol+x.totalRow, cv:0, s:XLS.total}]);
   });
   const cLast = c.length;
-  c.push([{v:'合計', s:XLS.totalLbl},{v:null, s:XLS.text},
-    {f:'SUM(C'+cFirst+':C'+cLast+')', cv:0, s:XLS.totalNum},
-    {f:'SUM(D'+cFirst+':D'+cLast+')', cv:0, s:XLS.total}]);
+  c.push([{v:'合計', s:XLS.totalLbl},
+    {f:'SUM(B'+cFirst+':B'+cLast+')', cv:0, s:XLS.totalNum},
+    {f:'SUM(C'+cFirst+':C'+cLast+')', cv:0, s:XLS.total}]);
   c.push([]);
-  c.push([{v:'※ 各ブランドのタブで「希望数量」をご入力ください。この表紙の合計は自動で更新されます。', s:XLS.note}]);
-  sheets.unshift({name:'表紙', cols:[26,10,14,20], rows:c});
+  c.push([{v:'※ 各ブランドのタブで「希望数量」をご入力ください。この表紙の合計は自動で更新されます（一覧にない商品の追記欄も含みます）。', s:XLS.note}]);
+  sheets.unshift({name:'表紙', cols:[26,14,20], rows:c});
 
   const fname = ('発注書_'+wname+'_'+issued.replace(/\//g,'-')).replace(/[\\\/:*?"<>|]/g,'-') + '.xlsx';
   return { bytes: xlBuild(sheets), filename: fname, brands: info };
