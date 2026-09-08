@@ -4408,18 +4408,47 @@ function vAllocation(){
   }
   if(allocMode==='out' && outUniqueIds.length<=1){
     const items = brands.flatMap(b=>allocItems(b).map(i=>({brand:b, ...i})));
-    const preSid = outTokens.map(t=>outIdOf(t)).find(Boolean) || '';
     const dealers = outSalons.filter(s=>String(s['ストップ']||'').trim()==='');
+    // 外注先は選び直せる。選び直したら掛け率の表もその外注先のものに切り替える（2026-09-08）
+    const preSid = (ALLOC.outSid && dealers.some(s=>String(s['サロンID']).trim()===ALLOC.outSid)) ? ALLOC.outSid
+                 : (outTokens.map(t=>outIdOf(t)).find(Boolean) || String((dealers[0]||{})['サロンID']||'').trim());
     const totalQty = items.reduce((a,i)=>a+i.need,0);
+    // 💴 外注先の仕入掛け率（ブランドごと）。マスタの率を見せ、その場で直せて、💾でマスタにも保存できる（2026-09-08 ユーザー要望）
+    const rateHtml = (()=>{
+      const sRow = rows('salons').find(x=>String(x['サロンID']||'').trim()===preSid);
+      const sName = sRow ? salonLabel(sRow) : '（外注先未選択）';
+      return '<div style="margin-top:10px;padding:10px 12px;background:var(--wash);border-radius:10px">' +
+        '<div class="row"><b class="small">💴 仕入掛け率（'+esc(sName)+'・ブランドごと）</b>' +
+        '<span class="muted small">率を変えると今回の登録に効きます（仕入単価を回収台帳に記録）。「💾」を押したときだけ仕入れマスタも書き換えます</span></div>' +
+        '<table style="margin-top:6px;width:auto"><tr><th>ブランド</th><th class="num">マスタの率</th><th class="num">掛け率（%）</th><th class="num">数量</th><th class="num">仕入額（概算・税抜）</th><th></th></tr>' +
+        brands.map(b=>{
+          const master = payRateOf(sRow, b);                       // 小数（0.52）。無ければ null
+          const masterPct = master==null ? null : Math.round(master*1000)/10;
+          const cur = allocOutBulkRate(preSid, b);                  // 上書き優先の％
+          const its = items.filter(i=>i.brand===b);
+          const qty = its.reduce((a,i)=>a+i.need,0);
+          const sum = its.reduce((a,i)=>a+i.need*allocOutBulkUnit(preSid, i.pid, b),0);
+          const changed = cur!=null && cur!==masterPct;
+          const under = its.some(i=>{ const m=num((product(i.pid)||{})['AXIA仕入価格（税抜）']); return m>0 && allocOutBulkUnit(preSid,i.pid,b)<m; });
+          return '<tr><td class="small"><b>'+esc(b)+'</b></td>' +
+            '<td class="num small">'+(masterPct==null?'<span style="color:var(--s4)">未設定</span>':masterPct+'%')+'</td>' +
+            '<td class="num"><input type="number" step="0.1" value="'+esc(cur==null?'':cur)+'" placeholder="未設定" style="width:92px;text-align:right" onchange="allocOutRate(\''+esc(preSid)+'\',\''+esc(b)+'\',this.value)"></td>' +
+            '<td class="num small">'+qty+'</td>' +
+            '<td class="num small">'+(cur==null?'<span class="muted">（仕入価格で仮）</span> ':'')+yen(sum)+(under?'<div class="small" style="color:var(--s4)">⚠ マスタの仕入値を下回る商品あり</div>':'')+'</td>' +
+            '<td class="small">'+(changed||(masterPct==null&&cur!=null) ? '<button class="btn sm" onclick="allocOutRateSave(\''+esc(preSid)+'\',\''+esc(b)+'\')">💾 マスタに保存</button> ' : '') +
+              (changed ? '<button class="btn sm" onclick="allocOutRate(\''+esc(preSid)+'\',\''+esc(b)+'\',\'\')">↩ マスタの率に戻す</button>' : '')+'</td></tr>';
+        }).join('') + '</table></div>';
+    })();
     html += '<div class="card"><b class="small">⚡ 外注のみの受注（振り分け不要）</b>' +
       '<p class="muted small" style="margin:4px 0 0">仕入れ形態が外注だけの受注です。全数量をそのまま外注先からの回収として登録します（ブランドが複数でも回収番号は1つ・その後は通常どおり回収→検品→ロット処理）。</p>' +
-      '<div class="tblwrap" style="margin-top:8px"><table><tr><th>ブランド</th><th>商品</th><th>容量</th><th class="num">数量</th></tr>' +
-      items.map(i=>'<tr><td class="small">'+esc(i.brand)+'</td><td class="small">'+esc(i.name)+'</td><td class="small">'+esc(i.size||'')+'</td><td class="num">'+i.need+'</td></tr>').join('') +
-      '<tr style="background:var(--wash)"><td colspan="3"><b>合計</b></td><td class="num"><b>'+totalQty+'</b></td></tr></table></div>' +
-      '<div class="row" style="margin-top:10px"><label class="small">外注先<br><select id="outBulkSid">' +
+      '<div class="tblwrap" style="margin-top:8px"><table><tr><th>ブランド</th><th>商品</th><th>容量</th><th class="num">数量</th><th class="num">仕入単価</th><th class="num">仕入額</th></tr>' +
+      items.map(i=>{ const u=allocOutBulkUnit(preSid, i.pid, i.brand); return '<tr><td class="small">'+esc(i.brand)+'</td><td class="small">'+esc(i.name)+'</td><td class="small">'+esc(i.size||'')+'</td><td class="num">'+i.need+'</td><td class="num small">'+yen(u)+'</td><td class="num small">'+yen(u*i.need)+'</td></tr>'; }).join('') +
+      '<tr style="background:var(--wash)"><td colspan="3"><b>合計</b></td><td class="num"><b>'+totalQty+'</b></td><td></td><td class="num"><b>'+yen(items.reduce((a,i)=>a+i.need*allocOutBulkUnit(preSid,i.pid,i.brand),0))+'</b></td></tr></table></div>' +
+      '<div class="row" style="margin-top:10px"><label class="small">外注先<br><select id="outBulkSid" onchange="ALLOC.outSid=this.value;render()">' +
       dealers.map(s=>{ const sid=String(s['サロンID']).trim(); return '<option value="'+sid+'" '+(preSid===sid?'selected':'')+'>'+esc(salonLabel(s))+'</option>'; }).join('') +
       '</select></label>' +
-      '<button class="btn pri" onclick="allocOutBulk()">⚡ 全数量を一括登録（回収待ちへ）</button></div></div>';
+      '<button class="btn pri" onclick="allocOutBulk()">⚡ 全数量を一括登録（回収待ちへ）</button></div>' +
+      rateHtml + '</div>';
     return html;
   }
   const brandDone = b=>{ const t=selOrders.filter(r=>(brandOf(r['商品ID'])||'（メーカー不明）')===b);
@@ -5249,6 +5278,43 @@ function allocPrintDone(brand, kidsCsv){
     '</body></html>');
   w.document.close();
 }
+// ===== ⚡外注のみ画面の仕入掛け率（外注先×ブランド）=====
+// ALLOC.outRates = { '外注先ID|ブランド': % }。上書きは今回の登録にだけ効く（💾 を押したときだけマスタへ）
+function allocOutBulkRate(sid, brand){        // 表示・計算用の％。上書き → 仕入れマスタ → null
+  const ov = (ALLOC.outRates||{})[String(sid||'')+'|'+String(brand||'')];
+  if(ov!=='' && ov!=null && !isNaN(num(ov))) return num(ov);
+  const s = rows('salons').find(x=>String(x['サロンID']||'').trim()===String(sid||'').trim());
+  const r = payRateOf(s, brand);
+  return r!=null ? Math.round(r*1000)/10 : null;
+}
+function allocOutBulkUnit(sid, pid, brand){   // 仕入単価。固定単価 → 率×定価 → 商品マスタの仕入価格（仮）
+  const fx = fixedBuyUnit(pid);
+  if(fx!=null) return fx;
+  const rate = allocOutBulkRate(sid, brand);
+  const list = num((product(pid)||{})['定価（税抜）']);
+  if(rate!=null && list) return Math.round(list*rate/100);
+  return ownCost(pid);
+}
+function allocOutRate(sid, brand, v){
+  ALLOC.outRates = ALLOC.outRates||{};
+  const k = String(sid||'')+'|'+String(brand||'');
+  if(v==='' || v==null) delete ALLOC.outRates[k]; else ALLOC.outRates[k] = num(v);
+  render();
+}
+async function allocOutRateSave(sid, brand){   // 💾 仕入れマスタのその外注先×ブランドの率を書き換える（既に入っていても上書き）
+  const pct = allocOutBulkRate(sid, brand);
+  if(!(pct>0)){ toast('掛け率を入れてください', true); return; }
+  const s = rows('salons').find(x=>String(x['サロンID']||'').trim()===String(sid||'').trim());
+  const name = s ? salonLabel(s) : sid;
+  const master = payRateOf(s, brand);
+  if(!confirm('仕入れマスタを書き換えます。\n'+name+' × '+brand+'\n'+(master==null?'未設定':Math.round(master*1000)/10+'%')+' → '+pct+'%\n\n今後の振り分け・支払い計算はこの率で動きます。よろしいですか？')) return;
+  try{
+    const d = await apiPost('saveSalonRateCells', {cells:[{sid, brand, rate: Math.round(pct*10)/1000}], overwrite:true}, ['salons']);
+    if(d && d.saved){ delete (ALLOC.outRates||{})[String(sid)+'|'+String(brand)];   // マスタ側が正になったので上書きは外す
+      toast('仕入れマスタに保存しました（'+name+' '+brand+' '+pct+'%）'+(d.addedColumns&&d.addedColumns.length?' ※新しい列を追加: '+d.addedColumns.join('・'):'')); render(); }
+    else toast('保存されませんでした', true);
+  }catch(e){ toast('仕入れマスタへの保存に失敗しました: '+e.message, true); }
+}
 // ⚡ 外注のみ受注の一括登録（振り分けスキップ・回収番号1つ。2026-07-18）
 async function allocOutBulk(){
   const selIds = Object.keys(ALLOC.sel).filter(k=>ALLOC.sel[k]);
@@ -5256,13 +5322,29 @@ async function allocOutBulk(){
   const sid = sel ? sel.value : '';
   if(!sid){ toast('外注先を選んでください', true); return; }
   const brands = [...new Set(rows('orderLedger').filter(r=>ALLOC.sel[String(r['受注ID']||'').trim()]).map(r=>brandOf(r['商品ID'])||'（メーカー不明）'))];
-  const items = brands.flatMap(b=>allocItems(b)).map(i=>({pid:i.pid, name:i.name, size:i.size, qty:i.need})).filter(x=>x.qty>0);
+  const items = brands.flatMap(b=>allocItems(b).map(i=>({brand:b, ...i}))).map(i=>({pid:i.pid, name:i.name, size:i.size, qty:i.need, brand:i.brand})).filter(x=>x.qty>0);
   if(!items.length){ toast('数量がありません', true); return; }
-  const name = salonLabel(rows('salons').find(s=>String(s['サロンID']).trim()===sid)||{}) || sid;
+  const sRow = rows('salons').find(s=>String(s['サロンID']).trim()===sid);
+  const name = salonLabel(sRow||{}) || sid;
   const total = items.reduce((a,x)=>a+x.qty,0);
-  if(!confirm('外注のみの一括登録をします。\n対象受注: '+selIds.join(', ')+'\n外注先: '+name+'\n合計 '+total+'点 を回収番号1つで「回収待ち」に登録します。\n\n⚠ 登録後は、この画面での修正はできません（直す場合は回収・検品側で削除してやり直しになります）。よろしいですか？')) return;
-  const res = await act('commitOutsourceBulk', {orderIds:selIds, salonId:sid, items}, '外注仕入を登録しました', ['collectionLedger','orderLedger']);
+  // 画面で率を上書きしたブランドの商品だけ、実額を回収台帳へ焼き付ける（上書きしていない分はマスタの率から計算＝従来どおり）
+  const units = {};
+  items.forEach(it=>{
+    const ov = (ALLOC.outRates||{})[sid+'|'+it.brand];
+    if(ov==='' || ov==null || isNaN(num(ov))) return;
+    const u = allocOutBulkUnit(sid, it.pid, it.brand); if(u>0) units[sid+'|'+it.pid] = Math.round(u);
+  });
+  // マスタに率が無いブランドは、入れた率を初期値として覚えさせる（振り分け確定時と同じ・空欄だった分だけ）
+  const learn = brands.map(b=>{
+    if(payRateOf(sRow, b)!=null) return null;
+    const pct = allocOutBulkRate(sid, b);
+    return pct>0 ? {sid, brand:b, rate: Math.round(pct*10)/1000} : null;
+  }).filter(Boolean);
+  const rateTxt = brands.map(b=>{ const p=allocOutBulkRate(sid,b); return '　'+b+': '+(p==null?'未設定（仕入価格で仮）':p+'%'); }).join('\n');
+  if(!confirm('外注のみの一括登録をします。\n対象受注: '+selIds.join(', ')+'\n外注先: '+name+'\n仕入掛け率:\n'+rateTxt+'\n合計 '+total+'点 を回収番号1つで「回収待ち」に登録します。\n\n⚠ 登録後は、この画面での修正はできません（直す場合は回収・検品側で削除してやり直しになります）。よろしいですか？')) return;
+  const res = await act('commitOutsourceBulk', {orderIds:selIds, salonId:sid, items:items.map(x=>({pid:x.pid,name:x.name,size:x.size,qty:x.qty})), units}, '外注仕入を登録しました', ['collectionLedger','orderLedger']);
   if(res){
+    if(learn.length) saveLearnedRates('saveSalonRateCells', learn, 'salons', '仕入れマスタ');
     const warning=allocFormUpdateWarning(res);
     ALLOC.lastCommit={brand:'外注仕入',ids:[res.collectionId],printable:false,warning};
     if(warning) toast(warning,true);
