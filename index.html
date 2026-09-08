@@ -1681,6 +1681,7 @@ function anbetsuSupply(){
   // 回収IDの若い順に、対象受注の若い順で充当する（振り分けが受注の必要数を埋めていく順番と同じ）
   // 余剰在庫からの充当（区分=在庫）は仕入先の実額が無いので仕入先の段には出さず「📦 余剰在庫」の段にまとめる。
   // 必要数はきちんと減らす（以前は行ごと除外していたため、在庫で埋めた分が「未振分（仮）」に残り続けていた。2026-09-08）
+  const over = {};   // 受注ID|ブランド → [{kid, pid, qty}] 回収数が受注数を超えた分（数量不一致の検知用）
   const stock = {};  // 受注ID|ブランド → {qty, amt, listAmt}（商品マスタの仕入価格で評価）
   const addStock = (oid, pid, qty)=>{
     if(qty<=0) return;
@@ -1706,10 +1707,12 @@ function anbetsuSupply(){
       put(oid, t, r); need[oid][pid] -= t; left -= t;
     });
     // どの受注も満ちていた分（数量を減らした後などに出る）は先頭の受注に仕入だけ寄せて取りこぼさない。
-    // 売れていない数量なので売上は付けない（Codexレビュー指摘・2026-09-08）
-    if(left>0) put(oids[0], left, r, false);
+    // 売れていない数量なので売上は付けない。仕入と卸の数量は本来一致するはずなので、超過は over に記録して ⚠ を出す（2026-09-08）
+    if(left>0){ put(oids[0], left, r, false);
+      const ok = oids[0]+'|'+(brandOf(pid)||'（メーカー不明）');
+      (over[ok] = over[ok] || []).push({kid:String(r['回収ID']||'').trim(), pid, qty:left}); }
   });
-  return {got, left:need, stock, sellOf};   // left = 充当しきれず残った必要数（＝まだ振り分けていない分）
+  return {got, left:need, stock, sellOf, over};   // left = 充当しきれず残った必要数（＝まだ振り分けていない分）
 }
 // 仕入形態の文中に出てくる仕入先名へ種別を添える（例: 神澤さん → 神澤さん（外注））。
 // 同じ名前がサロンにも仕入先にも見えて紛らわしい、というユーザー指摘への対応（2026-08-28）
@@ -1796,6 +1799,7 @@ function calcAnbetsu(month){
     });
     l.sups.sort((a,b)=>b.amt-a.amt);
     // 余剰在庫からの充当分（区分=在庫）。仕入先は無いが、案件の原価としては商品マスタの仕入価格で見る
+    l.over = sup.over[key] || [];   // 回収数が受注数を超えた明細（あれば異常）
     const sk = sup.stock[key];
     if(sk && sk.qty>0){ l.stock = {qty:sk.qty, amt:sk.amt, sales:sk.sales||0, rate:sk.listAmt>0?sk.amt/sk.listAmt:null}; l.cost += sk.amt; }
     // 未振分（回収台帳に無い分）は商品マスタの仕入価格で仮計上する
@@ -1868,7 +1872,8 @@ function anbetsuHtml(m){
     const out = [];
     // 受注管理で入れた案件のメモを先頭に太字で（2026-09-08 ユーザー要望）
     if(l.memo) out.push('<div><b>'+esc(l.memo)+'</b></div>');
-    { const gap = anbetsuSupLines(l).gap; if(gap) out.push('<div style="color:var(--crit)">⚠ 仕入ごとの売上の合計が総売上と '+yen(Math.abs(gap))+' 合いません（回収数と受注数のズレなど。受注・回収を確認）</div>'); }
+    { const gap = anbetsuSupLines(l).gap; if(gap) out.push('<div style="color:var(--crit)">⚠ 仕入ごとの売上の合計が総売上と '+yen(Math.abs(gap))+' 合いません（受注・回収を確認）</div>'); }
+    if((l.over||[]).length) out.push('<div style="color:var(--crit)">⚠ 回収数が受注数より '+l.over.reduce((a,o)=>a+o.qty,0)+'点 多い（'+esc([...new Set(l.over.map(o=>o.kid))].join(', '))+'）。超過分は仕入だけ計上・売上なし。受注か回収の数量を確認</div>');
     // 仕入: 仕入先ごとに、内訳が2種類以上あるときだけ書く
     l.sups.forEach(sp=>{
       const mx = sp.mix||[];
@@ -1985,6 +1990,7 @@ function anbetsuMemoText(l){
   const out = [];
   if(l.memo) out.push(l.memo);   // 受注管理で入れた案件のメモ
   { const gap = anbetsuSupLines(l).gap; if(gap) out.push('⚠ 仕入ごとの売上の合計が総売上と '+Math.abs(gap)+'円 合いません'); }
+  if((l.over||[]).length) out.push('⚠ 回収数が受注数より '+l.over.reduce((a,o)=>a+o.qty,0)+'点 多い（'+[...new Set(l.over.map(o=>o.kid))].join(', ')+'）');
   (l.sups||[]).forEach(sp=>{
     const mx = sp.mix||[]; if(mx.length<2) return;
     out.push(sp.name+' の掛率 '+(sp.rate==null?'—':(Math.round(sp.rate*1000)/10)+'%')+' の内訳: ' +
