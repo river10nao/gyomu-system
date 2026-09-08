@@ -4420,7 +4420,7 @@ function vAllocation(){
       return '<div style="margin-top:10px;padding:10px 12px;background:var(--wash);border-radius:10px">' +
         '<div class="row"><b class="small">💴 仕入掛け率（'+esc(sName)+'・ブランドごと）</b>' +
         '<span class="muted small">率を変えると今回の登録に効きます（仕入単価を回収台帳に記録）。「💾」を押したときだけ仕入れマスタも書き換えます</span></div>' +
-        '<table style="margin-top:6px;width:auto"><tr><th>ブランド</th><th class="num">マスタの率</th><th class="num">掛け率（%）</th><th class="num">数量</th><th class="num">仕入額（概算・税抜）</th><th></th></tr>' +
+        '<table style="margin-top:6px;width:auto"><tr><th>ブランド</th><th class="num">掛け率（%）</th><th class="num">数量</th><th class="num">仕入額（概算・税抜）</th><th></th></tr>' +
         brands.map(b=>{
           const master = payRateOf(sRow, b);                       // 小数（0.52）。無ければ null
           const masterPct = master==null ? null : Math.round(master*1000)/10;
@@ -4430,13 +4430,13 @@ function vAllocation(){
           const sum = its.reduce((a,i)=>a+i.need*allocOutBulkUnit(preSid, i.pid, b),0);
           const changed = cur!=null && cur!==masterPct;
           const under = its.some(i=>{ const m=num((product(i.pid)||{})['AXIA仕入価格（税抜）']); return m>0 && allocOutBulkUnit(preSid,i.pid,b)<m; });
+          // マスタの率は別列にせず、入力欄に入っている値がそれ（変えたときだけ「↩ マスタの率に戻す」が出る。2026-09-08 ユーザー指定）
           return '<tr><td class="small"><b>'+esc(b)+'</b></td>' +
-            '<td class="num small">'+(masterPct==null?'<span style="color:var(--s4)">未設定</span>':masterPct+'%')+'</td>' +
             '<td class="num"><input type="number" step="0.1" value="'+esc(cur==null?'':cur)+'" placeholder="未設定" style="width:92px;text-align:right" onchange="allocOutRate(\''+esc(preSid)+'\',\''+esc(b)+'\',this.value)"></td>' +
             '<td class="num small">'+qty+'</td>' +
             '<td class="num small">'+(cur==null?'<span class="muted">（仕入価格で仮）</span> ':'')+yen(sum)+(under?'<div class="small" style="color:var(--s4)">⚠ マスタの仕入値を下回る商品あり</div>':'')+'</td>' +
             '<td class="small">'+(changed||(masterPct==null&&cur!=null) ? '<button class="btn sm" onclick="allocOutRateSave(\''+esc(preSid)+'\',\''+esc(b)+'\')">💾 マスタに保存</button> ' : '') +
-              (changed ? '<button class="btn sm" onclick="allocOutRate(\''+esc(preSid)+'\',\''+esc(b)+'\',\'\')">↩ マスタの率に戻す</button>' : '')+'</td></tr>';
+              (changed ? '<button class="btn sm" onclick="allocOutRate(\''+esc(preSid)+'\',\''+esc(b)+'\',\'\')">↩ マスタの率（'+masterPct+'%）に戻す</button>' : '')+'</td></tr>';
         }).join('') + '</table></div>';
     })();
     html += '<div class="card"><b class="small">⚡ 外注のみの受注（振り分け不要）</b>' +
