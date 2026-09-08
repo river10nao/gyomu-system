@@ -2273,8 +2273,9 @@ function vOrders(){
       '<b>'+g.id+'</b> '+orderPill(g.st, g.pay)+(allDone?' <span class="small" style="color:var(--good);font-weight:700">✅完了</span>':'')+' '+readyBadge(g, ship)+(g.via?' <span class="pill" style="background:color-mix(in srgb,var(--s5) 14%,transparent);color:var(--s5)">🔁 '+NM.via+'経由</span>':'')+' <span>'+esc(g.w)+'</span><span class="muted small">'+esc(g.date)+' / '+esc(g.pay||'')+' / '+esc(g.form||'')+'</span>' +
       '<span class="right mono"><b>'+yen(total)+'</b> <span class="muted small">税抜</span></span></summary>' +
       '<div style="margin-top:10px">'+journeyHtml(g, ship)+'</div>' +
-      '<div class="tblwrap" style="margin-top:8px"><table><tr><th>商品</th><th>容量</th><th class="num">個数</th><th class="num">定価</th><th class="num">掛率</th><th class="num">卸値</th><th class="num">小計(税抜)</th></tr>' +
-      g.rows.map(r=>'<tr><td>'+esc(r['商品名'])+'</td><td>'+esc(r['容量'])+'</td><td class="num">'+r['個数']+'</td><td class="num">'+yen(num(r['定価（税抜）']))+'</td><td class="num">'+(isNaN(num(r['掛け率']))||String(r['掛け率']).trim()===''?esc(r['掛け率']):pctDisp(num(r['掛け率'])))+'</td><td class="num">'+yen(num(r['卸値（税抜）']))+'</td><td class="num">'+yen(num(r['小計（税抜）']))+'</td></tr>').join('') +
+      '<div class="tblwrap" style="margin-top:8px"><table><tr><th>JAN</th><th>商品</th><th>容量</th><th class="num">個数</th><th class="num">定価</th><th class="num">掛率</th><th class="num">卸値</th><th class="num">小計(税抜)</th></tr>' +
+      // JANは受注台帳に持っていないので商品IDで商品マスタから引く（マスタ未登録の商品は空欄）
+      g.rows.map(r=>'<tr><td class="mono small">'+esc(String((product(String(r['商品ID']||'').trim())||{})['JANコード']||''))+'</td><td>'+esc(r['商品名'])+'</td><td>'+esc(r['容量'])+'</td><td class="num">'+r['個数']+'</td><td class="num">'+yen(num(r['定価（税抜）']))+'</td><td class="num">'+(isNaN(num(r['掛け率']))||String(r['掛け率']).trim()===''?esc(r['掛け率']):pctDisp(num(r['掛け率'])))+'</td><td class="num">'+yen(num(r['卸値（税抜）']))+'</td><td class="num">'+yen(num(r['小計（税抜）']))+'</td></tr>').join('') +
       '</table></div>' +
       // 発注日はステータスボタンの真上。未入力のまま回収中へ進めない（スルー事故防止。サーバー側にも同じガード。2026-07-17 ユーザー指定）
       (FLOW.order.indexOf(g.st)>=2 ? (()=>{ const ordEmpty = !String(g.ord||'').trim();
