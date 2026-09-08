@@ -1462,9 +1462,6 @@ function vDashboard(){
   // 範囲 = 仕入先支払い＋仲介2%＋紹介報酬＋精算代行（前月分の月次精算・振込手数料目安・当月MTG前払い都度）。
   // サロン直接払いの店販請求元（PAYIDS.maverick）は会社の出金ではないため対象外
   const todayD = new Date();
-  // 本番データは 2026/08 受注分から（7月以前は受注がほぼ入っておらず仕入だけが載って出金が過大になるため、出金の計算から外す。2026-09-08 ユーザー指定）
-  const CASH_START = '2026/08';
-  const beforeStart = dateStr => { const mm = monthOf(dateStr); return !!mm && mm < CASH_START; };
   const outDone = [], outPend = [];   // 確定=支払日が過ぎた/消し込み・前払い済み ／ 予定=これから支払う
   const pushOut = (label, v, pd, color, paidFlag, tipNote)=>{ if(v<=0 || !pd) return;
     if(monthOf(payFmt(pd))!==m) return;   // 支払日が対象月のものだけ積む
@@ -1477,8 +1474,7 @@ function vDashboard(){
     if(supId===PAYIDS.maverick) return;   // サロン直接払い（会社の出金なし）
     const s = csl.sal[supId]||{}; const isPure = supId===PAYIDS.pure;
     const per = {};
-    csl.bySup[supId].forEach(l=>{ if(beforeStart(l.date)) return;   // 本番開始前の仕入は出金に載せない
-      const pr=payPeriod(l.date, String(s['締め日']||''), String(s['支払日']||'')); (per[pr.key]=per[pr.key]||{pr, sub:0, d0:l.date}).sub+=l.amt; });
+    csl.bySup[supId].forEach(l=>{ const pr=payPeriod(l.date, String(s['締め日']||''), String(s['支払日']||'')); (per[pr.key]=per[pr.key]||{pr, sub:0, d0:l.date}).sub+=l.amt; });
     Object.values(per).forEach(g=>{
       const total = g.sub + (isPure ? Math.floor(g.sub*0.1) : Math.round(g.sub*0.1));   // 税込（口座請求元は伝票単位切捨の近似）
       let pd = g.pr.pd, assumed = '';
@@ -1490,7 +1486,7 @@ function vDashboard(){
   // 2) 仲介手数料2%（口座請求元経由の全ブランド。基準額=定価×2%・2026-07-23 実請求書で確定。締め支払は口座請求元と同サイクル）
   (()=>{ const pureRow=csl.sal[PAYIDS.pure]||{}, brokerRow=csl.sal[PAYIDS.broker]||{};
     const per={};
-    (csl.bySup[PAYIDS.pure]||[]).forEach(l=>{ if(beforeStart(l.date)) return;
+    (csl.bySup[PAYIDS.pure]||[]).forEach(l=>{
       const pr=payPeriod(l.date, String(pureRow['締め日']||''), String(pureRow['支払日']||'')); (per[pr.key]=per[pr.key]||{pr,sub:0}).sub+=num(l.listAmt); });
     Object.values(per).forEach(g=>pushOut((salonLabel(brokerRow)||'仲介')+' 2%', Math.round(g.sub*BROKER_RATE), g.pr.pd, 'var(--s4)'));
   })();
@@ -1503,7 +1499,7 @@ function vDashboard(){
       const oid=String(r['受注ID']||'').trim(); if(!oid) return;
       (byOrder[oid]=byOrder[oid]||{ord:String(r['発注日']||'').trim(), sales:0, cost:0});
       byOrder[oid].sales+=num(r['小計（税抜）']); byOrder[oid].cost+=num(r['個数'])*ownCost(String(r['商品ID']||'').trim()); });
-    Object.values(byOrder).filter(o=>o.ord && !beforeStart(o.ord)).forEach(o=>{
+    Object.values(byOrder).filter(o=>o.ord).forEach(o=>{
       const d=new Date(o.ord.replace(/\//g,'-')); if(isNaN(d)) return;
       const pd = d.getDate()<=15 ? payEom(d.getFullYear(), d.getMonth()) : new Date(d.getFullYear(), d.getMonth()+1, 10);
       pushOut((salonLabel(csl.sal[rid]||{})||'紹介')+'報酬', Math.round((base==='売上'?o.sales:(o.sales-o.cost))*rate), pd, 'var(--s4)');
@@ -1512,14 +1508,12 @@ function vDashboard(){
   // 4) 精算代行: 前月分の月次精算（当月末払い・消し込み済みなら確定扱い）＋振込手数料目安＋当月のMTG前払い（都度）
   (()=>{ const [cy,cm0]=m.split('/').map(Number);
     const prevM = cm0===1 ? (cy-1)+'/12' : cy+'/'+String(cm0-1).padStart(2,'0');
-    const spPrev = prevM < CASH_START ? [] : calcSalonPay(prevM);   // 本番開始前の月の精算は載せない
+    const spPrev = calcSalonPay(prevM);
     const spNet = spPrev.reduce((a,l)=>a+Math.max(l.net,0),0);
     const log = rows('salonPayLog').find(r=>String(r['月']||'').trim()===prevM);
-    if(prevM >= CASH_START){
-      pushOut(NM.spay+'精算('+prevM+'分)', log?(num(log['金額'])||spNet):spNet, payEom(cy,cm0-1), 'var(--s5)', log?true:null, log?'消し込み済み':'');
-      const feeSalons = spPrev.filter(l=>l.net>0||l.mtg>0).length;
-      pushOut(NM.spay+'手数料 目安', feeSalons*3500, payEom(cy,cm0-1), 'var(--s5)', log?true:null, feeSalons+'軒×3,500円（実際に振込したサロン数で確定）');
-    }
+    pushOut(NM.spay+'精算('+prevM+'分)', log?(num(log['金額'])||spNet):spNet, payEom(cy,cm0-1), 'var(--s5)', log?true:null, log?'消し込み済み':'');
+    const feeSalons = spPrev.filter(l=>l.net>0||l.mtg>0).length;
+    pushOut(NM.spay+'手数料 目安', feeSalons*3500, payEom(cy,cm0-1), 'var(--s5)', log?true:null, feeSalons+'軒×3,500円（実際に振込したサロン数で確定）');
     let mtgDone2=0, mtgPend2=0;   // MTG前払い（都度）: 当月発生分をMTG前払い済フラグで確定/予定に分ける
     rows('collectionLedger').forEach(r=>{ if(String(r['削除']||'').trim()!=='') return;
       if(String(r['区分']||'卸').trim()!=='卸') return;
@@ -1561,7 +1555,7 @@ function vDashboard(){
     cashRow('💰 入金', cashIn, 'ベタ塗り=確定 '+yen(cashInDone)+'（入金済み）／斜線=予定 '+yen(cashInPend)+'（未入金の請求書 '+pendDocs.length+'枚・税込）',
       segsHtml(docSegs(settledDocs, 'var(--s2)', false, '入金済み').concat(
         docSegs(pendDocs, 'var(--s2)', true, '入金予定')))) +
-    cashRow('📤 出金', cashOut, 'ベタ塗り=確定 '+yen(cashOutDone)+'（支払日経過・消し込み/前払い済み）／斜線=予定 '+yen(cashOutPend)+'。<b>'+m.split('/')[1]+'月に支払日が来るもの</b>を支払先×支払日で表示（'+CASH_START+' 以降の仕入・発注分のみ）: <span style="color:var(--s3)">■</span>仕入 <span style="color:var(--s4)">■</span>仲介/紹介 <span style="color:var(--s5)">■</span>精算代行',
+    cashRow('📤 出金', cashOut, 'ベタ塗り=確定 '+yen(cashOutDone)+'（支払日経過・消し込み/前払い済み）／斜線=予定 '+yen(cashOutPend)+'。<b>'+m.split('/')[1]+'月に支払日が来るもの</b>を支払先×支払日で表示: <span style="color:var(--s3)">■</span>仕入 <span style="color:var(--s4)">■</span>仲介/紹介 <span style="color:var(--s5)">■</span>精算代行',
       segsHtml(outDone.map((x,i)=>({label:x.label, v:x.v, color:x.color, alt:i%2===1, striped:false, tip:x.tip})).concat(
         outPend.map((x,i)=>({label:x.label, v:x.v, color:x.color, alt:i%2===1, striped:true, tip:x.tip}))))) +
     cashRow('🧮 差引の手残り（概算）', cashNet, '',
