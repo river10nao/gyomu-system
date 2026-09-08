@@ -3443,13 +3443,8 @@ function vStock(){
     '<button class="btn right" onclick="exportTable(\'在庫台帳\',\'stock\')">CSV出力</button></div>' +
   '<div class="card tblwrap"><b class="small">通常在庫（回収入庫・業者仕入）</b><div style="margin-top:8px">'+stockTable(main,'該当する在庫がありません')+'</div></div>' +
   '<div class="card tblwrap"><b class="small">余剰在庫（回収残・キャンセル・返品など）</b><div style="margin-top:8px">'+stockTable(surplus,'余剰在庫はありません')+'</div></div>' +
-  '<div class="card"><b class="small">出庫履歴（最新20件）</b><div class="tblwrap" style="margin-top:8px"><table><tr><th>日付</th><th>在庫ID</th><th>商品</th><th>仕入元（サロン）</th><th class="num">出庫数</th><th>出庫先</th><th>出荷ID</th><th>受注ID</th></tr>' +
-    rows('stockLog').filter(r=>String(r['在庫ID']||'').trim()!=='').slice(-20).reverse().map(r=>{
-      // 在庫ID → 在庫台帳の仕入元名（どこのサロンから来たロットか）
-      const lot = rows('stock').find(z=>String(z['在庫ID']).trim()===String(r['在庫ID']).trim());
-      return '<tr><td>'+esc(r['日付'])+'</td><td class="mono small">'+esc(r['在庫ID'])+'</td><td>'+esc(r['商品名'])+'</td><td class="small">'+esc(lot?(lot['仕入元名']||'—'):'—')+'</td><td class="num">'+r['出庫数']+'</td><td>'+esc(r['出庫先'])+'</td><td class="mono small">'+esc(r['出荷ID']||'')+'</td><td class="mono small">'+esc(r['受注ID']||'')+'</td></tr>';
-    }).join('') +
-  '</table></div></div>';
+  // 出庫履歴（最新20件）の表は 2026-09-08 に画面から外した（ユーザー指定）。出庫ログシートは残数計算の根拠なのでスプシ側にはそのまま残す
+  '';
 }
 
 // ===== 画面: 出荷 =====
