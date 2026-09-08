@@ -1159,10 +1159,10 @@ function calcSales(month){
     const b=brandOf(pid); if(b) byB[b]=(byB[b]||0)+sub;
   });
   // 仕入は案件別収支と同じ実額（仕入先の掛け率ベース）。KPIと下の表で数字が食い違わないように揃える（2026-08-28）
-  let prov=0;
-  calcAnbetsu(month).forEach(l=>{ cost+=l.cost; prov+=l.prov; });
+  let prov=0, fee=0;
+  calcAnbetsu(month).forEach(l=>{ cost+=l.cost; prov+=l.prov; fee+=l.fee; });   // fee = 仲介2%＋紹介報酬（案件別収支と同じ）
   const goal = rows('monthlyGoals').find(g=>monthOf(g['月'])===month);
-  return {sales, cost, prov, profit:sales-cost, byW, byB,
+  return {sales, cost, prov, fee, profit:sales-cost, net:sales-cost-fee, byW, byB,
     goal: goal?{sales:num(goal['売上目標（税抜）']),profit:num(goal['利益目標（税抜）']),buy:num(goal['仕入目標（税抜）'])}:null};
 }
 function calcSalonPay(month){
@@ -1601,7 +1601,8 @@ function vDashboard(){
   '<div class="kpis">' +
     kpi('売上（税抜）', yen(s.sales)) +
     kpi('仕入れ額（税抜）', yen(s.cost), s.prov ? '内 '+yen(s.prov)+' は未振分のため仮' : '実額（仕入先の掛け率ベース）') +
-    kpi('利益（概算）', yen(s.profit), s.sales>0 ? '利益率 '+Math.round(s.profit/s.sales*100)+'%' : '') +
+    // 実利益 = 売上 − 仕入 − 手数料（仲介2%・紹介報酬）。案件別収支の実利益の月合計と同じ（2026-09-08 ユーザー要望）
+    kpi('実利益（概算・税抜）', yen(s.net), (s.fee ? '手数料 −'+yen(s.fee)+' 差引済み' : '手数料なし') + (s.sales>0 ? ' ／ 売上比 '+Math.round(s.net/s.sales*100)+'%' : '')) +
     // 目標達成率 = 売上実績 ÷「月次目標」シートの売上目標。利益目標も入っていれば添える（2026-07-18 ユーザー要望）
     (()=>{ const g=s.goal||{};
       const sr = g.sales ? Math.round(s.sales/g.sales*100) : null;
