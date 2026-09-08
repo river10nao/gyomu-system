@@ -1464,13 +1464,7 @@ function vDashboard(){
   const todayD = new Date();
   // 本番データは 2026/08 受注分から（7月以前は受注がほぼ入っておらず仕入だけが載って出金が過大になるため、出金の計算から外す。2026-09-08 ユーザー指定）
   const CASH_START = '2026/08';
-  // 「7月からの仕入」＝紐づく受注の受注日が 2026/08 より前のもの（発注日は8月でも除外）。受注に紐づかない仕入は発注日で判定
-  const beforeStart = l => {
-    const oids = String(l.oids||'').split(',').map(x=>x.trim()).filter(Boolean);
-    const om = oids.map(o=>monthOf(String((oInfo[o]||{}).odate||''))).filter(Boolean).sort();
-    const mm = om.length ? om[0] : monthOf(l.date);
-    return !!mm && mm < CASH_START;
-  };
+  const beforeStart = dateStr => { const mm = monthOf(dateStr); return !!mm && mm < CASH_START; };
   const outDone = [], outPend = [];   // 確定=支払日が過ぎた/消し込み・前払い済み ／ 予定=これから支払う
   const pushOut = (label, v, pd, color, paidFlag, tipNote)=>{ if(v<=0 || !pd) return;
     if(monthOf(payFmt(pd))!==m) return;   // 支払日が対象月のものだけ積む
@@ -1483,7 +1477,7 @@ function vDashboard(){
     if(supId===PAYIDS.maverick) return;   // サロン直接払い（会社の出金なし）
     const s = csl.sal[supId]||{}; const isPure = supId===PAYIDS.pure;
     const per = {};
-    csl.bySup[supId].forEach(l=>{ if(beforeStart(l)) return;   // 本番開始前（7月以前の受注）の仕入は出金に載せない
+    csl.bySup[supId].forEach(l=>{ if(beforeStart(l.date)) return;   // 本番開始前の仕入は出金に載せない
       const pr=payPeriod(l.date, String(s['締め日']||''), String(s['支払日']||'')); (per[pr.key]=per[pr.key]||{pr, sub:0, d0:l.date}).sub+=l.amt; });
     Object.values(per).forEach(g=>{
       const total = g.sub + (isPure ? Math.floor(g.sub*0.1) : Math.round(g.sub*0.1));   // 税込（口座請求元は伝票単位切捨の近似）
@@ -1496,7 +1490,7 @@ function vDashboard(){
   // 2) 仲介手数料2%（口座請求元経由の全ブランド。基準額=定価×2%・2026-07-23 実請求書で確定。締め支払は口座請求元と同サイクル）
   (()=>{ const pureRow=csl.sal[PAYIDS.pure]||{}, brokerRow=csl.sal[PAYIDS.broker]||{};
     const per={};
-    (csl.bySup[PAYIDS.pure]||[]).forEach(l=>{ if(beforeStart(l)) return;
+    (csl.bySup[PAYIDS.pure]||[]).forEach(l=>{ if(beforeStart(l.date)) return;
       const pr=payPeriod(l.date, String(pureRow['締め日']||''), String(pureRow['支払日']||'')); (per[pr.key]=per[pr.key]||{pr,sub:0}).sub+=num(l.listAmt); });
     Object.values(per).forEach(g=>pushOut((salonLabel(brokerRow)||'仲介')+' 2%', Math.round(g.sub*BROKER_RATE), g.pr.pd, 'var(--s4)'));
   })();
@@ -1507,9 +1501,9 @@ function vDashboard(){
     const byOrder={};
     rows('orderLedger').filter(r=>String(r['卸先ID']||'').trim()===wid && String(r['削除']||'').trim()==='').forEach(r=>{
       const oid=String(r['受注ID']||'').trim(); if(!oid) return;
-      (byOrder[oid]=byOrder[oid]||{oid, ord:String(r['発注日']||'').trim(), sales:0, cost:0});
+      (byOrder[oid]=byOrder[oid]||{ord:String(r['発注日']||'').trim(), sales:0, cost:0});
       byOrder[oid].sales+=num(r['小計（税抜）']); byOrder[oid].cost+=num(r['個数'])*ownCost(String(r['商品ID']||'').trim()); });
-    Object.values(byOrder).filter(o=>o.ord && !beforeStart({oids:o.oid, date:o.ord})).forEach(o=>{
+    Object.values(byOrder).filter(o=>o.ord && !beforeStart(o.ord)).forEach(o=>{
       const d=new Date(o.ord.replace(/\//g,'-')); if(isNaN(d)) return;
       const pd = d.getDate()<=15 ? payEom(d.getFullYear(), d.getMonth()) : new Date(d.getFullYear(), d.getMonth()+1, 10);
       pushOut((salonLabel(csl.sal[rid]||{})||'紹介')+'報酬', Math.round((base==='売上'?o.sales:(o.sales-o.cost))*rate), pd, 'var(--s4)');
