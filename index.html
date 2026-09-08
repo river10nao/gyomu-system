@@ -1301,7 +1301,13 @@ function vDashboard(){
     const kind = String(d['種類']||'');
     const st = (oInfo[String(d['受注ID']||'').trim()]||{}).st;
     if(!st) return false;
-    if(kind==='請求書（全額）'||kind===NM.via+'請求書（全額）') return !paidDone(st);   // 全額1枚 = 入金完了までずっと待ち
+    if(kind==='請求書（全額）'||kind===NM.via+'請求書（全額）'){
+      // 発注時一括請求は入金してから 振分/発注 へ進む運用なので、半金入金待ちを越えたら入金済み（GASの期限切れ判定と同じ。2026-09-08）。
+      // 納品前・納品後一括の全額請求書は最後に請求するものなので、従来どおり入金完了まで待ち
+      const pay = String((oInfo[String(d['受注ID']||'').trim()]||{}).pay||'').trim();
+      if(pay==='発注時一括請求' || pay==='一括請求') return ['商談中','半金入金待ち'].includes(String(st).trim());
+      return !paidDone(st);
+    }
     return (DOC_PEND_RULES[kind]||[]).includes(st);
   }).map(d=>{ const rv=creditRecv(d['受注ID']);   // 掛け払い案件は「自社に入る日=着金予定」で並べ・期限切れ判定する
     d._due = rv || String(d['支払期限']||'').trim(); d._recv = !!rv; return d;
