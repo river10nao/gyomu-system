@@ -1733,7 +1733,7 @@ function calcAnbetsu(month){
     const brand = brandOf(r['商品ID']) || '（メーカー不明）';
     const key = oid+'|'+brand;
     if(!map[key]) map[key] = {oid, brand, w:r['卸先名'], wid:String(r['卸先ID']||'').trim(),
-      date:r['受注日'], st:r['ステータス'], form:r['仕入れ形態'],
+      date:r['受注日'], st:r['ステータス'], form:r['仕入れ形態'], memo:String(r['メモ']||'').trim(),
       sales:0, list:0, cost:0, sups:[], stock:null, prov:0, provQty:0, provSales:0, fees:[], fee:0, net:0, wmix:{}};
     const sub = num(r['小計（税抜）']);
     map[key].sales += sub;
@@ -1830,6 +1830,8 @@ function anbetsuHtml(m){
   const mixNote = mix => (mix||[]).map(m=>m.why+(mixPct(m)==null?'':'＝'+mixPct(m)+'%')+'（'+m.items.size+'品/'+m.qty+'点）').join('　');
   const memoOf = l => {
     const out = [];
+    // 受注管理で入れた案件のメモを先頭に太字で（2026-09-08 ユーザー要望）
+    if(l.memo) out.push('<div><b>'+esc(l.memo)+'</b></div>');
     // 仕入: 仕入先ごとに、内訳が2種類以上あるときだけ書く
     l.sups.forEach(sp=>{
       const mx = sp.mix||[];
@@ -1852,9 +1854,10 @@ function anbetsuHtml(m){
       'onclick="anbetsuMemoMore(\''+id+'\')">もっと見る</button>';
   };
   // 手数料セル: 合計をマイナス表示し、下に「※神澤さん 仲介2%」のように内訳を並べる
+  // 内訳が1件のときは金額を繰り返さない（−¥49,838 ※神澤さん 仲介2% だけ。2026-09-08 ユーザー指定）
   const feeCellOf = (fee, fees) => !fee ? '<span class="muted">—</span>' :
     '<b style="color:var(--crit)">−'+yen(fee)+'</b>' +
-    fees.map(f=>'<div class="small muted" title="'+esc(f.note)+'">※'+esc(f.who)+' '+esc(f.what)+' '+yen(f.amt)+'</div>').join('');
+    fees.map(f=>'<div class="small muted" title="'+esc(f.note)+'">※'+esc(f.who)+' '+esc(f.what)+(fees.length>1?' '+yen(f.amt):'')+'</div>').join('');
 
   // 振り分け表（サロンごとの内訳）へのリンク。確定済みの回収があるブランドだけ出す
   const cov = allocCoverageMemo();
@@ -1866,7 +1869,7 @@ function anbetsuHtml(m){
 
   // ブランド列はスプシのセル結合の見た目（rowspan）。ブランド小計行は出さず、枠消化だけブランドセル内に表示（2026-07-14 指定）
   // 仕入先は1社1段で、売上・仕入・利益・手数料・実利益をその仕入先ぶんだけ出す。段が2つ以上の案件は最後に「案件計」の行（2026-09-08 ユーザー要望）
-  const NCOL = 16;
+  const NCOL = 17;
   const body = groups.map(g=>{
     const gRows = g.ls.reduce((a,l)=>{ const S=anbetsuSupLines(l); return a+S.sups.length+(S.hasCaseRow?1:0); }, 0);
     let firstOfGroup = true;
@@ -1893,7 +1896,8 @@ function anbetsuHtml(m){
                '<td class="num">'+yen(s.profit)+'</td>' +
                '<td class="num">'+pct(s.amt>0?s.profit/s.amt:null)+'</td>' +
                '<td class="num">'+feeCellOf(s.fee, s.fees)+'</td>' +
-               '<td class="num">'+(S.hasCaseRow?yen(s.net):'<b>'+yen(s.net)+'</b>'+(s.fee?'<div class="muted small">実利益率 '+pct(nr)+'</div>':''))+'</td>';
+               '<td class="num"><b>'+yen(s.net)+'</b></td>' +
+               '<td class="num">'+pct(s.amt>0?s.net/s.amt:null)+'</td>';   // 実利益率 = 実利益÷仕入
         if(i===0){
           tds += '<td rowspan="'+n+'">'+pill(l.st)+'</td><td class="mono small" rowspan="'+n+'">'+l.oid+'</td>' +
                  '<td style="text-align:center" rowspan="'+n+'">'+allocBtn(l)+'</td>' +
@@ -1908,7 +1912,7 @@ function anbetsuHtml(m){
         '<td class="small"><b>案件計</b>'+(S.caseFee?'<div class="muted small">紹介報酬は案件全体に掛かるためここに載せています</div>':'')+'</td>' +
         '<td class="num"><b>'+yen(profit(l))+'</b></td><td class="num"><b>'+pct(l.cost>0?profit(l)/l.cost:null)+'</b></td>' +
         '<td class="num">'+feeCellOf(l.fee, l.fees)+'</td>' +
-        '<td class="num"><b>'+yen(l.net)+'</b>'+(l.fee?'<div class="muted small">実利益率 '+pct(nr)+'</div>':'')+'</td></tr>';
+        '<td class="num"><b>'+yen(l.net)+'</b></td><td class="num">'+pct(nr)+'</td></tr>';
       return rowsHtml + caseRow;
     }).join('');
   }).join('');
@@ -1919,18 +1923,18 @@ function anbetsuHtml(m){
     '<button class="btn sm right" onclick="exportAnbetsu()">CSV出力</button>' +
     '<button class="btn sm" onclick="printAnbetsu()">🖨 PDF出力</button></div>' +
     '<table class="anbetsu" style="margin-top:8px;min-width:1560px"><tr><th style="min-width:110px">メーカー</th><th style="min-width:130px">卸先</th>' +
-    '<th class="num">掛率(卸)</th><th class="num" style="min-width:110px">総売上<br><span class="muted small">案件（卸値税抜）</span></th><th class="num" style="min-width:110px">売上<br><span class="muted small">仕入先ぶん</span></th>' +
+    '<th class="num">掛率(卸)</th><th class="num" style="min-width:110px">総売上</th><th class="num" style="min-width:110px">仕入先売上</th>' +
     '<th class="num">掛率（仕入）</th><th class="num" style="min-width:100px">'+NM.co+'仕入</th><th style="min-width:160px">仕入先</th>' +
     '<th class="num" style="min-width:95px">利益額</th><th class="num">利益率</th><th class="num" style="min-width:160px">手数料</th>' +
-    '<th class="num" style="min-width:100px">実利益</th><th>状態</th><th>受注ID</th><th></th>' +
+    '<th class="num" style="min-width:100px">実利益</th><th class="num">実利益率</th><th>状態</th><th>受注ID</th><th></th>' +
     '<th style="min-width:230px">メモ（掛け率の内訳）</th></tr>' +
     (body || '<tr><td colspan="'+NCOL+'" class="muted">この月の受注はまだありません</td></tr>') +
     (groups.length ? '<tr><td colspan="3"><b>合計</b></td><td class="num"><b>'+yen(t.sales)+'</b></td><td class="num"><b>'+yen(t.sales)+'</b></td>' +
       '<td class="num"><b>'+pct(totalRate)+'</b></td><td class="num"><b>'+yen(t.cost)+'</b></td><td></td>' +
       '<td class="num"><b>'+yen(profit(t))+'</b></td><td class="num"><b>'+pct(t.cost>0?profit(t)/t.cost:null)+'</b></td>' +
       '<td class="num"><b style="color:var(--crit)">'+(t.fee?'−'+yen(t.fee):'—')+'</b></td>' +
-      '<td class="num"><b>'+yen(t.net)+'</b></td><td colspan="4"></td></tr>' : '') +
-    '</table><p class="muted small" style="margin-top:6px"><b>売上・仕入・利益・手数料・実利益は仕入先ごと</b>（売上＝その仕入先から仕入れた本数×卸値）。仕入先が2つ以上の案件は最後に「案件計」の行。神澤さんの仲介2%はピュア商会の段から、紹介報酬は案件計から引きます。<br>仕入額は<b>実額</b>（回収台帳の仕入先×仕入先マスタの掛け率。支払い画面と同じ計算）。まだ振り分けていない分だけ商品マスタの仕入価格で仮置きし「仮」と出します（振り分けを確定すると自動で実額に入れ替わります' +
+      '<td class="num"><b>'+yen(t.net)+'</b></td><td class="num"><b>'+pct(t.cost>0?t.net/t.cost:null)+'</b></td><td colspan="4"></td></tr>' : '') +
+    '</table><p class="muted small" style="margin-top:6px"><b>仕入先売上・仕入・利益・手数料・実利益は仕入先ごと</b>（仕入先売上＝その仕入先から仕入れた本数×卸値。足すと総売上）。神澤さんの仲介2%はピュア商会の段から、紹介報酬は最初の段から引きます。実利益率＝実利益÷'+NM.co+'仕入。<br>仕入額は<b>実額</b>（回収台帳の仕入先×仕入先マスタの掛け率。支払い画面と同じ計算）。まだ振り分けていない分だけ商品マスタの仕入価格で仮置きし「仮」と出します（振り分けを確定すると自動で実額に入れ替わります' +
     (provTotal?'。今月の仮置き '+yen(provTotal):'') + '）。余剰在庫から充当した分は「📦 余剰在庫」の段に商品マスタの仕入価格で出します。<b>仕入先は1社1段</b>で、掛率（仕入）はその仕入先の実率です（均していません）。合計行の掛率（仕入）だけは全体の'+NM.co+'仕入÷定価。<br>' +
     '利益額='+NM.co+'仕入を引いたもの、利益率=利益額÷'+NM.co+'仕入、掛率(卸)=卸値÷定価。<b>実利益</b>=売上−'+NM.co+'仕入−手数料。' +
     '手数料は<b>仲介2%</b>（ピュア商会経由に回した分の定価×2%・神澤さんへ）と<b>紹介報酬</b>（卸先マスタの紹介者・報酬基準・報酬率）です。' +
@@ -1948,6 +1952,7 @@ function anbetsuMemoMore(id){
 function anbetsuMemoText(l){
   const pctOf = m => m.listAmt>0 ? Math.round(m.amt/m.listAmt*1000)/10 : null;
   const out = [];
+  if(l.memo) out.push(l.memo);   // 受注管理で入れた案件のメモ
   (l.sups||[]).forEach(sp=>{
     const mx = sp.mix||[]; if(mx.length<2) return;
     out.push(sp.name+' の掛率 '+(sp.rate==null?'—':(Math.round(sp.rate*1000)/10)+'%')+' の内訳: ' +
@@ -1968,16 +1973,16 @@ function exportAnbetsu(){
     S.sups.forEach((x,i)=>{
       out.push([l.brand, l.w, l.list>0?(l.sales/l.list).toFixed(3):'', l.sales, x.sales, x.rate!=null?x.rate.toFixed(3):'', x.amt,
         x.name+(x.kind&&x.kind!=='未振分'&&x.kind!=='在庫'?'（'+x.kind+'）':''),
-        x.profit, x.amt>0?(x.profit/x.amt).toFixed(3):'', x.fee?-x.fee:0, x.fees.map(f=>f.who+' '+f.what+' '+f.amt).join(' / '), x.net,
+        x.profit, x.amt>0?(x.profit/x.amt).toFixed(3):'', x.fee?-x.fee:0, x.fees.map(f=>f.who+' '+f.what+' '+f.amt).join(' / '), x.net, x.amt>0?(x.net/x.amt).toFixed(3):'',
         anbetsuFormText(l.form), l.st, l.oid, memo(x), i===0?anbetsuMemoText(l):'']);
     });
     if(S.hasCaseRow) out.push([l.brand, l.w, '', l.sales, l.sales, l.list>0?(l.cost/l.list).toFixed(3):'', l.cost, '案件計',
-        l.sales-l.cost, l.cost>0?((l.sales-l.cost)/l.cost).toFixed(3):'', l.fee?-l.fee:0, l.fees.map(f=>f.who+' '+f.what+' '+f.amt).join(' / '), l.net,
+        l.sales-l.cost, l.cost>0?((l.sales-l.cost)/l.cost).toFixed(3):'', l.fee?-l.fee:0, l.fees.map(f=>f.who+' '+f.what+' '+f.amt).join(' / '), l.net, l.cost>0?(l.net/l.cost).toFixed(3):'',
         '', l.st, l.oid, '仕入先ごとの段の合計', '']);
   });
   exportCsv('案件別収支_'+selMonth.replace('/','-'),
-    ['メーカー','卸先','掛率(卸)','総売上(案件・卸値税抜)','売上(仕入先ぶん)','掛率（仕入）',''+NM.co+'仕入','仕入先',
-     '利益額','利益率','手数料','手数料の内訳','実利益','仕入形態','状態','受注ID','備考','メモ（掛け率の内訳）'], out);
+    ['メーカー','卸先','掛率(卸)','総売上(卸値税抜)','仕入先売上','掛率（仕入）',''+NM.co+'仕入','仕入先',
+     '利益額','利益率','手数料','手数料の内訳','実利益','実利益率','仕入形態','状態','受注ID','備考','メモ'], out);
 }
 function printAnbetsu(){
   // 画面と同じ「メーカーでくくる → 卸先ごとの明細 → 仕入先ごとに1段」をそのまま印刷用に組む
@@ -1997,7 +2002,7 @@ function printAnbetsu(){
     g.ls.forEach(l=>{ t.fee+=l.fee; t.net+=l.net; t.list+=l.list; }); });
   const profit = x=>x.sales-x.cost;
   const feeCellOf = (fee, fees) => !fee ? '—' : '−'+y(fee) +
-    fees.map(f=>'<div class="small">※'+esc(f.who)+' '+esc(f.what)+' '+y(f.amt)+'</div>').join('');
+    fees.map(f=>'<div class="small">※'+esc(f.who)+' '+esc(f.what)+(fees.length>1?' '+y(f.amt):'')+'</div>').join('');
   const body = groups.map(g=>{
     const gRows = g.ls.reduce((a,l)=>{ const S=anbetsuSupLines(l); return a+S.sups.length+(S.hasCaseRow?1:0); }, 0);
     let firstOfGroup = true;
@@ -2016,7 +2021,7 @@ function printAnbetsu(){
                '<td class="small" style="white-space:nowrap">'+(s.icon?s.icon+' ':'')+esc(s.name)+'</td>' +
                '<td class="num">'+y(s.profit)+'</td><td class="num">'+pct(s.amt>0?s.profit/s.amt:null)+'</td>' +
                '<td class="num">'+feeCellOf(s.fee, s.fees)+'</td>' +
-               '<td class="num">'+(S.hasCaseRow?y(s.net):'<b>'+y(s.net)+'</b>'+(s.fee?'<div class="small">実利益率 '+pct(nr)+'</div>':''))+'</td>';
+               '<td class="num"><b>'+y(s.net)+'</b></td><td class="num">'+pct(s.amt>0?s.net/s.amt:null)+'</td>';
         if(i===0) tds += '<td class="small" rowspan="'+n+'">'+esc(l.st||'')+'</td><td class="small" rowspan="'+n+'">'+l.oid+'</td>' +
                  '<td class="small" rowspan="'+n+'">'+esc(anbetsuMemoText(l))+'</td>';
         firstOfGroup = false;
@@ -2027,7 +2032,7 @@ function printAnbetsu(){
         '<td class="num"><b>'+y(l.cost)+'</b></td><td><b>案件計</b></td>' +
         '<td class="num"><b>'+y(profit(l))+'</b></td><td class="num"><b>'+pct(l.cost>0?profit(l)/l.cost:null)+'</b></td>' +
         '<td class="num">'+feeCellOf(l.fee, l.fees)+'</td>' +
-        '<td class="num"><b>'+y(l.net)+'</b>'+(l.fee?'<div class="small">実利益率 '+pct(nr)+'</div>':'')+'</td></tr>';
+        '<td class="num"><b>'+y(l.net)+'</b></td><td class="num">'+pct(nr)+'</td></tr>';
       return rowsHtml + caseRow;
     }).join('');
   }).join('');
@@ -2040,15 +2045,15 @@ function printAnbetsu(){
     'tr{page-break-inside:avoid}@media print{button{display:none}}</style></head><body>' +
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
     '<h1>案件別収支（'+esc(m)+'）</h1>' +
-    '<table class="anbetsu"><tr><th>メーカー</th><th>卸先</th><th class="num">掛率(卸)</th><th class="num">総売上（案件）</th><th class="num">売上（仕入先ぶん）</th>' +
+    '<table class="anbetsu"><tr><th>メーカー</th><th>卸先</th><th class="num">掛率(卸)</th><th class="num">総売上</th><th class="num">仕入先売上</th>' +
     '<th class="num">掛率（仕入）</th><th class="num">'+NM.co+'仕入</th><th>仕入先</th>' +
-    '<th class="num">利益額</th><th class="num">利益率</th><th class="num">手数料</th><th class="num">実利益</th>' +
-    '<th>状態</th><th>受注ID</th><th>メモ（掛け率の内訳）</th></tr>' +
+    '<th class="num">利益額</th><th class="num">利益率</th><th class="num">手数料</th><th class="num">実利益</th><th class="num">実利益率</th>' +
+    '<th>状態</th><th>受注ID</th><th>メモ</th></tr>' +
     body +
     '<tr class="brand"><td colspan="3"><b>合計</b></td><td class="num"><b>'+y(t.sales)+'</b></td><td class="num"><b>'+y(t.sales)+'</b></td>' +
     '<td class="num"><b>'+pct(t.list>0?t.cost/t.list:null)+'</b></td><td class="num"><b>'+y(t.cost)+'</b></td><td></td>' +
     '<td class="num"><b>'+y(profit(t))+'</b></td><td class="num"><b>'+pct(t.cost>0?profit(t)/t.cost:null)+'</b></td>' +
-    '<td class="num"><b>'+(t.fee?'−'+y(t.fee):'—')+'</b></td><td class="num"><b>'+y(t.net)+'</b></td><td colspan="3"></td></tr>' +
+    '<td class="num"><b>'+(t.fee?'−'+y(t.fee):'—')+'</b></td><td class="num"><b>'+y(t.net)+'</b></td><td class="num"><b>'+pct(t.cost>0?t.net/t.cost:null)+'</b></td><td colspan="3"></td></tr>' +
     '</table>' +
     '<p class="small">売上・仕入・利益・手数料・実利益は仕入先ごと（売上＝その仕入先から仕入れた本数×卸値）。仕入先が2つ以上の案件は最後に「案件計」の行。神澤さんの仲介2%はピュア商会の段から、紹介報酬は案件計から引く。<br>仕入額は実額（回収台帳の仕入先×仕入先マスタの掛け率）。まだ振り分けていない分だけ商品マスタの仕入価格で仮置きし「仮」と表示。仕入先は1社1段で、掛率（仕入）はその仕入先の実率（合計行だけ全体の'+NM.co+'仕入÷定価）。' +
     '利益率=利益額÷'+NM.co+'仕入、掛率(卸)=卸値÷定価、実利益=売上−'+NM.co+'仕入−手数料。手数料=仲介2%（ピュア経由の定価×2%）＋紹介報酬（出力日: '+today()+'）</p>' +
