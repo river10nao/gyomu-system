@@ -795,7 +795,9 @@ function render(){
   // 先にフォーカスを戻す。preventScroll を付けないと、そのマスを見せようとブラウザが
   // 勝手にスクロールして、下で戻した位置を上書きしてしまう
   if(keepSearch){
-    const el = main.querySelector('.search');
+    // 同じ画面に .search が複数あるとき（振り分け修正画面の理由欄など）は data-starget で同じ欄へ戻す（2026-09-09）
+    const key = String((ae.dataset||{}).starget||'');
+    const el = (key ? main.querySelector('.search[data-starget="'+key.replace(/["\\]/g,'')+'"]') : null) || main.querySelector('.search');
     if(el){ try{ el.focus({preventScroll:true}); }catch(e){ el.focus(); }
             try{ el.setSelectionRange(caret, caret); }catch(e){} }
   }else if(keepCell){
@@ -5705,7 +5707,7 @@ function allocFixHtml(){
         '<td><button class="btn sm pri" onclick="allocFixRateSave(\''+k+'\')">💾 保存</button></td></tr>'; }).join('') +
     '</table></div>' +
     '<label class="small" style="display:block;margin-top:8px">理由（必須・その回収の全明細のメモに残ります）<br>' +
-    '<input class="search" style="width:100%;max-width:560px;margin-top:4px" value="'+esc(AFIX.rateWhy||'')+'" placeholder="例: 今回はディーラーの特価で39.9%だったため" onchange="AFIX.rateWhy=this.value"></label>' +
+    '<input class="search" style="width:100%;max-width:560px;margin-top:4px" value="'+esc(AFIX.rateWhy||'')+'" placeholder="例: 今回はディーラーの特価で39.9%だったため" data-starget="afix-rate-why" oninput="AFIX.rateWhy=this.value"></label>' +
     '<p class="muted small" style="margin:6px 0 0">仕入単価＝定価（税抜）×率（四捨五入）。既定の率と違う値にするときは必ず理由を残す運用です。在庫台帳のロットの単価（参考値）は変わりません。「マスタにも保存」を付けると仕入れマスタのその仕入先×ブランドの率が書き換わり、今後の振り分けにも効きます。</p></details>';
   // 商品が数十行になるので、サロン名のヘッダーは固定して見えるようにする
   h += '<div class="tblwrap sticky"><table><tr><th>商品</th>' +
@@ -5745,7 +5747,7 @@ function allocFixHtml(){
   }
   if(!changed){ h += '<p class="muted" style="margin-top:10px">数を直すと、ここに確認ボタンが出ます</p>'; return h; }
   h += '<div class="card" style="margin-top:10px"><label class="small">修正理由（必須・ログに残ります）<br>' +
-    '<input class="search" style="width:100%;max-width:560px;margin-top:4px" value="'+esc(AFIX.why)+'" placeholder="例: 検品でBETSの数え間違いが判明したため" onchange="AFIX.why=this.value">' +
+    '<input class="search" style="width:100%;max-width:560px;margin-top:4px" value="'+esc(AFIX.why)+'" placeholder="例: 検品でBETSの数え間違いが判明したため" data-starget="afix-why" oninput="AFIX.why=this.value">' +
     '</label><div class="row" style="margin-top:8px">' +
     '<button class="btn pri" onclick="allocFixPreview()">🔍 何がどう変わるか確認する</button></div></div>';
   if(AFIX.prev){
