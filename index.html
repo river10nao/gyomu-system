@@ -1691,11 +1691,16 @@ function anbetsuSupply(){
   // 必要数はきちんと減らす（以前は行ごと除外していたため、在庫で埋めた分が「未振分（仮）」に残り続けていた。2026-09-08）
   const over = {};   // 受注ID|ブランド → [{kid, pid, qty}] 回収数が受注数を超えた分（数量不一致の検知用）
   const stock = {};  // 受注ID|ブランド → {qty, amt, listAmt}（商品マスタの仕入価格で評価）
-  const addStock = (oid, pid, qty)=>{
+  // 単価は回収台帳の「仕入単価」があればそれ（例: 余剰在庫の仕入元が分かっていて後から入れた実額）、無ければ商品マスタの仕入価格。
+  // 仕入先名が入っていれば段の見出しに添える（2026-09-09 INSTYLE 8月案件の在庫充当を仕入元39.9%で評価）
+  const addStock = (oid, pid, qty, row)=>{
     if(qty<=0) return;
     const k = oid+'|'+(brandOf(pid) || '（メーカー不明）');
     const e = stock[k] = stock[k] || {qty:0, amt:0, listAmt:0, sales:0};
-    e.qty += qty; e.amt += ownCost(pid)*qty; e.listAmt += num((product(pid)||{})['定価（税抜）'])*qty; e.sales += sellOf(oid,pid)*qty;
+    const led = row ? num(row[BUY_UNIT_COL]) : 0;
+    const unit = led>0 ? led : ownCost(pid);
+    e.qty += qty; e.amt += unit*qty; e.listAmt += num((product(pid)||{})['定価（税抜）'])*qty; e.sales += sellOf(oid,pid)*qty;
+    if(led>0){ e.ledQty = (e.ledQty||0) + qty; const sn = String((row||{})['仕入先名']||'').trim(); if(sn){ e.sups = e.sups || new Set(); e.sups.add(sn); } }
   };
   const cls = rows('collectionLedger')
     .sort((a,b)=>String(a['回収ID']||'').localeCompare(String(b['回収ID']||'')));
@@ -1707,7 +1712,7 @@ function anbetsuSupply(){
     const oids = String(r['対象受注']||'').split(',').map(x=>x.trim()).filter(x=>x && need[x]);
     if(!oids.length) return;   // 受注に紐づかない仕入（手動仕入れ等）は案件別収支の対象外
     oids.sort();
-    const put = (oid, q, row, withSales)=> isStock ? addStock(oid, pid, q) : add(oid, pid, supId, q, row, withSales);
+    const put = (oid, q, row, withSales)=> isStock ? addStock(oid, pid, q, row) : add(oid, pid, supId, q, row, withSales);
     oids.forEach(oid=>{
       if(left<=0) return;
       const t = Math.min(left, need[oid][pid]||0);
@@ -1751,7 +1756,7 @@ function anbetsuFormOf(x){
 function anbetsuSupLines(l){
   const out = l.sups.map(s=>({icon:s.kind==='外注'?'🤝':'🏭', kind:s.kind||'仕入先', sid:s.id, name:s.name,
                               rate:s.noRate?null:s.rate, amt:s.amt, sales:s.sales||0, note:s.noRate?'率なし':'', fees:[]}))
-    .concat(l.stock ? [{icon:'📦', kind:'在庫', sid:'', name:'余剰在庫', rate:l.stock.rate, amt:l.stock.amt, sales:l.stock.sales||0, note:'', fees:[]}] : [])
+    .concat(l.stock ? [{icon:'📦', kind:'在庫', sid:'', name:'余剰在庫'+(l.stock.sups&&l.stock.sups.length?'（仕入元: '+l.stock.sups.join('・')+'）':''), rate:l.stock.rate, amt:l.stock.amt, sales:l.stock.sales||0, note:'', fees:[]}] : [])
     .concat((l.provQty>0 || l.prov) ? [{icon:'⏳', kind:'未振分', sid:'', name:'未振分', rate:null, amt:l.prov, sales:l.provSales||0, note:'仮', fees:[]}] : []);   // 原価0でも数量があれば段を出す
   if(!out.length) out.push({icon:'', kind:'', sid:'', name:'（仕入先未記録）', rate:null, amt:0, sales:l.sales, note:'', fees:[]});
   // 段の売上は整数円に丸め、丸めの端数（段数以下）は売上が一番大きい段に寄せて総売上と一致させる。
@@ -1809,7 +1814,7 @@ function calcAnbetsu(month){
     // 余剰在庫からの充当分（区分=在庫）。仕入先は無いが、案件の原価としては商品マスタの仕入価格で見る
     l.over = sup.over[key] || [];   // 回収数が受注数を超えた明細（あれば異常）
     const sk = sup.stock[key];
-    if(sk && sk.qty>0){ l.stock = {qty:sk.qty, amt:sk.amt, sales:sk.sales||0, rate:sk.listAmt>0?sk.amt/sk.listAmt:null}; l.cost += sk.amt; }
+    if(sk && sk.qty>0){ l.stock = {qty:sk.qty, amt:sk.amt, sales:sk.sales||0, rate:sk.listAmt>0?sk.amt/sk.listAmt:null, sups:sk.sups?[...sk.sups]:[]}; l.cost += sk.amt; }
     // 未振分（回収台帳に無い分）は商品マスタの仕入価格で仮計上する
     const restPid = sup.left[l.oid] || {};
     Object.keys(restPid).forEach(pid=>{
@@ -1980,7 +1985,7 @@ function anbetsuHtml(m){
       '<td class="num"><b style="color:var(--crit)">'+(t.fee?'−'+yen(t.fee):'—')+'</b></td>' +
       '<td class="num"><b>'+yen(t.net)+'</b></td><td class="num"><b>'+pct(t.cost>0?t.net/t.cost:null)+'</b></td><td colspan="4"></td></tr>' : '') +
     '</table><p class="muted small" style="margin-top:6px"><b>仕入ごとの売上・仕入・利益・手数料・実利益は仕入先ごと</b>（仕入ごとの売上＝その仕入先から仕入れた本数×卸値。足すと総売上）。神澤さんの仲介2%はピュア商会の段から、紹介報酬は最初の段から引きます。実利益率＝実利益÷'+NM.co+'仕入。<br>仕入額は<b>実額</b>（回収台帳の仕入先×仕入先マスタの掛け率。支払い画面と同じ計算）。まだ振り分けていない分だけ商品マスタの仕入価格で仮置きし「仮」と出します（振り分けを確定すると自動で実額に入れ替わります' +
-    (provTotal?'。今月の仮置き '+yen(provTotal):'') + '）。余剰在庫から充当した分は「📦 余剰在庫」の段に商品マスタの仕入価格で出します。<b>仕入先は1社1段</b>で、掛率（仕入）はその仕入先の実率です（均していません）。合計行の掛率（仕入）だけは全体の'+NM.co+'仕入÷定価。<br>' +
+    (provTotal?'。今月の仮置き '+yen(provTotal):'') + '）。余剰在庫から充当した分は「📦 余剰在庫」の段に出します（回収台帳に仕入単価が入っていればその実額、無ければ商品マスタの仕入価格）。<b>仕入先は1社1段</b>で、掛率（仕入）はその仕入先の実率です（均していません）。合計行の掛率（仕入）だけは全体の'+NM.co+'仕入÷定価。<br>' +
     '利益額='+NM.co+'仕入を引いたもの、利益率=利益額÷'+NM.co+'仕入、掛率(卸)=卸値÷定価。<b>実利益</b>=売上−'+NM.co+'仕入−手数料。' +
     '手数料は<b>仲介2%</b>（ピュア商会経由に回した分の定価×2%・神澤さんへ）と<b>紹介報酬</b>（卸先マスタの紹介者・報酬基準・報酬率）です。' +
     'サロン連携1%はコスモの掛け率確定待ちのため未計上。📋 を押すとその案件のサロン振り分け表が開きます</p></div>';
@@ -2016,7 +2021,7 @@ function exportAnbetsu(){
   const out = [];
   lines.forEach(l=>{
     const S = anbetsuSupLines(l);
-    const memo = x => x.kind==='未振分' ? '商品マスタの仕入価格で仮置き' : x.kind==='在庫' ? '余剰在庫から充当（商品マスタの仕入価格で評価）' : x.note==='率なし' ? '率未設定（仕入価格で仮）' : '';
+    const memo = x => x.kind==='未振分' ? '商品マスタの仕入価格で仮置き' : x.kind==='在庫' ? '余剰在庫から充当（回収台帳の仕入単価、無ければ商品マスタの仕入価格で評価）' : x.note==='率なし' ? '率未設定（仕入価格で仮）' : '';
     S.sups.forEach((x,i)=>{
       out.push([l.brand, l.w, l.list>0?(l.sales/l.list).toFixed(3):'', l.sales, x.sales, x.rate!=null?x.rate.toFixed(3):'', x.amt,
         x.name, anbetsuFormOf(x),
