@@ -1840,8 +1840,9 @@ function calcAnbetsu(month){
 }
 function anbetsuHtml(m){
   const lines = calcAnbetsu(m);
-  const pct = v=>v==null||isNaN(v)?'—':Math.round(v*100)+'%';
-  const pct1 = v=>v==null||isNaN(v)?'—':(Math.round(v*1000)/10)+'%';   // 仕入先ごとの率は丸めすぎない
+  // 案件別収支の率は全部小数第1位まで出す（56.6%が57%に見える丸めをやめる。2026-09-09 ユーザー要望）
+  const pct = v=>v==null||isNaN(v)?'—':(Math.round(v*1000)/10)+'%';
+  const pct1 = pct;
   // メーカー（ブランド）で左にくくる: メーカー行（小計つき）→ その下に卸先ごとの行（元シートと同じ形）
   const byBrand = {};
   lines.forEach(l=>{ const b=l.brand||'（メーカー不明）'; (byBrand[b]=byBrand[b]||[]).push(l); });
@@ -2023,8 +2024,8 @@ function printAnbetsu(){
   // 画面と同じ「メーカーでくくる → 卸先ごとの明細 → 仕入先ごとに1段」をそのまま印刷用に組む
   const m = selMonth, lines = calcAnbetsu(m);
   if(!lines.length){ toast('この月の受注はまだありません', true); return; }
-  const pct = v=>v==null||isNaN(v)?'—':Math.round(v*100)+'%';
-  const pct1 = v=>v==null||isNaN(v)?'—':(Math.round(v*1000)/10)+'%';
+  const pct = v=>v==null||isNaN(v)?'—':(Math.round(v*1000)/10)+'%';   // 画面と同じく小数第1位まで（2026-09-09）
+  const pct1 = pct;
   const y = v=>'¥'+Math.round(v).toLocaleString();
   const byBrand = {};
   lines.forEach(l=>{ const b=l.brand||'（メーカー不明）'; (byBrand[b]=byBrand[b]||[]).push(l); });
