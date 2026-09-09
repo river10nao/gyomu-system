@@ -1453,7 +1453,15 @@ function vDashboard(){
   // 入金済みの判定（入金予定 DOC_PEND_RULES の裏返し）: ①は半金入金待ちを過ぎたら、②・全額は最終入金完了で入金済み
   const docSettled = d=>{ const kind=String(d['種類']||''); if(kind.indexOf('請求書')<0) return false;
     const st=(oInfo[String(d['受注ID']||'').trim()]||{}).st; if(!st || !FO_.includes(st)) return false;
-    return kind.indexOf('①')>=0 ? FO_.indexOf(st) > FO_.indexOf('半金入金待ち') : paidDone(st); };
+    if(kind.indexOf('①')>=0) return FO_.indexOf(st) > FO_.indexOf('半金入金待ち');
+    // 発注時一括請求の全額請求書は入金してから 振分/発注 へ進む運用なので、半金入金待ちを越えたら入金済み
+    // （入金予定 pendDocs・GASの期限切れ判定と同じ。ここだけ最終入金完了待ちだったため、振分/発注〜最終入金待ちの間は
+    //   予定にも確定にも載らず入金バーから消えていた。2026-09-09 レビューで修正）
+    if(kind==='請求書（全額）'||kind===NM.via+'請求書（全額）'){
+      const pay = String((oInfo[String(d['受注ID']||'').trim()]||{}).pay||'').trim();
+      if(pay==='発注時一括請求' || pay==='一括請求') return FO_.indexOf(st) > FO_.indexOf('半金入金待ち');
+    }
+    return paidDone(st); };
   const settledDocs = rows('docLog').filter(d=>monthOf(d['発行日'])===m && docSettled(d));
   const cashInDone = settledDocs.reduce((a,d)=>a+num(d['金額（税込）']),0);      // 確定分 = 今月発行の請求書で入金済み
   const cashInPend = pendDocs.reduce((a,d)=>a+num(d['金額（税込）']),0);      // 予定分 = 未入金の発行済み請求書（月を跨いだ分も入金まで残る）
