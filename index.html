@@ -4594,13 +4594,20 @@ function vAllocation(){
     (()=>{ const lots = allocStockLots(items); if(!lots.length) return '';
       const u = conf.stockUse||{};
       const total = Object.keys(u).reduce((a,z)=>a+num(u[z]),0);
+      // 今回の必要数（選んだ受注のその商品の数）と、同じ商品を複数ロットから引くときの「残り必要」（2026-09-09 ユーザー要望）
+      const needOf = {}; items.forEach(i=>{ needOf[i.pid] = num(i.need); });
+      const usedOf = {}; lots.forEach(z=>{ const pid=String(z['商品ID']||'').trim(); usedOf[pid] = num(usedOf[pid]) + num(u[String(z['在庫ID']).trim()]); });
       return '<div style="margin-top:10px;padding:10px 12px;background:var(--wash);border-radius:10px">' +
         '<div class="row"><b class="small">📦 余剰在庫から引き当て</b><span class="muted small">引き当てた分は必要数から差し引き。確定した瞬間に在庫から確保され、ロット処理だけ通って出荷できます</span>' +
         (total?'<span class="small right"><b>計 '+total+'点</b></span>':'') + '</div>' +
-        '<div style="overflow-x:auto"><table style="margin-top:6px;width:auto"><tr><th>在庫ID</th><th>商品</th><th class="num">残数</th><th class="num">引き当て数</th></tr>' +
-        lots.map(z=>{ const zid=String(z['在庫ID']).trim();
-          return '<tr><td class="mono small">'+esc(zid)+'</td><td class="small">'+esc(z['商品名'])+' '+esc(z['容量']||'')+'</td><td class="num">'+num(z['残数'])+'</td>' +
-          '<td class="num"><input type="number" value="'+(num(u[zid])||'')+'" min="0" max="'+num(z['残数'])+'" onchange="allocStockUse(\''+zid+'\',this.value)" style="width:72px;text-align:right"></td></tr>'; }).join('') +
+        '<div style="overflow-x:auto"><table style="margin-top:6px;width:auto"><tr><th>在庫ID</th><th>商品</th><th class="num">今回の必要数</th><th class="num">残数</th><th class="num">引き当て数</th><th class="num">残り必要</th></tr>' +
+        lots.map(z=>{ const zid=String(z['在庫ID']).trim(), pid=String(z['商品ID']||'').trim();
+          const need = num(needOf[pid]), left = need - num(usedOf[pid]);
+          const over = left<0;
+          return '<tr><td class="mono small">'+esc(zid)+'</td><td class="small">'+esc(z['商品名'])+' '+esc(z['容量']||'')+'</td>' +
+          '<td class="num"><b>'+need+'</b></td><td class="num">'+num(z['残数'])+'</td>' +
+          '<td class="num"><input type="number" value="'+(num(u[zid])||'')+'" min="0" max="'+num(z['残数'])+'" onchange="allocStockUse(\''+zid+'\',this.value)" style="width:72px;text-align:right"></td>' +
+          '<td class="num" style="'+(over?'color:var(--crit);font-weight:700':(left===0&&need>0?'color:var(--good);font-weight:700':''))+'">'+(need>0?(over?'配りすぎ '+(-left):left):'—')+'</td></tr>'; }).join('') +
         '</table></div></div>'; })() +
     // 2026-07-20 ユーザー要望: 自社サロンのみの受注で使う外注トグルを②カード内に表示
     (()=>{ if(baseAllocMode!=='own') return '';
