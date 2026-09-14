@@ -2945,7 +2945,7 @@ function newOrderForm(){
     // 仕入れ形態はチェック式ピル（振り分けのサロン選択と同じ操作感の簡易版・2026-07-17 ユーザー案）。
     // 選択肢=「自社サロン」＋種別=外注の実名だけ（マスタの種別はサロン/ディーラー/外注の3値。ディーラーは仕入れ形態に出さない）
     '<label class="small">仕入れ形態（あてはまるものすべてにチェック）<br><span style="display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap;margin-top:2px">' +
-      (()=>{ const opts = ['自社サロン'].concat(rows('salons').filter(s=>String(s['種別']||'').trim()==='外注'&&String(s['ストップ']||'').trim()===''&&String(s['サロンID']||'').trim()).map(salonLabel));
+      (()=>{ const opts = ['自社サロン','余剰在庫'].concat(rows('salons').filter(s=>String(s['種別']||'').trim()==='外注'&&String(s['ストップ']||'').trim()===''&&String(s['サロンID']||'').trim()).map(salonLabel));   // 余剰在庫=手元在庫から出す案件（2026-09-14 ユーザー要望）
       const sel = viewState.noForms||(viewState.noForms=['自社サロン']);
       return opts.map(o=>'<label class="pill" style="cursor:pointer;background:'+(sel.includes(o)?'color-mix(in srgb,var(--s1) 20%, transparent)':'var(--wash)')+'"><input type="checkbox" '+(sel.includes(o)?'checked':'')+' onclick="noFormToggle(\''+esc(o)+'\',this.checked)" style="width:14px;height:14px;vertical-align:-2px"> '+esc(o)+'</label>').join(''); })() +
       '</span></label>' +
@@ -4474,7 +4474,7 @@ function vAllocation(){
   const outIdOf = n=>{ const s=outSalons.find(x=>salonLabel(x).trim()===n); return s?String(s['サロンID']).trim():''; };
   const formTokens = [...new Set(selOrders.flatMap(r=>String(r['仕入れ形態']||'').split('＋').map(t=>t.trim()).filter(Boolean)))];
   const outTokens = formTokens.filter(t=>outNameSet.has(t) || t==='外注' || t==='業者直卸');   // 旧値（外注/業者直卸）も外注系として扱う
-  const hasOwn = formTokens.length===0 || formTokens.includes('自社サロン');
+  const hasOwn = formTokens.length===0 || formTokens.includes('自社サロン') || formTokens.includes('余剰在庫');   // 余剰在庫は在庫引き当て（📦）で捌くので自社サロン側の画面
   const baseAllocMode = (!hasOwn && outTokens.length) ? 'out' : (hasOwn && !outTokens.length ? 'own' : 'mixed');
   const allocMode = baseAllocMode==='own' && ALLOC.addOut ? 'mixed' : baseAllocMode;
   ALLOC.mode = allocMode;   // allocCalc から参照（own のときは外注枠を使わない）
