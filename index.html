@@ -1973,7 +1973,11 @@ function anbetsuHtml(m){
   const totalRate = t.list>0 ? t.cost/t.list : null;
   return '<div class="card tblwrap"><div class="row"><b class="small">案件別収支（'+m+'）</b>' +
     '<button class="btn sm right" onclick="exportAnbetsu()">CSV出力</button>' +
-    '<button class="btn sm" onclick="printAnbetsu()">🖨 PDF出力</button></div>' +
+    '<button class="btn sm" onclick="printAnbetsu()">🖨 PDF出力</button>' +
+    '<button class="btn sm" title="この月の案件別収支をドライブ（帳票フォルダ/案件別収支）にPDFで保存" onclick="printAnbetsu({noOpen:true,save:true,reason:\'手動保存\'})">💾 ドライブに保存</button>' +
+    (()=>{ const saved = rows('docLog').filter(d=>String(d['種類']||'')==='案件別収支' && String(d['卸先名']||'').trim()===m);
+      return saved.length ? '<span class="muted small" style="margin-left:6px">保存済み: '+saved.slice(-3).map(d=>'<a href="'+esc(d['PDF URL'])+'" target="_blank" rel="noopener">'+esc(String(d['発行日時']||''))+'</a>').join('・')+(saved.length>3?' 他'+(saved.length-3)+'件':'')+'</span>' : ''; })() +
+    '</div>' +
     '<table class="anbetsu" style="margin-top:8px;min-width:1560px"><tr><th style="min-width:110px">メーカー</th><th style="min-width:130px">卸先</th>' +
     '<th class="num">掛率(卸)</th><th class="num" style="min-width:110px">総売上</th><th class="num" style="min-width:110px">仕入ごとの売上</th>' +
     '<th class="num">掛率（仕入）</th><th class="num" style="min-width:100px">'+NM.co+'仕入</th><th style="min-width:160px">仕入先</th><th>仕入形態</th>' +
@@ -2035,7 +2039,8 @@ function exportAnbetsu(){
     ['メーカー','卸先','掛率(卸)','総売上(卸値税抜)','仕入ごとの売上','掛率（仕入）',''+NM.co+'仕入','仕入先','仕入形態',
      '利益額','利益率','手数料','手数料の内訳','実利益','実利益率','案件の仕入れ形態','状態','受注ID','備考','メモ'], out);
 }
-function printAnbetsu(){
+function printAnbetsu(opts){
+  opts = opts||{};
   // 画面と同じ「メーカーでくくる → 卸先ごとの明細 → 仕入先ごとに1段」をそのまま印刷用に組む
   const m = selMonth, lines = calcAnbetsu(m);
   if(!lines.length){ toast('この月の受注はまだありません', true); return; }
@@ -2082,8 +2087,7 @@ function printAnbetsu(){
       return rowsHtml;
     }).join('');
   }).join('');
-  const w = window.open('', '_blank');
-  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>案件別収支 '+esc(m)+'</title>' +
+  const html = ('<!doctype html><html><head><meta charset="utf-8"><title>案件別収支 '+esc(m)+'</title>' +
     '<style>body{font-family:"Hiragino Sans",sans-serif;font-size:11px;margin:24px}h1{font-size:16px}' +
     'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:4px 7px;text-align:left}td.num,th.num{text-align:right}th{background:#f2f2f2}' +
     'tr.brand td{background:#eef1f5}td.brandcell{background:#eef1f5}td.indent{padding-left:22px}.small{font-size:10px;color:#555}' +
@@ -2103,8 +2107,13 @@ function printAnbetsu(){
     '</table>' +
     '<p class="small">仕入ごとの売上・仕入・利益・手数料・実利益は仕入先ごと（仕入ごとの売上＝その仕入先から仕入れた本数×卸値。足すと総売上）。神澤さんの仲介2%はピュア商会の段から、紹介報酬は最初の段から引く。実利益率＝実利益÷'+NM.co+'仕入。<br>仕入額は実額（回収台帳の仕入先×仕入先マスタの掛け率）。まだ振り分けていない分だけ商品マスタの仕入価格で仮置きし「仮」と表示。仕入先は1社1段で、掛率（仕入）はその仕入先の実率（合計行だけ全体の'+NM.co+'仕入÷定価）。' +
     '利益率=利益額÷'+NM.co+'仕入、掛率(卸)=卸値÷定価、実利益=売上−'+NM.co+'仕入−手数料。手数料=仲介2%（ピュア経由の定価×2%）＋紹介報酬（出力日: '+today()+'）</p>' +
+    (opts.save ? '<p style="color:#777;font-size:11px">保存: '+new Date().toLocaleString('ja-JP')+'（'+esc(opts.reason||'手動保存')+'）</p>' : '') +
     '</body></html>');
-  w.document.close();
+  if(!opts.noOpen){ const w = window.open('', '_blank'); w.document.write(html); w.document.close(); }
+  if(opts.save){
+    const oids = [...new Set(lines.map(l=>l.oid).filter(Boolean))];
+    saveReportToDrive('案件別収支', html, m, oids, !!opts.silent);
+  }
 }
 function kpi(l,v,d){ return '<div class="kpi"><div class="l">'+l+'</div><div class="v">'+v+'</div>'+(d?'<div class="d">'+d+'</div>':'')+'</div>'; }
 // ⚠ 要対応ウィジェット: 止まっている案件（アラート設定シートのしきい値超え）と入金期限切れ
@@ -2702,13 +2711,14 @@ function docDisplayLabel(kind){
   return s;
 }
 function docListHtml(orderId){
-  const docs = rows('docLog').filter(d=>String(d['受注ID']).trim()===String(orderId).trim());
+  // 受注IDが「O0015, O0016」のように複数入る資料（振り分け表・案件別収支）も、その受注の一覧に出す（2026-09-15）
+  const docs = rows('docLog').filter(d=>String(d['受注ID']||'').split(',').map(x=>x.trim()).includes(String(orderId).trim()));
   if(!docs.length) return '';
   // 削除済み（ゴミ箱方式）は打ち消し表示・PDFリンクなし（PDFはDriveのゴミ箱にあるため）
   return '<div class="small" style="margin-top:8px"><b class="muted">発行済み帳票</b><table style="margin-top:4px">' +
     '<tr><th>管理番号</th><th>種類</th><th>名義</th><th>発行日</th><th class="num">金額(税込)</th><th></th><th></th></tr>' +
     docs.map(d=>{ const del = String(d['削除']||'').trim()!=='';
-      return '<tr'+(del?' style="text-decoration:line-through;opacity:.55"':'')+'><td class="mono">'+esc(d['管理番号'])+'</td><td>'+esc(docDisplayLabel(d['種類']))+'</td><td>'+esc(d['名義'])+'</td><td>'+esc(d['発行日'])+'</td><td class="num">'+yen(num(d['金額（税込）']))+'</td>' +
+      return '<tr'+(del?' style="text-decoration:line-through;opacity:.55"':'')+'><td class="mono">'+esc(d['管理番号'])+'</td><td>'+esc(docDisplayLabel(d['種類']))+'</td><td>'+esc(d['名義'])+'</td><td>'+esc(d['発行日'])+'</td><td class="num">'+(String(d['金額（税込）']||'').trim()===''?'—':yen(num(d['金額（税込）'])))+'</td>' +
       '<td>'+(del?'<span class="muted">削除済み</span>':'<a href="'+esc(d['PDF URL'])+'" target="_blank" rel="noopener">PDFを開く</a>')+'</td>' +
       '<td>'+(del?'':'<button class="btn sm" style="color:var(--crit)" onclick="deleteDocUI(\''+esc(d['管理番号'])+'\',\''+esc(d['PDF URL'])+'\')">🗑</button>')+'</td></tr>'; }).join('') + '</table></div>';
 }
@@ -4558,6 +4568,7 @@ function vAllocation(){
     html += '<div class="card" style="opacity:.8"><b class="small">✅ '+esc(brand)+' は回収・検品へ入れ込み済みです</b>' +
       '<p class="small" style="margin:6px 0 0"><b>回収ID: '+esc(kFmt(ks)||'—')+'</b>（回収・検品画面で確認できます）</p>' +
       '<div class="row" style="margin-top:8px"><button class="btn sm" onclick="allocPrintDone(\''+esc(brand)+'\',\''+[...ks].join(',')+'\')">🖨 印刷用を開く（PDF保存）</button>' +
+      '<button class="btn sm" title="今の振り分け表をドライブ（帳票フォルダ/振り分け表）に保存" onclick="allocPrintDone(\''+esc(brand)+'\',\''+[...ks].join(',')+'\',{noOpen:true,save:true,reason:\'手動保存\'})">💾 ドライブに保存</button>' +
       '<button class="btn sm" onclick="allocFixOpen(\''+esc(brand)+'\',\''+[...ks].join(',')+'\')">📋 表を見る・直す</button></div>' +
       '<p class="muted small" style="margin:6px 0 0">「📋 表を見る・直す」で確定した振り分けを表で開けます。直せるのはサロン間の付け替えだけです（数そのものを変えるときは受注側を直してやり直し）</p>' +
       prevHtml + '</div>';
@@ -5292,7 +5303,17 @@ function allocPrint(batch){
 }
 // ✅確定後の再印刷: 回収台帳の確定行から振り分け表を再構成する（ALLOC.result が無くても出せる。2026-07-20 ユーザー要望）
 // 金額=サロン仕入価格（税抜）×個数。外注枠・在庫充当分は回収台帳の行として同じ形式で並ぶ
-function allocPrintDone(brand, kidsCsv){
+// 画面で組んだ資料（振り分け表・案件別収支）をドライブへ保存（GAS saveReport → 帳票フォルダ/<種類>/yyyy/MM/ にPDF・帳票発行台帳に記録。2026-09-15）
+async function saveReportToDrive(kind, html, label, orderIds, silent){
+  try{
+    const r = await apiPost('saveReport', {kind, html, label, orderIds: orderIds||[], dateStr: today().replace(/\//g,'-')}, ['docLog']);
+    if(!silent) toast(kind+' をドライブに保存しました（'+r.fileName+'）');
+    return r;
+  }catch(e){ toast(kind+' のドライブ保存に失敗しました: '+(e.message||e), true); return null; }
+}
+// opts: {noOpen: 画面を開かない, save: ドライブにも保存, reason: 保存の但し書き, silent: 保存トーストなし}
+function allocPrintDone(brand, kidsCsv, opts){
+  opts = opts||{};
   const kidSet = new Set(String(kidsCsv).split(',').map(s=>s.trim()).filter(Boolean));
   const lines = rows('collectionLedger').filter(r=>kidSet.has(String(r['回収ID']||'').trim()));
   if(!lines.length){ toast('回収台帳に該当の回収が見つかりません', true); return; }
@@ -5346,21 +5367,30 @@ function allocPrintDone(brand, kidsCsv){
     'var t=document.getElementById("supTotal");if(t){if(s){t.style.display="";t.innerHTML="<b>"+SUPS[s]+" 経由 計 "+TOT[s].q+"点 ／ サロン価 ¥"+Math.round(TOT[s].y).toLocaleString()+" ／ 仕入額 ¥"+Math.round(TOT[s].b).toLocaleString()+"（税抜）</b>";}else{t.style.display="none";}}' +
     'document.title=BASE+(s?"（"+SUPS[s]+"）":"");}' +
     'pick("");<\/script>';
-  const w = window.open('', '_blank');
-  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(brand)+' サロン振り分け</title>' +
+  const head = '<!doctype html><html><head><meta charset="utf-8"><title>'+esc(brand)+' サロン振り分け</title>' +
     '<style>body{font-family:"Hiragino Sans",sans-serif;font-size:12px;margin:24px}h1{font-size:16px}h2{font-size:14px;margin:18px 0 6px;border-left:4px solid #333;padding-left:8px}h2 .sub{font-size:11px;font-weight:normal;color:#555}' +
     'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:5px 8px;text-align:left}td.num,th.num{text-align:right;white-space:nowrap}td.chk,th.chk{text-align:center;width:40px;padding:5px 3px}th.chk{font-size:10px}th{background:#f2f2f2;white-space:nowrap}' +
-    '.salon{margin-bottom:10px}tr{page-break-inside:avoid}h2{page-break-after:avoid}@page{size:A4 portrait;margin:12mm}@media print{button,.no-print{display:none}}</style></head><body>' +
-    '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
-    toolbar +
+    '.salon{margin-bottom:10px}tr{page-break-inside:avoid}h2{page-break-after:avoid}@page{size:A4 portrait;margin:12mm}@media print{button,.no-print{display:none}}</style></head><body>';
+  const core =
     '<h1>'+esc(brand)+' サロン振り分け表<span id="supTag"></span>（'+today()+'）</h1>' +
     '<p>対象受注: '+orderIds.join(', ')+' ／ 回収ID: '+esc(kFmt(kidSet))+'（確定済み・回収台帳から作成）</p>' +
     '<p id="supTotal" style="display:none"></p>' +
     supSummary +
-    sections +
-    pageScript +   // ← これを入れ忘れていて pick() が定義されず、出力範囲のボタンが無反応だった（2026-08-28 修正）
-    '</body></html>');
-  w.document.close();
+    sections;
+  if(!opts.noOpen){
+    const w = window.open('', '_blank');
+    w.document.write(head +
+      '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
+      toolbar + core +
+      pageScript +   // ← これを入れ忘れていて pick() が定義されず、出力範囲のボタンが無反応だった（2026-08-28 修正）
+      '</body></html>');
+    w.document.close();
+  }
+  if(opts.save){
+    // ドライブ保存用はボタン・切替スクリプト無しの全体版（社内用の仕入額つき）。いつ・なぜ保存したかを末尾に残す
+    const html = head + core + '<p style="color:#777;font-size:11px;margin-top:14px">保存: '+new Date().toLocaleString('ja-JP')+'（'+esc(opts.reason||'手動保存')+'）</p></body></html>';
+    saveReportToDrive('振り分け表', html, brand+' '+[...kidSet].join(','), orderIds, !!opts.silent);
+  }
 }
 // ===== ⚡外注のみ画面の仕入掛け率（外注先×ブランド）=====
 // ALLOC.outRates = { '外注先ID|ブランド': % }。上書きは今回の登録にだけ効く（💾 を押したときだけマスタへ）
@@ -5560,6 +5590,8 @@ async function allocCommit(){
     }
     if(warning) toast(warning,true);
     toast((sp?((_B||0)+1)+'回目 ':'')+'回収ID: '+ids.join(', ')+' を作成しました');
+    // 確定時の姿をドライブに残す（あとで数量修正しても「確定時」はこのPDFで追える。2026-09-15）
+    if(ids.length) allocPrintDone(brand, ids.join(','), {noOpen:true, save:true, silent:true, reason:'振り分け確定時'+(sp?'・'+((_B||0)+1)+'回目':'')});
     if(last) render();
     return true;
   }
@@ -5699,7 +5731,8 @@ function allocFixHtml(){
     (allocFixAllShipped() ? '<div class="card" style="border:1.5px solid var(--serious);margin-bottom:10px"><b class="small" style="color:var(--serious)">この振り分けはすでに全て出荷済みです</b>' +
       '<p class="small" style="margin:6px 0 0">減らせるマスが1つもないため、付け替えはできません。表の確認と 🖨 印刷にお使いください。</p></div>' : '') +
     '<div class="row" style="margin-bottom:10px"><button class="btn" onclick="allocFixClose()">← 戻る</button>' +
-    '<button class="btn sm" onclick="allocPrintDone(\''+esc(AFIX.brand)+'\',\''+AFIX.kids.join(',')+'\')">🖨 印刷用を開く</button></div>';
+    '<button class="btn sm" onclick="allocPrintDone(\''+esc(AFIX.brand)+'\',\''+AFIX.kids.join(',')+'\')">🖨 印刷用を開く</button>' +
+    '<button class="btn sm" title="今の振り分け表をドライブ（帳票フォルダ/振り分け表）に保存" onclick="allocPrintDone(\''+esc(AFIX.brand)+'\',\''+AFIX.kids.join(',')+'\',{noOpen:true,save:true,reason:\'手動保存（修正画面）\'})">💾 ドライブに保存</button></div>';
   // 仕入掛け率（確定後に見直す。2026-09-09 ユーザー要望）。数の付け替えとは独立に、回収IDごとに保存できる
   h += '<details class="ordcard" style="margin-bottom:10px" '+(AFIX.rateOpen?'open':'')+' ontoggle="AFIX.rateOpen=this.open">' +
     '<summary class="small" style="font-weight:700">🧮 仕入掛け率を見る・直す <span class="muted">（サロンごと。保存すると回収台帳の仕入単価に実額が入り、案件別収支・支払い画面にすぐ反映）</span></summary>' +
@@ -5837,7 +5870,9 @@ async function allocFixApply(){
     try{ await apiPost('addNotice', {'種類':'振り分け修正',
       'タイトル':'【振り分け修正】'+AFIX.brand+'（'+AFIX.kids.join(',')+'）',
       '本文': AFIX.why+'／更新'+r['更新']+'・追加'+r['追加']+'・削除'+r['削除']+'・在庫'+(r['在庫更新']||0)+'ロット'}, ['notices']); }catch(e){}
+    const fbrand = AFIX.brand, fkids = AFIX.kids.join(',');
     AFIX = null; render();
+    allocPrintDone(fbrand, fkids, {noOpen:true, save:true, silent:true, reason:'振り分け修正後'});   // 修正後の姿も残す（2026-09-15）
   }catch(e){ toast(String(e.message||e), true); }
 }
 
