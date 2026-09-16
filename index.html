@@ -212,8 +212,6 @@ const coopFeeOff = sid=>{
   const link = String((rows('salons').find(x=>String(x['サロンID']||'').trim()===id)||{})['連携ディーラー']||'').trim();
   return !!link && COOP_OFF.links.includes(link);
 };
-// 入金が済んだ状態か（最終入金完了 or その先の納品完了。2026-07-18 納品完了追加に伴う共通判定）
-const paidDone = st=>['最終入金完了','納品完了'].includes(String(st||'').trim());
 // 旧スプシ転記フローの一括取り込みボタン表示（2026-07-18 ユーザー要望で非表示。復活はここを true にするだけ）
 const SHOW_LEGACY_IMPORT = false;
 const FLOW = {
@@ -227,6 +225,8 @@ const STATUS_COLOR = {
   '商談中':'var(--s5)','半金入金待ち':'var(--s3)','振分/発注':'var(--s1)',
   '回収中':'var(--s1)','検品/ロット処理中':'var(--s5)',
   '最終入金待ち':'var(--s3)','最終入金完了':'var(--s1)','納品完了':'var(--good)',
+  '全額入金待ち':'var(--s3)','受注確定（請求は納品前）':'var(--s3)','請求済み（入金は納品後）':'var(--s3)',
+  '最終確認待ち':'var(--s3)','全額入金待ち（納品後）':'var(--s3)',
   '回収待ち':'var(--serious)','検品待ち':'var(--s3)','ロット処理待ち':'var(--s1)','ロット処理済み':'var(--good)','ロット処理なし':'var(--s2)',
   '引去確認待ち':'var(--s3)','引去済':'var(--s1)','出荷手配中':'var(--s5)','出荷完了':'var(--good)',
   '受付':'var(--s3)','ディーラー発注済':'var(--s1)','預かり中':'var(--s5)','お渡し済み':'var(--good)','EC出品中':'var(--ec)','完売':'var(--good)'
@@ -238,6 +238,43 @@ let token = localStorage.getItem('gyomu_biz_token') || '';
 let NM = { co:'', via:'', spay:'', boxBrand:'', credit:'' };
 let role = '';
 let userName = '';   // 合言葉は1人1つ。whoami が返す名前（操作ログ・表示用）
+
+function payKind(pay){
+  const v = String(pay||'').trim();
+  if(NM.credit && v.indexOf(NM.credit)===0) return 'credit';
+  if(v==='発注時一括請求' || v==='一括請求') return 'lump';
+  if(v==='納品前一括請求') return 'later';
+  if(v==='納品後一括請求') return 'after';
+  return 'half';
+}
+function flowFor(pay){
+  const flow = FLOW.order.slice(), kind = payKind(pay);
+  if(kind==='lump'){ flow[1]='全額入金待ち'; flow[5]='最終確認待ち'; }
+  else if(kind==='later'){ flow[1]='受注確定（請求は納品前）'; flow[5]='全額入金待ち'; }
+  else if(kind==='after'){ flow[1]='請求済み（入金は納品後）'; flow[5]='全額入金待ち（納品後）'; }
+  else if(kind==='credit'){ flow[1]='請求済み（'+NM.credit+'）'; }
+  return flow;
+}
+function stageName(stage, pay){
+  const n = Number(stage), flow = flowFor(pay);
+  return Number.isInteger(n) && n>=0 && n<flow.length ? flow[n] : '';
+}
+function stageOf(status, pay){
+  const st = String(status||'').trim(); if(!st) return -1;
+  const own = flowFor(pay).indexOf(st); if(own>=0) return own;
+  const variants = ['half','lump','later','after','credit'];
+  for(let stage=0; stage<FLOW.order.length; stage++){
+    for(const kind of variants){
+      const sample = kind==='credit' ? (NM.credit ? NM.credit+'翌月末' : '')
+        : kind==='lump' ? '発注時一括請求' : kind==='later' ? '納品前一括請求'
+        : kind==='after' ? '納品後一括請求' : '半金×2';
+      if(sample && flowFor(sample)[stage]===st) return stage;
+    }
+  }
+  return -1;
+}
+// 入金が済んだ状態か（段6以降。支払方式別の実名でも同じ判定）
+const paidDone = (st,pay)=>stageOf(st,pay)>=6;
 const DB = {};          // シート名 -> {headers, rows}
 let view = 'dashboard';
 let viewState = {};     // 画面ごとのタブ・検索など
@@ -465,33 +502,14 @@ function rowsAll(name){ return (DB[name]&&DB[name].rows)||[]; }
 function rows(name){ return rowsAll(name).filter(r=>!String(r['削除']||'').trim()); }
 // ベタ塗り（白文字）で出すステータス。EC出品中は薄緑のお渡し済み/完売と紛れやすいため（2026-07-20 ユーザー指定・ピンク）
 const STATUS_SOLID = {'EC出品中':1};
-function pill(st){
-  const c = STATUS_COLOR[st]||'var(--muted)';
+function pill(st, pay){
+  const stage = pay==null ? -1 : stageOf(st, pay);
+  const c = STATUS_COLOR[st]||(stage>=0 ? STATUS_COLOR[FLOW.order[stage]] : '')||'var(--muted)';
   if(STATUS_SOLID[st]) return '<span class="pill" style="background:'+c+';color:#fff">'+esc(st)+'</span>';
   return '<span class="pill" style="background:color-mix(in srgb,'+c+' 15%, transparent);color:'+c+'">'+esc(st)+'</span>';
 }
-// 掛け払い案件は半金が無く「全額請求→入金は最後」のため、受注一覧のピルだけ「請求済み（◯◯）」表記にする
-// （2026-07-19 ユーザー確定。ステータス値・タブ名はそのまま＝見た目だけの読み替え）
 function orderPill(st, pay){
-  if(NM.credit && String(pay||'').indexOf(NM.credit)===0 && st==='半金入金待ち'){
-    const c = STATUS_COLOR[st]||'var(--muted)';
-    return '<span class="pill" style="background:color-mix(in srgb,'+c+' 15%, transparent);color:'+c+'">請求済み（'+esc(NM.credit)+'）</span>';
-  }
-  // 一括請求（発注時/納品前）は半金が無いので表示だけ読み替え（ステータス値・タブ名はそのまま。掛け払いの読み替えと同方式・2026-07-23）
-  const payT = String(pay||'').trim();
-  const lumpPre = payT==='発注時一括請求' || payT==='一括請求';   // 旧表記も発注時扱い
-  const lumpPost = payT==='納品前一括請求';
-  const lumpAfter = payT==='納品後一括請求';
-  if((lumpPre || lumpPost || lumpAfter) && (st==='半金入金待ち' || st==='最終入金待ち')){
-    const c2 = STATUS_COLOR[st]||'var(--muted)';
-    const label = lumpPre
-      ? (st==='半金入金待ち' ? '全額入金待ち' : '最終確認待ち')            // 発注時一括: 入金は最初・後半は確認のみ
-      : lumpAfter
-      ? (st==='半金入金待ち' ? '請求済み（入金は納品後）' : '全額入金待ち（納品後）')   // 納品後一括: 請求は先・入金は最後
-      : (st==='半金入金待ち' ? '進行中（請求は納品前）' : '全額入金待ち');  // 納品前一括: 請求・入金は後半
-    return '<span class="pill" style="background:color-mix(in srgb,'+c2+' 15%, transparent);color:'+c2+'">'+label+'</span>';
-  }
-  return pill(st);
+  return pill(st, pay);
 }
 // 検索欄の共通入力ハンドラ。日本語入力（IME）の変換中は再描画しない
 // （変換中に描き直すと入力途中の語が「nな」のように壊れるため。確定した瞬間に絞り込む）
@@ -560,19 +578,23 @@ const OPT_ENT = {
 };
 // 押したあとに入るステータス。to 指定があればそれ、無ければフローの次（GAS側と同じ判定）
 function optNextStatus(entity, id, to){
-  if(to) return String(to).trim();
   const d = OPT_ENT[entity]; if(!d) return '';
   const rs = rowsAll(d.sheet).filter(r=>String(r[d.idCol]||'').trim()===String(id).trim());
   if(!rs.length) return '';
   const cur = String(rs[0]['ステータス']||'').trim();
-  const flow = entity==='hanbai'
+  const pay = entity==='order' ? rs[0]['支払方式'] : null;
+  const flow = entity==='order' ? flowFor(pay) : entity==='hanbai'
     ? (String(rs[0]['区分']||'').trim()==='EC' ? FLOW.hanbaiEC : FLOW.hanbai)
     : FLOW[entity];
   if(!flow) return '';
-  const i = flow.indexOf(cur);
+  const i = entity==='order' ? stageOf(cur, pay) : flow.indexOf(cur);
+  if(to){
+    const target = entity==='order' ? stageOf(to, pay) : flow.indexOf(String(to).trim());
+    return target>=0 ? flow[target] : String(to).trim();
+  }
   if(i<0 || i>=flow.length-1) return '';
-  // 納品前一括・納品後一括は「半金入金待ち」を使わない（GASの advanceStatus_ と同じ飛ばし方）
-  if(entity==='order' && cur==='商談中' && paySkipsHalf(rs[0]['支払方式'])) return flow[i+2] || '';
+  // 納品前一括・納品後一括は段1で止めない（GASの advanceStatus_ と同じ飛ばし方）
+  if(entity==='order' && i===0 && paySkipsHalf(pay)) return flow[i+2] || '';
   return flow[i+1];
 }
 function optApply(entity, id, next){
@@ -1297,20 +1319,20 @@ function vDashboard(){
   rows('shipments').forEach(sp=>{ const id=String(sp['受注ID']||'').trim(); if(id && !shipOf[id]) shipOf[id]=sp; });
 
   // 入金予定（請求書ベース）: 発行済み請求書のうち、受注のステータス的にまだ入金されていないもの
-  const DOC_PEND_RULES = {'請求書①（前金）':['半金入金待ち'], '請求書②（残金）':['最終入金待ち'],
-    [NM.via+'請求書①（前金）']:['半金入金待ち'], [NM.via+'請求書②（残金）']:['最終入金待ち']};   // 経由請求書=自社が経由先から受け取る入金
   const pendDocs = rows('docLog').filter(d=>{
     const kind = String(d['種類']||'');
-    const st = (oInfo[String(d['受注ID']||'').trim()]||{}).st;
+    const info = oInfo[String(d['受注ID']||'').trim()]||{};
+    const st = info.st, pay = info.pay, stage = stageOf(st, pay);
     if(!st) return false;
     if(kind==='請求書（全額）'||kind===NM.via+'請求書（全額）'){
-      // 発注時一括請求は入金してから 振分/発注 へ進む運用なので、半金入金待ちを越えたら入金済み（GASの期限切れ判定と同じ。2026-09-08）。
+      // 発注時一括請求は入金してから 振分/発注 へ進む運用なので、段1を越えたら入金済み（GASの期限切れ判定と同じ）。
       // 納品前・納品後一括の全額請求書は最後に請求するものなので、従来どおり入金完了まで待ち
-      const pay = String((oInfo[String(d['受注ID']||'').trim()]||{}).pay||'').trim();
-      if(pay==='発注時一括請求' || pay==='一括請求') return ['商談中','半金入金待ち'].includes(String(st).trim());
-      return !paidDone(st);
+      if(payKind(pay)==='lump') return stage>=0 && stage<=1;
+      return !paidDone(st, pay);
     }
-    return (DOC_PEND_RULES[kind]||[]).includes(st);
+    if(kind.indexOf('請求書①')>=0) return stage===1;
+    if(kind.indexOf('請求書②')>=0) return stage===5;
+    return false;
   }).map(d=>{ const rv=creditRecv(d['受注ID']);   // 掛け払い案件は「自社に入る日=着金予定」で並べ・期限切れ判定する
     d._due = rv || String(d['支払期限']||'').trim(); d._recv = !!rv; return d;
   }).sort((a,b)=>String(a._due||'9999').localeCompare(String(b._due||'9999')));
@@ -1378,18 +1400,20 @@ function vDashboard(){
   const pctD = v=>v==null||isNaN(v)?'—':Math.round(v*100)+'%';
   // 状態は「お金」と「商品」の2軸で表示（データは今のステータス＋出荷から導出。裏の仕組みは1本のまま）
   const money2 = (st, pay)=>{
-    const i = FLOW.order.indexOf(st);
-    if(paidDone(st)) return ['全額入金済み','var(--good)'];
+    const i = stageOf(st, pay), kind = payKind(pay);
+    if(paidDone(st, pay)) return ['全額入金済み','var(--good)'];
     if(i<=0) return ['未請求','var(--muted)'];
-    if(NM.credit && String(pay||'').indexOf(NM.credit)===0) return ['全額請求済み・入金待ち','var(--s3)'];
-    if(String(pay||'').trim()==='納品後一括請求') return ['全額請求済み・入金待ち（納品後）','var(--s3)'];
+    if(kind==='credit') return ['全額請求済み・入金待ち','var(--s3)'];
+    if(kind==='after') return ['全額請求済み・入金待ち（納品後）','var(--s3)'];
+    if(kind==='lump') return i===1 ? ['全額請求済み・入金待ち','var(--s3)'] : ['全額入金済み','var(--s1)'];
+    if(kind==='later') return i<5 ? ['請求前（納品前）','var(--muted)'] : ['全額請求済み・入金待ち','var(--s3)'];
     if(i===1) return ['半金① 請求中','var(--s3)'];
     if(i>=2 && i<=4) return ['半金① 入金済み','var(--s1)'];
     return ['半金② 請求中','var(--s3)'];
   };
-  const goods2 = (st, ship)=>{
+  const goods2 = (st, ship, pay)=>{
     if(ship) return [ship['ステータス'], STATUS_COLOR[ship['ステータス']]||'var(--s1)'];
-    const i = FLOW.order.indexOf(st);
+    const i = stageOf(st, pay);
     if(i<=1) return ['準備前','var(--muted)'];
     if(i>=2 && i<=4) return [st, STATUS_COLOR[st]||'var(--s1)'];
     return ['出荷待ち','var(--serious)'];
@@ -1404,7 +1428,7 @@ function vDashboard(){
     cases.map(c=>{ const info=oInfo[c.oid]||{st:c.st};
       return '<tr><td class="mono">'+c.oid+'</td><td style="white-space:nowrap">'+esc(c.w)+'</td>' +
       '<td style="white-space:nowrap">'+payPill(info.pay, info.via)+'</td>' +
-      '<td>'+pill2('💰', money2(info.st, info.pay))+'</td><td>'+pill2('📦', goods2(info.st, shipOf[c.oid]))+'</td>' +
+      '<td>'+pill2('💰', money2(info.st, info.pay))+'</td><td>'+pill2('📦', goods2(info.st, shipOf[c.oid], info.pay))+'</td>' +
       '<td class="num">'+yen(c.sales)+'</td><td class="num">'+yen(c.cost)+'</td><td class="num"><b>'+yen(c.sales-c.cost)+'</b></td>' +
       '<td class="num">'+pctD(c.sales>0?(c.sales-c.cost)/c.sales:null)+'</td></tr>'; }).join('') +
     '<tr><td colspan="5"><b>合計</b></td><td class="num"><b>'+yen(ct.sales)+'</b></td><td class="num"><b>'+yen(ct.cost)+'</b></td><td class="num"><b>'+yen(ct.sales-ct.cost)+'</b></td><td class="num"><b>'+pctD(ct.sales>0?(ct.sales-ct.cost)/ct.sales:null)+'</b></td></tr>' +
@@ -1417,7 +1441,10 @@ function vDashboard(){
     const flow = FLOW[entity], done = new Set([flow[flow.length-1]].concat(extraTerminal||[]));
     const cnt = {};   // ステータス → 案件/IDのSet（keyOf指定時は案件単位で数える）
     list.forEach(r=>{ const id=String(r[idCol]||'').trim(); if(!id) return;
-      const st=r['ステータス']; if(done.has(st) || !flow.includes(st)) return;
+      const raw=r['ステータス'];
+      const stage = entity==='order' ? stageOf(raw,r['支払方式']) : flow.indexOf(raw);
+      const st = stage>=0 ? flow[stage] : raw;
+      if(done.has(st) || !flow.includes(st)) return;
       (cnt[st] = cnt[st] || new Set());
       (keyOf ? keyOf(r) : [id]).forEach(k=>{ if(k) cnt[st].add(k); }); });
     const chips = flow.filter(st=>cnt[st]&&cnt[st].size).map(st=>
@@ -1450,20 +1477,18 @@ function vDashboard(){
   // 資金繰り（今月のお金の出入り・概算）: 目標vs実績を置換（2026-07-15 ユーザー指定。目標は月次グラフの点線で見る）
   // 入金/出金とも「確定分=ベタ塗り・予定分=斜線」で色分けし、予定の入金は請求書の発行日を出す（2026-07-15 ユーザー指定）
   // 出金は支払日ベース（2026-07-19 Phase③実装済み）: 仕入先の締め・支払ルールから「対象月に実際に出るお金」を計算
-  const FO_ = FLOW.order;
   const docMD = d=>String(d['発行日']||'').trim().replace(/^\d{4}\//,'');   // 発行日 → M/D 表示
-  // 入金済みの判定（入金予定 DOC_PEND_RULES の裏返し）: ①は半金入金待ちを過ぎたら、②・全額は最終入金完了で入金済み
+  // 入金済みの判定: ①は段1を過ぎたら、②・全額は段6で入金済み
   const docSettled = d=>{ const kind=String(d['種類']||''); if(kind.indexOf('請求書')<0) return false;
-    const st=(oInfo[String(d['受注ID']||'').trim()]||{}).st; if(!st || !FO_.includes(st)) return false;
-    if(kind.indexOf('①')>=0) return FO_.indexOf(st) > FO_.indexOf('半金入金待ち');
-    // 発注時一括請求の全額請求書は入金してから 振分/発注 へ進む運用なので、半金入金待ちを越えたら入金済み
-    // （入金予定 pendDocs・GASの期限切れ判定と同じ。ここだけ最終入金完了待ちだったため、振分/発注〜最終入金待ちの間は
+    const info=oInfo[String(d['受注ID']||'').trim()]||{}, st=info.st, pay=info.pay, stage=stageOf(st,pay); if(stage<0) return false;
+    if(kind.indexOf('①')>=0) return stage > 1;
+    // 発注時一括請求の全額請求書は入金してから 振分/発注 へ進む運用なので、段1を越えたら入金済み
+    // （入金予定 pendDocs・GASの期限切れ判定と同じ。ここだけ段6待ちだったため、振分/発注〜段5の間は
     //   予定にも確定にも載らず入金バーから消えていた。2026-09-09 レビューで修正）
     if(kind==='請求書（全額）'||kind===NM.via+'請求書（全額）'){
-      const pay = String((oInfo[String(d['受注ID']||'').trim()]||{}).pay||'').trim();
-      if(pay==='発注時一括請求' || pay==='一括請求') return FO_.indexOf(st) > FO_.indexOf('半金入金待ち');
+      if(payKind(pay)==='lump') return stage > 1;
     }
-    return paidDone(st); };
+    return paidDone(st, pay); };
   const settledDocs = rows('docLog').filter(d=>monthOf(d['発行日'])===m && docSettled(d));
   const cashInDone = settledDocs.reduce((a,d)=>a+num(d['金額（税込）']),0);      // 確定分 = 今月発行の請求書で入金済み
   const cashInPend = pendDocs.reduce((a,d)=>a+num(d['金額（税込）']),0);      // 予定分 = 未入金の発行済み請求書（月を跨いだ分も入金まで残る）
@@ -2163,7 +2188,7 @@ function kFmt(set){ const a=[...set].sort(); if(!a.length) return '';
 function allocPending(){
   const cov = allocCoverage();
   const g = {};
-  rows('orderLedger').forEach(r=>{ if(String(r['ステータス']||'').trim()!=='振分/発注') return;
+  rows('orderLedger').forEach(r=>{ if(stageOf(r['ステータス'],r['支払方式'])!==2) return;
     const id=String(r['受注ID']||'').trim(); if(!id) return;
     (g[id]=g[id]||{id, w:r['卸先名'], brands:new Set()});
     const b=brandOf(r['商品ID']); if(b) g[id].brands.add(b);
@@ -2288,8 +2313,11 @@ function vOrders(){
     groups[id].rows.push(r); });
   let list = Object.values(groups).sort((a,b)=>String(b.id).localeCompare(String(a.id)));
   const counts = {'すべて':list.length};
-  FLOW.order.forEach(st=>counts[st]=list.filter(g=>g.st===st).length);
-  if(tab!=='すべて') list = list.filter(g=>g.st===tab);
+  FLOW.order.forEach((st,i)=>counts[st]=list.filter(g=>stageOf(g.st,g.pay)===i).length);
+  if(tab!=='すべて'){
+    const tabStage = FLOW.order.indexOf(tab);
+    list = list.filter(g=>stageOf(g.st,g.pay)===tabStage);
+  }
   if(q) list = list.filter(g=>JSON.stringify(g.rows).includes(q) || String(g.id).includes(q));
 
   const staging = rows('orders').length;
@@ -2305,7 +2333,7 @@ function vOrders(){
 
   // 完了案件（お金=最終入金完了 かつ モノ=出荷完了 or 出荷なし）は「すべて」タブでは下の「✅完了分」に固める（2026-07-16 ユーザー指定）
   // 最終入金完了でも出荷が残っている案件は作業中なので上に残す。個別タブでは絞り込み結果をそのまま出す
-  const isDoneGrp = g => g.st==='納品完了';   // 完了=納品完了のみ（出荷完了が通過条件。2026-07-18）
+  const isDoneGrp = g => stageOf(g.st,g.pay)===7;   // 完了=段7のみ（出荷完了が通過条件）
   const doneAll = tab==='すべて' ? list.filter(isDoneGrp) : [];
   const activeList = tab==='すべて' ? list.filter(g=>!isDoneGrp(g)) : list;
   // 完了分は件数が積み上がるので📦発注月で絞り込めるようにする（2026-07-20 ユーザー要望）。発注日未入力の分は受注日で拾う
@@ -2323,9 +2351,9 @@ function vOrders(){
     stockAvail[pid] = (stockAvail[pid]||0) + num(r['残数']);
   });
   // 出荷前の案件に「在庫が揃ったか」バッジを出す対象ステータス（発注後〜出荷前）
-  const READY_CHECK_ST = ['振分/発注','回収中','検品/ロット処理中','最終入金待ち','最終入金完了','納品完了'];
   function readyBadge(g, ship){
-    if(ship || !READY_CHECK_ST.includes(g.st)) return '';
+    const stage = stageOf(g.st,g.pay);
+    if(ship || stage<2 || stage>7) return '';
     let short = 0;
     g.rows.forEach(r=>{
       const want = num(r['個数']);
@@ -2337,7 +2365,7 @@ function vOrders(){
       : '<span class="muted small">📦 在庫待ち（あと'+short+'点）</span>';
   }
 
-  return '<h1>受注管理</h1><div class="sub">案件は「商談中」（見積送付）で始まり、請求書①の発行で自動的に「半金入金待ち」へ進みます</div>' +
+  return '<h1>受注管理</h1><div class="sub">案件は「商談中」（見積送付）で始まり、請求書発行・受注確定に応じて支払方式別の状態へ進みます</div>' +
   '<div class="row" style="margin-bottom:12px">' +
     '<button class="btn pri" onclick="viewState.newOrder=!viewState.newOrder;render()">＋ 案件作成（JAN貼り付け）</button>' +
     (SHOW_LEGACY_IMPORT ? '<button class="btn" onclick="commitOrdersUI()">📥 転記実行分を取込（'+staging+'明細）</button>' : '') +
@@ -2360,12 +2388,13 @@ function vOrders(){
     const total = g.rows.reduce((a,r)=>a+num(r['小計（税抜）']),0);
     const totalQty = g.rows.reduce((a,r)=>a+num(r['個数']),0);   // 案件の合計本数（2026-09-08 ユーザー要望）
     const ship = shipsByOrder[g.id];
-    // 出荷作成は回収・在庫が進んだ段階（最終入金待ち以降）のみ（サーバー側でも同条件でガード）
-    const canShip = !ship && ['最終入金待ち','最終入金完了'].includes(g.st);
+    const gStage = stageOf(g.st,g.pay);
+    // 出荷作成は回収・在庫が進んだ段階（段5〜6）のみ（サーバー側でも同条件でガード）
+    const canShip = !ship && (gStage===5 || gStage===6);
     // 開閉状態は viewState.open に記憶（帳票発行などの再描画で閉じてしまわないように）
     const isOpen = viewState.open && viewState.open[g.id];
     // 全て完了した案件は薄緑の背景で一目で分かるように（お金=最終入金完了 かつ モノ=出荷完了 or 出荷なし。2026-07-16 ユーザー指定）
-    const allDone = g.st==='納品完了';
+    const allDone = gStage===7;
     return '<details class="ordcard" '+(isOpen?'open':'')+(allDone?' style="background:color-mix(in srgb,var(--good) 7%,transparent);border-color:color-mix(in srgb,var(--good) 30%,var(--grid))"':'')+' ontoggle="(viewState.open=viewState.open||{})[\''+g.id+'\']=this.open"><summary>' + selBox(g.id) +
       '<b>'+g.id+'</b> '+orderPill(g.st, g.pay)+(allDone?' <span class="small" style="color:var(--good);font-weight:700">✅完了</span>':'')+' '+readyBadge(g, ship)+(g.via?' <span class="pill" style="background:color-mix(in srgb,var(--s5) 14%,transparent);color:var(--s5)">🔁 '+NM.via+'経由</span>':'')+' <span>'+esc(g.w)+'</span><span class="muted small">'+esc(g.date)+' / '+esc(g.pay||'')+' / '+esc(g.form||'')+'</span>' +
       '<span class="right mono"><span class="muted small">'+totalQty+'点 / </span><b>'+yen(total)+'</b> <span class="muted small">税抜</span></span></summary>' +
@@ -2376,9 +2405,9 @@ function vOrders(){
       '<tr><td colspan="3" class="right"><b>合計</b></td><td class="num"><b>'+totalQty+'</b></td><td colspan="3"></td><td class="num"><b>'+yen(total)+'</b></td></tr>' +
       '</table></div>' +
       // 発注日はステータスボタンの真上。未入力のまま回収中へ進めない（スルー事故防止。サーバー側にも同じガード。2026-07-17 ユーザー指定）
-      (FLOW.order.indexOf(g.st)>=2 ? (()=>{ const ordEmpty = !String(g.ord||'').trim();
+      (gStage>=2 ? (()=>{ const ordEmpty = !String(g.ord||'').trim();
         // 未入力の注意喚起は薄いオレンジ背景のみ（点線・左線は使わない・2026-07-18 ユーザー指定）
-        return '<div class="row small" style="margin-top:10px;align-items:center;gap:8px'+(ordEmpty&&g.st==='振分/発注'?';padding:8px 10px;background:color-mix(in srgb,var(--warn) 10%,transparent);border-radius:8px':'')+'">📦 <b>発注日</b>: ' +
+        return '<div class="row small" style="margin-top:10px;align-items:center;gap:8px'+(ordEmpty&&gStage===2?';padding:8px 10px;background:color-mix(in srgb,var(--warn) 10%,transparent);border-radius:8px':'')+'">📦 <b>発注日</b>: ' +
         '<input type="date" id="ord'+g.id+'" value="'+esc(String(g.ord||'').trim().replace(/\//g,'-'))+'" style="padding:4px 8px">' +
         '<button class="btn sm" onclick="saveOrderDate(\''+g.id+'\')">保存</button>' +
         (ordEmpty ? '<span class="small" style="color:var(--ink2)"><b>※入力しないと「回収中」へ進めません。</b>実際にディーラーへ発注した日＝どの月の支払いに乗るかの基準です（ズレるとディーラー請求書と合いません）</span>'
@@ -2408,29 +2437,29 @@ function vOrders(){
         const isLumpAfter = gPay==='納品後一括請求';
         const needsFullInv = isCreditPay || isLumpPre || isLumpAfter;
         const guard =
-          (g.st==='商談中' && !isLumpPost && !activeDocs.some(k=> needsFullInv ? k.indexOf('請求書（全額')>=0 : (k.indexOf('請求書①')>=0 || k.indexOf('請求書（全額')>=0))) ? ['✔ 請求済み（→ '+(isLumpPre?'全額入金待ち':isLumpAfter?'振分/発注・入金は納品後':'半金入金待ち')+'）', needsFullInv ? '先に請求書（全額）を発行してください（📄帳票発行から）' : '先に請求書①（前金）を発行してください（📄帳票発行から）'] :
-          (g.st==='振分/発注' && !String(g.ord||'').trim()) ? ['✔ 発注済み（→ 回収中）','先に📦発注日を入れてください（実際に発注した日）'] :
-          (g.st==='最終入金待ち' && (isLumpPre||isLumpPost||isLumpAfter) && !activeDocs.some(k=>k.indexOf('請求書（全額')>=0)) ? ['✔ 入金確認済み（→ 最終入金完了）','先に請求書（全額）を発行してください（📄帳票発行から）'] :
-          (g.st==='最終入金待ち' && !isCreditPay && !isLumpPre && !isLumpPost && !isLumpAfter && !activeDocs.some(k=>k.indexOf('請求書②')>=0||k.indexOf('請求書（全額')>=0)) ? ['✔ 入金確認済み（→ 最終入金完了）','先に請求書②（残金）を発行してください（📄帳票発行から）'] :
-          (g.st==='最終入金完了' && !ship) ? ['✔ 納品済み（→ 納品完了）','先に🚚出荷を作成してください（出荷が出荷完了になると自動で納品完了へ進みます）'] :
-          (g.st==='最終入金完了' && ship && ship['ステータス']!=='出荷完了') ? ['✔ 納品済み（→ 納品完了）','出荷 '+ship['出荷ID']+' が出荷完了になると自動で納品完了へ進みます（現在: '+ship['ステータス']+'）'] : null;
+          (gStage===0 && !isLumpPost && !activeDocs.some(k=> needsFullInv ? k.indexOf('請求書（全額')>=0 : (k.indexOf('請求書①')>=0 || k.indexOf('請求書（全額')>=0))) ? ['✔ 請求済み（→ '+(isLumpAfter?'振分/発注・入金は納品後':stageName(1,g.pay))+'）', needsFullInv ? '先に請求書（全額）を発行してください（📄帳票発行から）' : '先に請求書①（前金）を発行してください（📄帳票発行から）'] :
+          (gStage===2 && !String(g.ord||'').trim()) ? ['✔ 発注済み（→ 回収中）','先に📦発注日を入れてください（実際に発注した日）'] :
+          (gStage===5 && (isLumpPre||isLumpPost||isLumpAfter) && !activeDocs.some(k=>k.indexOf('請求書（全額')>=0)) ? ['✔ 入金確認済み（→ 最終入金完了）','先に請求書（全額）を発行してください（📄帳票発行から）'] :
+          (gStage===5 && !isCreditPay && !isLumpPre && !isLumpPost && !isLumpAfter && !activeDocs.some(k=>k.indexOf('請求書②')>=0||k.indexOf('請求書（全額')>=0)) ? ['✔ 入金確認済み（→ 最終入金完了）','先に請求書②（残金）を発行してください（📄帳票発行から）'] :
+          (gStage===6 && !ship) ? ['✔ 納品済み（→ 納品完了）','先に🚚出荷を作成してください（出荷が出荷完了になると自動で納品完了へ進みます）'] :
+          (gStage===6 && ship && ship['ステータス']!=='出荷完了') ? ['✔ 納品済み（→ 納品完了）','出荷 '+ship['出荷ID']+' が出荷完了になると自動で納品完了へ進みます（現在: '+ship['ステータス']+'）'] : null;
         return guard
           ? '<button class="btn sm" onclick="toast(\''+guard[1]+'\', true)" style="opacity:.55">'+guard[0]+'</button>'
-          : (isLumpPost && g.st==='商談中'
-            // 納品前一括・納品後一括は「半金入金待ち」を使わないので、商談中から振分/発注へ飛ばす（2026-08-31 ユーザー指定）
+          : (isLumpPost && gStage===0
+            // 納品前一括・納品後一括は段1で止めず、商談中から振分/発注へ飛ばす
             ? '<button class="btn pri sm" onclick="act(\'advanceStatus\',{entity:\'order\',id:\''+g.id+'\'},\''+g.id+' を振分/発注にしました（請求は納品前）\')">✔ 受注確定（→ 振分/発注・請求は納品前）</button>'
-            : (isLumpAfter && g.st==='商談中'
+            : (isLumpAfter && gStage===0
             ? '<button class="btn pri sm" onclick="act(\'advanceStatus\',{entity:\'order\',id:\''+g.id+'\'},\''+g.id+' を振分/発注にしました（入金は納品後）\')">✔ 請求済み（→ 振分/発注・入金は納品後）</button>'
-            : advanceBtn('order', g.id, g.st))); })() +
+            : advanceBtn('order', g.id, g.st, null, g.pay))); })() +
       (canShip && !busy('order', g.id) ? '<button class="btn sm" onclick="act(\'createShipment\',{受注ID:\''+g.id+'\'},\'出荷を作成しました\',[\'shipments\'])">🚚 出荷を作成</button>' : '') +
       (ship ? '<span class="small muted">🚚 出荷: '+ship['出荷ID']+' '+pill(ship['ステータス'])+'</span>' : '') +
       // 紐づく回収番号（回収台帳の対象受注から逆引き。2026-07-18 ユーザー要望「それぞれの場所で見れるように」）
       (()=>{ const ks=collsByOrder[String(g.id).trim()]||{}; const ids=Object.keys(ks);
         return ids.length ? '<span class="small muted">📥 回収: '+ids.map(k=>k+'('+esc(ks[k])+')').join(', ')+'</span>' : ''; })() +
-      // ✏️編集は振分前（商談中・半金入金待ち）＋回収未紐づけのみ表示（サーバー側にも同じガード。2026-07-21）
-      (['商談中','半金入金待ち'].includes(g.st) && !Object.keys(collsByOrder[String(g.id).trim()]||{}).length
+      // ✏️編集は振分前（段0〜1）＋回収未紐づけのみ表示（サーバー側にも同じガード）
+      (gStage>=0 && gStage<=1 && !Object.keys(collsByOrder[String(g.id).trim()]||{}).length
         ? '<button class="btn sm" onclick="editOrderUI(\''+g.id+'\')">✏️ 編集</button>' : '') +
-      (SHORTAGE_BLOCK.includes(g.st) || ship
+      (gStage>=6 || ship
         ? '' : '<button class="btn sm" onclick="shortOpen(\''+g.id+'\')">📉 欠品で減らす</button>') +
       '<button class="btn sm" onclick="viewState.docFor=(viewState.docFor===\''+g.id+'\'?null:\''+g.id+'\');render()">📄 帳票発行</button>' +
       rollbackBtn('order', g.id, g.st, null, g.pay) +
@@ -2442,6 +2471,7 @@ function vOrders(){
       '</details>';
   }
 }
+const ORDER_TAB_LABEL = {'半金入金待ち':'請求済み・入金待ち', '最終入金待ち':'最終入金・確認待ち'};
 function tabsHtml(entity, cur, counts, extraTabs, activeExtras, extraBadges, omitTabs){
   const flow = FLOW[entity];
   const done = new Set([flow[flow.length-1]].concat(extraTabs||[]));   // 終端ステータス（extraTabs=ロット処理なし等も終端）は目立たせない
@@ -2454,7 +2484,9 @@ function tabsHtml(entity, cur, counts, extraTabs, activeExtras, extraBadges, omi
     const hot = t!=='すべて' && !done.has(t) && n>0;   // 未完了ステータスに残件あり = まだ終わっていない案件
     // extraBadges: タブ→件数。ステータスとは別の要対応（請求書送付待ち等）を終端タブでも警告色で出す（2026-07-19）
     const extra = (extraBadges && extraBadges[t]) ? '<span class="n hot">'+extraBadges[t].label+extraBadges[t].n+'</span>' : '';
-    return '<button class="'+(t===cur?'on':'')+'" onclick="setVS(\'tab\',\''+t+'\')">'+t+'<span class="n'+(hot?' hot':'')+'">'+n+'</span>'+extra+'</button>';
+    // 受注の段1/段5は支払方式ごとに名前が違う（全額入金待ち・最終確認待ち…）ので、タブは中立な見出しにする（2026-09-16）
+    const label = entity==='order' ? (ORDER_TAB_LABEL[t]||t) : t;
+    return '<button class="'+(t===cur?'on':'')+'" onclick="setVS(\'tab\',\''+t+'\')">'+label+'<span class="n'+(hot?' hot':'')+'">'+n+'</span>'+extra+'</button>';
   }).join('') + '</div>';
 }
 let _covMemo = {a:null, b:null, val:null};   // allocCoverageのメモ化（journeyは受注カードごとに呼ばれるため。台帳の参照が変わったら再計算）
@@ -2469,12 +2501,12 @@ function journeyHtml(g, ship){
   // 裏のステータスは1本のまま。掛け払いは「全額請求→入金を待たずに進行→納品→翌月末入金」で入金が最後に来る。
   // 経由案件は請求＝マネフォ申請→承認→押印請求書送付→入金。さらに振分/発注と同時進行で
   // 経由先→自社のお金処理（発注書→請求書→マネフォ申請→入金。モノは動かない）が走るため専用ステップを出す
-  const oi = FLOW.order.indexOf(g.st);
+  const oi = stageOf(g.st, g.pay);
   const isCredit = NM.credit && String(g.pay||'').indexOf(NM.credit)===0;
   const shipPicked = !!(ship && FLOW.shipment.indexOf(ship['ステータス'])>=1);
   const shipDone = !!(ship && ship['ステータス']==='出荷完了');
   const docs = rows('docLog').filter(d=>String(d['受注ID']||'').trim()===String(g.id||'').trim()).map(d=>String(d['種類']||''));
-  const inv2Done = docs.some(k=>k.indexOf('請求書②')>=0) || paidDone(g.st);   // 請求②発行済み（完了案件は発行済み扱い）
+  const inv2Done = docs.some(k=>k.indexOf('請求書②')>=0) || paidDone(g.st,g.pay);   // 請求②発行済み（完了案件は発行済み扱い）
   const viaMoneyDone = docs.some(k=>k.indexOf('発注書（'+NM.via)===0);   // 経由先→自社の帳票処理は発注書の発行が起点
   const mf = g.via ? '/マネフォ' : '';   // 経由案件の請求はマネフォ申請→承認→押印請求書→入金
   // 振分=回収台帳の数量充足で自動判定／発注=発注サイトでの手動注文が別作業のため分離（済み=ステータスを回収中へ進めた時。2026-07-16 ユーザー指定）
@@ -2498,7 +2530,7 @@ function journeyHtml(g, ship){
     ['検品/ロット処理', oi>=5],
     ['引去', shipPicked],
     ['出荷（納品）', shipDone],
-    [NM.credit+'入金（翌月末）', paidDone(g.st)]
+    [NM.credit+'入金（翌月末）', paidDone(g.st,g.pay)]
   ] : isLump ? [
     ['受注', true],
     ['全額請求'+mf+(g.via?'（'+NM.via+'）':''), oi>=1],
@@ -2508,7 +2540,7 @@ function journeyHtml(g, ship){
   ].concat(g.via ? [[NM.via+'→'+NM.co+'処理', viaMoneyDone]] : []).concat([
     ['回収', oi>=4],
     ['検品/ロット処理', oi>=5],
-    ['最終確認', paidDone(g.st)],   // 入金は全額入金で済んでいるため確認のみ（ステータスは最終入金待ち→完了を踏む）
+    ['最終確認', paidDone(g.st,g.pay)],   // 入金は全額入金で済んでいるため確認のみ（段5→6を踏む）
     ['引去', shipPicked],
     ['出荷', shipDone]
   ]) : isLumpAfter ? [
@@ -2521,7 +2553,7 @@ function journeyHtml(g, ship){
     ['検品/ロット処理', oi>=5],
     ['引去', shipPicked],
     ['出荷（納品）', shipDone],
-    ['全額入金（納品後）', paidDone(g.st)]
+    ['全額入金（納品後）', paidDone(g.st,g.pay)]
   ]) : isLumpPost ? [
     ['受注', true],
     ['振分', oi>=3 || allocDone],
@@ -2529,8 +2561,8 @@ function journeyHtml(g, ship){
   ].concat(g.via ? [[NM.via+'→'+NM.co+'処理', viaMoneyDone]] : []).concat([
     ['回収', oi>=4],
     ['検品/ロット処理', oi>=5],
-    ['全額請求（納品前）'+mf, invFullDone || paidDone(g.st)],
-    ['全額入金', paidDone(g.st)],
+    ['全額請求（納品前）'+mf, invFullDone || paidDone(g.st,g.pay)],
+    ['全額入金', paidDone(g.st,g.pay)],
     ['引去', shipPicked],
     ['出荷', shipDone]
   ]) : [
@@ -2541,9 +2573,9 @@ function journeyHtml(g, ship){
     ['発注', oi>=3 || !!String(g.ord||'').trim()]      // 回収中に入った or 発注日の記録 = 発注済み
   ].concat(g.via ? [[NM.via+'→'+NM.co+'処理', viaMoneyDone]] : []).concat([
     ['回収', oi>=4],          // 検品/ロット処理中に入った = 回収済み
-    ['検品/ロット処理', oi>=5],   // 最終入金待ちに入った = 検品・ロット処理済み
+    ['検品/ロット処理', oi>=5],   // 段5に入った = 検品・ロット処理済み
     ['半金②請求'+mf+(g.via?'（'+NM.via+'）':''), inv2Done],
-    ['半金②入金', paidDone(g.st)],
+    ['半金②入金', paidDone(g.st,g.pay)],
     ['引去', shipPicked],
     ['出荷', shipDone]
   ]);
@@ -2557,19 +2589,27 @@ function journeyHtml(g, ship){
 }
 // ステータスボタンは「何をしたか（〇〇済み）」で書き、（→ 移動先）を添える（ボタンと状態の不一致が分かりにくい、の2026-07-17 ユーザー要望）
 const ADV_ACTION = {
-  order:      {'半金入金待ち':'請求済み','振分/発注':'半金①入金済み','回収中':'発注済み','検品/ロット処理中':'回収済み','最終入金待ち':'検品/ロット処理済み','最終入金完了':'入金確認済み','納品完了':'納品済み'},
   collection: {'検品待ち':'回収済み','ロット処理待ち':'検品完了','ロット処理済み':'ロット処理済み'},
   shipment:   {'引去済':'在庫引き去りする','出荷手配中':'出荷手配開始','出荷完了':'出荷済み'},   // 引去だけ「する」表記（2026-07-20 ユーザー指定。押すと引去が実行されるため）
   hanbai:     {'ディーラー発注済':'ディーラー発注済み','預かり中':'仕分け完了（入庫）','EC出品中':'EC出品済み'}
 };
+const ORDER_ADV_ACTION = ['','請求済み','半金①入金済み','発注済み','回収済み','検品/ロット処理済み','入金確認済み','納品済み'];
+// 段2へ進める操作・段6へ進める操作は支払方式で「何をしたか」が違う（発注時一括=全額入金済み・最終確認済み など）
+function orderAdvAction(nextStage, pay){
+  const kind = payKind(pay);
+  if(nextStage===2){ if(kind==='lump') return '全額入金済み'; if(kind==='credit') return '請求済み・進行'; }
+  if(nextStage===6){ if(kind==='lump') return '最終確認済み'; }
+  return ORDER_ADV_ACTION[nextStage];
+}
 // 引去の実行確認。在庫台帳へ出庫が記帳され、以後の巻き戻しはサーバー側でブロックされる（戻すには在庫の逆記帳が必要な個別対応）
 function stockOutConfirmUI(id){
   if(!confirm('在庫の引き去りを実行します。\n\n⚠ 引き去り後は巻き戻しできません（在庫から出庫が記帳されます）。\nよろしいですか？')) return;
   act('advanceStatus', {entity:'shipment', id:id}, id+' を「引去済」にしました');
 }
-function advanceBtn(entity, id, st, flowOv){
+function advanceBtn(entity, id, st, flowOv, pay){
   if(busy(entity, id)) return busyPill();
-  const flow = flowOv||FLOW[entity], i = flow.indexOf(st);
+  const flow = entity==='order' ? flowFor(pay) : (flowOv||FLOW[entity]);
+  const i = entity==='order' ? stageOf(st,pay) : flow.indexOf(st);
   if(i<0 || i>=flow.length-1) return '';
   const next = flow[i+1];
   if(entity==='hanbai' && next==='お渡し済み'){
@@ -2578,11 +2618,11 @@ function advanceBtn(entity, id, st, flowOv){
   if(entity==='shipment' && next==='引去済'){   // 引去は在庫が動き巻き戻し不可のため、実行前に確認を挟む（2026-07-20 ユーザー要望）
     return '<button class="btn pri sm" onclick="stockOutConfirmUI(\''+id+'\')">✔ 在庫引き去りする（→ 引去済）</button>';
   }
-  const actName = (ADV_ACTION[entity]||{})[next];
+  const actName = entity==='order' ? orderAdvAction(i+1, pay) : (ADV_ACTION[entity]||{})[next];
   const label = actName ? '✔ '+actName+(actName===next?'':'（→ '+next+'）') : '→ '+next;
   return '<button class="btn pri sm" onclick="act(\'advanceStatus\',{entity:\''+entity+'\',id:\''+id+'\'},\''+id+' を「'+next+'」にしました\')">'+label+'</button>';
 }
-// 半金入金待ちを使わない支払方式（Paid・納品前一括・納品後一括）。巻き戻し先もこれに合わせる
+// 段1で止めない支払方式。巻き戻し先もこれに合わせる
 const PAY_SKIP_HALF = ['納品前一括請求','納品後一括請求'];
 function paySkipsHalf(pay){
   const v = String(pay||'').trim();
@@ -2590,9 +2630,10 @@ function paySkipsHalf(pay){
 }
 function rollbackBtn(entity, id, st, flowOv, pay){
   if(busy(entity, id)) return '';
-  const flow = flowOv||FLOW[entity], i = flow.indexOf(st);
-  // 半金入金待ちを飛ばして入ってきたので、戻り先も飛ばす（振分/発注 → 商談中）
-  if(entity==='order' && st==='振分/発注' && paySkipsHalf(pay)){
+  const flow = entity==='order' ? flowFor(pay) : (flowOv||FLOW[entity]);
+  const i = entity==='order' ? stageOf(st,pay) : flow.indexOf(st);
+  // 段1を飛ばして入ってきたので、戻り先も飛ばす（振分/発注 → 商談中）
+  if(entity==='order' && i===2 && paySkipsHalf(pay)){
     return '<button class="btn sm right" onclick="if(confirm(\''+id+' を「商談中」に巻き戻しますか？\'))act(\'setStatus\',{entity:\'order\',id:\''+id+'\',to:\'商談中\'},\'巻き戻しました\')">↩ 巻き戻し</button>';
   }
   // 巻き戻しが無いステータスでも、直後の🗑削除が常に右端に揃うようスペーサーを返す（2026-07-18 ユーザー指定）
@@ -2733,7 +2774,6 @@ async function deleteDocUI(docNo, url){
 // ディーラー側の在庫切れが検品のときに分かることがある。そのとき受注明細と確定済みの振り分け（回収）を
 // 同じ数だけ減らす必要がある。回収を消してやり直すと回収番号が振り直しになるので、数量だけを引く。
 // どのサロンから引くかはユーザーが決める（自動で割り振らない。2026-09-01 ユーザー指定）。
-const SHORTAGE_BLOCK = ['最終入金完了','納品完了'];   // ここまで進んだ案件は触らせない（GAS側と同条件）
 function shortOpen(oid){
   const on = viewState.shortFor === oid;
   viewState.shortFor = on ? null : oid;
@@ -3096,7 +3136,7 @@ async function noSubmit(){
   }
 }
 // ✏️ 案件編集（2026-07-21 ユーザー要望）: 案件作成グリッドを編集モードで開く。
-// 編集できるのは振分前（商談中・半金入金待ち）＋回収未紐づけのみ（サーバー側にも同じガード）
+// 編集できるのは振分前（段0〜1）＋回収未紐づけのみ（サーバー側にも同じガード）
 function editOrderUI(oid){
   const lines = rows('orderLedger').filter(r=>String(r['受注ID']||'').trim()===oid && String(r['削除']||'').trim()==='');
   if(!lines.length){ toast('受注 '+oid+' が見つかりません', true); return; }
@@ -3825,8 +3865,8 @@ function allocOrderGroups(){
   const groups = {};
   rows('orderLedger').forEach(r=>{
     const id = String(r['受注ID']||'').trim(); if(!id) return;
-    if(!ALLOC.showDone && String(r['ステータス']||'').trim()==='納品完了') return;
-    if(!groups[id]) groups[id] = {id, st:String(r['ステータス']||'').trim(), w:r['卸先名'], date:r['受注日'], n:0, brands:new Set()};
+    if(!ALLOC.showDone && stageOf(r['ステータス'],r['支払方式'])===7) return;
+    if(!groups[id]) groups[id] = {id, st:String(r['ステータス']||'').trim(), pay:r['支払方式'], w:r['卸先名'], date:r['受注日'], n:0, brands:new Set()};
     groups[id].n++;
     groups[id].brands.add(brandOf(r['商品ID'])||'（不明）');
   });
@@ -4426,7 +4466,7 @@ function vAllocation(){
   const doneOf = g => g.brands.size>0 && [...g.brands].every(b=>{ const e=(cov[g.id]||{})[b]; return e&&e.done; });
   const olist = orderGroups.sort((a,b)=>Number(doneOf(a))-Number(doneOf(b)));
   const firstDoneId = (olist.find(g=>doneOf(g))||{}).id;
-  const doneCnt = new Set(rows('orderLedger').filter(r=>String(r['ステータス']||'').trim()==='納品完了').map(r=>String(r['受注ID']||'').trim()).filter(Boolean)).size;
+  const doneCnt = new Set(rows('orderLedger').filter(r=>stageOf(r['ステータス'],r['支払方式'])===7).map(r=>String(r['受注ID']||'').trim()).filter(Boolean)).size;
   html += '<div class="card"><div class="row" style="align-items:center"><b class="small">① 対象の受注を選ぶ（'+selIds.length+'件選択中）</b>' +
     (doneCnt ? '<label class="small" style="margin-left:auto"><input type="checkbox" '+(ALLOC.showDone?'checked':'')+' onclick="allocShowDone(this.checked)" style="width:15px;height:15px;vertical-align:-2px"> 納品完了も表示（'+doneCnt+'件）</label>' : '') +
     '</div><p class="muted small" style="margin:4px 0 0">行をクリックすると商品の内訳が開きます</p><div class="tblwrap" style="margin-top:8px;max-height:340px;overflow:auto"><table>' +
@@ -4441,7 +4481,7 @@ function vAllocation(){
       let h = (g.id===firstDoneId ? '<tr><td colspan="7" class="small muted" style="background:var(--wash);text-align:center">— ✅ 振分済みの案件 —</td></tr>' : '') +
         '<tr style="cursor:pointer'+(isDone?';background:color-mix(in srgb,var(--muted) 18%,transparent);opacity:.62':'')+'" onclick="allocOpenToggle(\''+g.id+'\')">' +
         '<td onclick="event.stopPropagation()"><input type="checkbox" '+(ALLOC.sel[g.id]?'checked':'')+(isDone && !hasBroken?' disabled':'')+' onclick="allocToggleOrder(\''+g.id+'\',this.checked)" style="width:16px;height:16px"></td>' +
-        '<td class="mono">'+(open?'▾':'▸')+' '+g.id+'</td><td>'+pill(g.st)+(isDone?' <span class="small" style="color:var(--good);font-weight:700">✅振分済み</span>'+(allK.size?' <span class="mono small muted">'+esc(kFmt(allK))+'</span>':'') +
+        '<td class="mono">'+(open?'▾':'▸')+' '+g.id+'</td><td>'+orderPill(g.st,g.pay)+(isDone?' <span class="small" style="color:var(--good);font-weight:700">✅振分済み</span>'+(allK.size?' <span class="mono small muted">'+esc(kFmt(allK))+'</span>':'') +
           // 確定後の再印刷（回収台帳から再構成）。行クリックの内訳開閉に食われないよう stopPropagation
           [...g.brands].map(b=>{ const e=bc[b]; if(!(e&&e.done&&e.kids.size)) return '';
             const ks=[...e.kids].join(','), sfx=(g.brands.size>1?' '+esc(b):'');
