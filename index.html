@@ -1612,7 +1612,7 @@ function vDashboard(){
   const pendHtml = '<div class="card"'+(pendOver.length?' style="border-color:var(--warn)"':'')+'><div class="row"><b class="small">💴 入金予定（発行済み・未入金の請求書）</b>' +
     '<span class="small muted">未入金 '+pendDocs.length+'件 <b>'+yen(pendTotal)+'</b>'+(pendOver.length?'　うち<span style="color:var(--crit)"><b>期限切れ '+pendOver.length+'件 '+yen(pendOver.reduce((a,d)=>a+num(d['金額（税込）']),0))+'</b></span>':'')+'（税込）</span></div>' +
     '<div class="tblwrap" style="margin-top:8px">' +
-    '<table><tr><th>支払期限</th><th class="num">超過<br><span class="muted small">営業日</span></th><th>卸先（誰から）</th><th>支払方式</th><th>種類</th><th class="num">金額（税込）</th><th>今の状態</th><th>管理番号</th><th>受注ID</th></tr>' +
+    '<table><tr><th>支払期限</th><th class="num">超過<br><span class="muted small">営業日</span></th><th>卸先（誰から）</th><th>支払方式</th><th>どの請求</th><th class="num">金額（税込）</th><th>今の状態</th><th>請求書（PDF）</th><th>受注ID</th></tr>' +
     (pendDocs.map(d=>{
       const due = d._due;
       const overdue = due && due < todayStr;
@@ -1622,8 +1622,9 @@ function vDashboard(){
       const oi = oInfo[String(d['受注ID']||'').trim()]||{};
       return '<tr><td class="small"'+(overdue?' style="color:var(--crit);font-weight:700"':'')+'>'+dueHtml+(overdue?' ⚠':'')+'</td>' +
         '<td class="num">'+(od?'<b style="color:var(--crit)">'+od.days+'</b>':overdue?'<span class="muted small">—</span>':'')+'</td>' +
-        '<td>'+esc(d['卸先名'])+'</td><td style="white-space:nowrap">'+payPill(oi.pay,oi.via)+'</td><td class="small">'+esc(kindShort(d['種類']))+'</td>' +
-        '<td class="num"><b>'+yen(num(d['金額（税込）']))+'</b></td><td>'+pill(oi.st)+'</td><td class="mono small">'+esc(d['管理番号'])+'</td><td class="mono small">'+esc(d['受注ID'])+'</td></tr>';
+        '<td>'+esc(d['卸先名'])+'</td><td style="white-space:nowrap">'+payPill(oi.pay,oi.via)+'</td><td class="small" title="'+esc(kindShort(d['種類']))+'">'+esc(invoiceStageLabel(d['種類'], oi.pay))+'</td>' +
+        '<td class="num"><b>'+yen(num(d['金額（税込）']))+'</b></td><td>'+pill(oi.st, oi.pay)+'</td>' +
+        '<td class="small">'+(String(d['PDF URL']||'').trim()?'<a href="'+esc(d['PDF URL'])+'" target="_blank" rel="noopener" class="mono">📄 '+esc(d['管理番号'])+'</a>':'<span class="mono">'+esc(d['管理番号'])+'</span>')+'</td><td class="mono small">'+esc(d['受注ID'])+'</td></tr>';
     }).join('') || '<tr><td colspan="9" class="muted">入金待ちの請求書はありません</td></tr>') +
   '</table></div><p class="muted small" style="margin:6px 0 0">発行済みの請求書のうち、受注のステータス上まだ入金していないもの。期限切れ ⚠ の超過は営業日（土日を数えない）。入金したら受注のステータスを進めると消えます</p></div>';
 
@@ -2273,6 +2274,18 @@ function noticesHtml(){
     '</div>';
 }
 
+// 請求書の種類を「どの段階の請求か」で言い換える（前半=半金①・後半=半金②・全額は方式で 受注時/納品前/納品後 を添える）
+function invoiceStageLabel(kind, pay){
+  const k = String(kind||''); const via = NM.via && k.indexOf(NM.via)===0 ? NM.via+' ' : '';
+  if(k.indexOf('①')>=0) return via+'前半（半金①・前金）';
+  if(k.indexOf('②')>=0) return via+'後半（半金②・残金）';
+  if(k.indexOf('全額')>=0){ const kd = payKind(pay);
+    return via+'全額（'+(kd==='lump'?'受注時に請求':kd==='later'?'納品前に請求':kd==='after'?'納品後に請求':kd==='credit'?'請求済み・翌月末入金':'全額請求')+'）'; }
+  return k;
+}
+function docByNo(docNo){ const n=String(docNo||'').trim(); return n ? rows('docLog').find(d=>String(d['管理番号']||'').trim()===n) : null; }
+// 受注ID → {st, pay, via}（要対応の表示用。vDashboard の oInfo と同じ内容）
+function oInfoAll(){ const m={}; rows('orderLedger').forEach(r=>{ const id=String(r['受注ID']||'').trim(); if(id && !m[id]) m[id]={st:r['ステータス'], pay:r['支払方式'], via:String(r[NM.via+'経由']||'').trim()!==''}; }); return m; }
 function alertsHtml(){
   const loading = !DB.alerts;   // alerts は重いので裏で読み込む。届くまでは「確認中」表示（✅と誤認させない）
   const al = DB.alerts || {stalled:[], overdue:[]};
@@ -2284,7 +2297,14 @@ function alertsHtml(){
     '<span class="muted small">　停滞案件・入金期限切れなし（しきい値はスプシ「アラート設定」シートで変更できます）</span></div>';
   return '<div class="card" style="border:1.5px solid var(--crit)"><b class="small" style="color:var(--crit)">⚠ 要対応 '+n+'件</b>' +
   // 期限切れの一覧はここには出さず、直下の「💴 入金予定」の表に ⚠ で出す（二重表示をやめる。2026-09-08 ユーザー選択）
-  (al.overdue.length ? '<div class="small" style="margin-top:6px;color:var(--crit)"><b>💴 入金期限切れ '+al.overdue.length+'件（'+yen(al.overdue.reduce((a,o)=>a+num(o.amount),0))+'）</b><span class="muted">　→ すぐ下の入金予定の表に ⚠ で出ています</span></div>' : '') +
+  // 期限切れは「どの請求か（前半/後半/全額）・今どの状態か・PDF」まで見えるように1件ずつ出す（2026-09-16 ユーザー要望）
+  (al.overdue.length ? '<div class="small" style="margin-top:6px;color:var(--crit)"><b>💴 入金期限切れ '+al.overdue.length+'件（'+yen(al.overdue.reduce((a,o)=>a+num(o.amount),0))+'）</b></div>' +
+    '<div class="tblwrap" style="margin-top:4px"><table><tr><th>卸先</th><th>どの請求</th><th class="num">金額（税込）</th><th>支払期限</th><th class="num">超過<br><span class="muted small">営業日</span></th><th>今の状態</th><th>受注</th><th>請求書</th></tr>' +
+    al.overdue.map(o=>{ const oi=(oInfoAll()[String(o.id||'').trim()]||{}); const doc=docByNo(o.docNo);
+      return '<tr><td>'+esc(o.name)+'</td><td class="small">'+esc(invoiceStageLabel(o.kind, oi.pay))+'</td><td class="num"><b>'+yen(num(o.amount))+'</b></td>' +
+        '<td class="small">'+esc(o.due||'—')+'</td><td class="num"><b style="color:var(--crit)">'+o.days+'</b></td><td>'+pill(o.status, oi.pay)+'</td>' +
+        '<td class="mono small">'+esc(o.id)+'</td><td class="small">'+(doc&&doc['PDF URL']?'<a href="'+esc(doc['PDF URL'])+'" target="_blank" rel="noopener">📄 '+esc(o.docNo)+'</a>':esc(o.docNo||'—'))+'</td></tr>'; }).join('') +
+    '</table><p class="muted small" style="margin:4px 0 0">入金を確認したら受注のステータスを進めると消えます。同じ請求書は下の「💴 入金予定」にも ⚠ で出ています</p></div>' : '') +
   (pb.length ? '<div class="tblwrap" style="margin-top:8px"><table><tr><th>振り分けの一部が回収・検品で削除されています（数が合いません）</th><th>卸先</th><th>ブランド</th><th>残っている回収</th><th>削除された回収</th><th></th></tr>' +
     pb.map(o=>'<tr><td class="mono">受注 '+esc(o.id)+'</td><td>'+esc(o.w)+'</td><td class="small">'+esc(o.brand)+'</td><td class="mono small">'+esc(o.kids||'—')+'</td>' +
       '<td class="mono small" style="color:var(--crit)">'+esc(o.del)+'</td><td><button class="btn sm" onclick="go(\'allocation\');render()">🧮 振り分けへ</button></td></tr>').join('') +
