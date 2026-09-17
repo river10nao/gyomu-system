@@ -2310,7 +2310,7 @@ function alertsHtml(){
       '<td class="mono small" style="color:var(--crit)">'+esc(o.del)+'</td><td><button class="btn sm" onclick="go(\'allocation\');render()">🧮 振り分けへ</button></td></tr>').join('') +
     '</table><p class="muted small" style="margin:6px 0 0">回収・検品画面のゴミ箱から復元するか、振り分けをやり直してください</p></div>' : '') +
   (al.stalled.length ? '<div class="tblwrap" style="margin-top:8px"><table><tr><th>止まっている案件</th><th>相手</th><th>状態</th><th class="num">経過</th></tr>' +
-    al.stalled.map(s=>'<tr><td class="mono">'+esc(s.label)+' '+esc(s.id)+'</td><td>'+esc(s.name)+'</td><td>'+pill(s.status)+'</td>' +
+    al.stalled.map(s=>'<tr><td class="mono">'+(s.orderIds&&s.orderIds.length?'受注 '+esc(s.id)+' <span class="muted small">（'+esc(s.label)+(s.count>1?s.count+'件':'')+'）</span>':esc(s.label)+' '+esc(s.id))+'</td><td>'+esc(s.name)+'</td><td>'+pill(s.status)+'</td>' +
       '<td class="num" style="color:var(--warn)"><b>'+s.days+'日</b><span class="muted small">（目安'+s.threshold+'日）</span></td></tr>').join('')+'</table></div>' : '') +
   '<p class="muted small" style="margin-top:6px">入金期限の超過は<b>営業日</b>で数えます（土日は数えません。祝日は含みます）。止まっている案件の「経過」は暦日です。しきい値はスプシ「アラート設定」シートの日数を書き換えるだけで変わります</p></div>';
 }
