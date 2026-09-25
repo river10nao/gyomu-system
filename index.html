@@ -3385,6 +3385,10 @@ function manualBuyForm(){
     (viewState.mbPaid ? '<p class="small" style="margin:6px 0 0;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--warn) 12%,transparent)">' +
       '過去に買って支払いも終わっている在庫を、在庫台帳にだけ載せます。<b>支払い画面・仕入枠・案件別収支には計上されません</b>（区分=在庫で登録）。' +
       '回収・検品は飛ばして<b>ロット処理待ち</b>から始まるので、ロット処理をすれば在庫に入ります。対象受注は空欄にしてください。</p>' : '') +
+    // 余剰在庫として入庫（在庫ページの「余剰在庫」枠に入れる。支払い済みチェックと併用可。2026-09-25 ユーザー要望）
+    '<label class="pill" style="cursor:pointer;margin-top:8px;margin-left:6px;display:inline-block"><input type="checkbox" '+(viewState.mbSurplus?'checked':'')+' onclick="viewState.mbSurplus=this.checked;render()" style="width:15px;height:15px;vertical-align:-2px"> <b>📦 余剰在庫として入庫</b></label>' +
+    (viewState.mbSurplus ? '<p class="small" style="margin:6px 0 0;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--s4) 12%,transparent)">' +
+      '入庫したとき在庫ページの<b>「余剰在庫」枠</b>に入ります（発生区分=余剰在庫）。出荷の引去や振り分けの在庫引き当てでは通常在庫と同じように使えます。</p>' : '') +
     '<div class="row" style="margin-top:10px;align-items:flex-end">' +
     '<label class="small grow">① JANコード列（1行=1商品。商品ID＝P0135 のように書いてもOK）<br><textarea id="mbJans" rows="4" oninput="viewState.mbJansTxt=this.value" style="width:100%;font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--axis);border-radius:8px;padding:8px" placeholder="4954835270892&#10;P0135&#10;…">'+esc(viewState.mbJansTxt||'')+'</textarea></label>' +
     '<label class="small" style="width:160px">② 数量列（同じ順）<br><textarea id="mbQtys" rows="4" oninput="viewState.mbQtyTxt=this.value" style="width:100%;font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--axis);border-radius:8px;padding:8px" placeholder="12&#10;6&#10;…">'+esc(viewState.mbQtyTxt||'')+'</textarea></label>' +
@@ -3460,9 +3464,9 @@ async function mbSubmit(){
   const date = viewState.mbDate || new Date().toLocaleDateString('sv-SE');
   const paidMode = !!viewState.mbPaid;
   if(paidMode && orderIds.length){ toast('支払い済みの在庫計上は、対象受注を空欄にしてください', true); return; }
-  if(!confirm((paidMode?'支払い済みの在庫として登録します（支払い画面・仕入枠・案件別収支には計上されません）。\n':'手動仕入れを登録します。\n')+'回収先: '+salonLabel(sRow||{})+'\n仕入日: '+date+(orderIds.length?'\n対象受注: '+orderIds.join(', '):'\n対象受注: なし')+'\n合計 '+total+'点 を回収番号1つで「'+(paidMode?'ロット処理待ち':'回収待ち')+'」に登録します。よろしいですか？')) return;
-  const res = await act('commitManualPurchase', {salonId:sid, supplierId:isOut?'':(viewState.mbSup||''), date, orderIds, items, alreadyPaid:!!viewState.mbPaid}, viewState.mbPaid?'在庫として登録しました（支払いには計上されません）':'手動仕入れを登録しました', ['collectionLedger']);
-  if(res){ viewState.mbRows=[]; viewState.mbJansTxt=''; viewState.mbQtyTxt=''; viewState.mbOids=''; toast('回収ID: '+res.collectionId+' を作成しました'); render(); }
+  if(!confirm((paidMode?'支払い済みの在庫として登録します（支払い画面・仕入枠・案件別収支には計上されません）。\n':'手動仕入れを登録します。\n')+'回収先: '+salonLabel(sRow||{})+'\n仕入日: '+date+(orderIds.length?'\n対象受注: '+orderIds.join(', '):'\n対象受注: なし')+'\n合計 '+total+'点 を回収番号1つで「'+(paidMode?'ロット処理待ち':'回収待ち')+'」に登録します。'+(viewState.mbSurplus?'\n入庫先: 余剰在庫':'')+'\nよろしいですか？')) return;
+  const res = await act('commitManualPurchase', {salonId:sid, supplierId:isOut?'':(viewState.mbSup||''), date, orderIds, items, alreadyPaid:!!viewState.mbPaid, surplus:!!viewState.mbSurplus}, viewState.mbPaid?'在庫として登録しました（支払いには計上されません）':'手動仕入れを登録しました', ['collectionLedger']);
+  if(res){ viewState.mbRows=[]; viewState.mbJansTxt=''; viewState.mbQtyTxt=''; viewState.mbOids=''; viewState.mbSurplus=false; toast('回収ID: '+res.collectionId+' を作成しました'); render(); }
 }
 
 // ===== 画面: 在庫 =====
@@ -3553,7 +3557,7 @@ function vStock(){
     '<input class="search" placeholder="検索（商品名・サロン・在庫ID）" value="'+esc(q)+'"'+searchAttrs()+'>' +
     '<button class="btn right" onclick="exportTable(\'在庫台帳\',\'stock\')">CSV出力</button></div>' +
   '<div class="card tblwrap"><b class="small">通常在庫（回収入庫・業者仕入）</b><div style="margin-top:8px">'+stockTable(main,'該当する在庫がありません')+'</div></div>' +
-  '<div class="card tblwrap"><b class="small">余剰在庫（回収残・キャンセル・返品など）</b><div style="margin-top:8px">'+stockTable(surplus,'余剰在庫はありません')+'</div></div>' +
+  '<div class="card tblwrap"><b class="small">余剰在庫（手動仕入れで余剰指定・回収残・キャンセル・返品など）</b><div style="margin-top:8px">'+stockTable(surplus,'余剰在庫はありません')+'</div></div>' +
   // 出庫履歴（最新20件）の表は 2026-09-08 に画面から外した（ユーザー指定）。出庫ログシートは残数計算の根拠なのでスプシ側にはそのまま残す
   '';
 }
