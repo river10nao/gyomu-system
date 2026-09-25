@@ -1897,15 +1897,16 @@ function calcAnbetsu(month){
     l.cost += l.prov;
     // ---- 手数料（案件に紐づくマイナス）: 仲介2% と 紹介報酬。実利益 = 売上 − AXIA仕入 − 手数料 ----
     // 2026-09-02 ユーザー要望。サロン連携1%はコスモの掛け率確定待ちで保留なのでまだ入れていない
-    const pure = g[PAYIDS.pure], mira = g[MIRA_NAP.sid];
-    const brokerBase = (pure ? pure.listAmt : 0) + (mira && mira.miraNap ? mira.listAmt : 0);   // MIRA名義ナプラ（差額払い）も定価×2%の対象（2026-09-25）
-    if(brokerBase>0){
-      // 神澤さんの仲介料は「ピュア経由に回した分の定価×2%」。請求額ベースではない（2026-07-23 実請求書で確定）
-      const amt = Math.round(brokerBase*BROKER_RATE);
-      // sup=ピュア商会: この手数料はピュア商会から仕入れた分の利益から引く（仕入先ごとの収支・2026-09-08 ユーザー指定）。ピュアの段が無ければMIRAの段から引く
+    // 神澤さんの仲介料は「ピュア経由に回した分の定価×2%」。請求額ベースではない（2026-07-23 実請求書で確定）
+    // sup=その段: 手数料はその仕入先から仕入れた分の利益から引く（仕入先ごとの収支・2026-09-08 ユーザー指定）。
+    // MIRA名義ナプラ（差額払い）も定価×2%の対象。ピュア分とMIRA分は別明細にして、それぞれの段から引く（2026-09-25 Codexレビュー反映）
+    [[PAYIDS.pure, 'ピュア経由'], [MIRA_NAP.sid, 'MIRA差額払い分']].forEach(([sid0, lab])=>{
+      const seg = g[sid0]; if(!seg || !(seg.listAmt>0)) return;
+      if(sid0===MIRA_NAP.sid && !seg.miraNap) return;
+      const amt = Math.round(seg.listAmt*BROKER_RATE);
       if(amt>0) l.fees.push({who:salonLabel(salName[PAYIDS.broker]||{})||'神澤さん', what:'仲介'+(BROKER_RATE*100)+'%',
-        note:'ピュア経由の定価 '+yen(brokerBase)+'×'+(BROKER_RATE*100)+'%', amt, sup:(pure && pure.listAmt>0) ? PAYIDS.pure : MIRA_NAP.sid});
-    }
+        note:lab+'の定価 '+yen(seg.listAmt)+'×'+(BROKER_RATE*100)+'%', amt, sup:sid0});
+    });
     const w = rows('wholesalers').find(x=>String(x['卸先ID']||'').trim()===l.wid);
     if(w){
       const rid = String(w['紹介者']||'').trim();
@@ -4429,12 +4430,14 @@ function allocBuyUnit(pid, supSid){
 // allocBuyUnit はマスタの率をそのまま使う（ピュアの41.9%＝39.9%＋仲介2%）が、
 // 実際にピュアへ払うのは39.9%相当なので、PDFの金額は支払い画面と同じ buyUnitOf に合わせる（2026-09-04）
 function allocRealUnit(pid, supSid, salonSid){
+  const sid = String(supSid||'').trim();
+  // salonSid（回収先サロン）が分かる場合は擬似行で渡す → MIRA名義ナプラの買取50%が確定前の振り分け表でも効く（2026-09-25）。
+  // MIRAの50%は固定ルールなので、商品単位の単価上書き（allocItemUnitOf）より優先する
+  const pseudo = salonSid ? {'サロンID':String(salonSid).trim()} : null;
+  if(pseudo && isMiraNap(pseudo, sid, brandOf(pid))) return buyUnitOf(pid, sid, null, brandOf(pid), pseudo).unit;
   const ov = allocItemUnitOf(pid, supSid);
   if(ov!=null) return ov;
-  const sid = String(supSid||'').trim();
   const s = rows('salons').find(x=>String(x['サロンID']||'').trim()===sid);
-  // salonSid（回収先サロン）が分かる場合は擬似行で渡す → MIRA名義ナプラの買取50%が確定前の振り分け表でも効く（2026-09-25）
-  const pseudo = salonSid ? {'サロンID':String(salonSid).trim()} : null;
   return buyUnitOf(pid, sid, s, brandOf(pid), pseudo).unit;
 }
 // 商品×仕入先の単価上書き。正本は「単価」で持ち、掛け率は定価から逆算して表示する
@@ -5318,10 +5321,11 @@ function allocPrint(batch){
   const sids = r.salonIds;
   // 仕入掛け率（社内用一括にだけ出す。仕入先へ渡す版では隠す＝2026-08-07 ユーザー指定）。
   // 率は仕入先ごとに違うので、そのセクションの仕入先で引く。マスタ仕入値を下回る場合は⚠を添える
-  const buyRateTxt = (pid, supSid)=>{
+  const buyRateTxt = (pid, supSid, salonSid)=>{
     const list = num((product(pid)||{})['定価（税抜）']);
     if(!list) return '—';
-    const txt = Math.round(allocBuyUnit(pid, supSid)/list*1000)/10 + '%';
+    // 単価欄と同じ関数（allocRealUnit）から逆算して、率と単価が食い違わないようにする（MIRA差額払いは50%。2026-09-25）
+    const txt = Math.round(num(allocRealUnit(pid, supSid, salonSid))/list*1000)/10 + '%';
     return allocBuyUnder(pid, supSid) ? txt+' <span style="color:#c60">⚠</span>' : txt;
   };
   // 仕入先ごとの合計（確定後PDFと同じ形で先頭に出す。2026-09-04 ユーザー要望）
@@ -5338,7 +5342,7 @@ function allocPrint(batch){
     addTot(names[supSid]||supSid||'（仕入先未選択）', totalQty, totalYen, totalBuy);
     return '<div class="salon" data-sup="'+esc(supSid)+'"><h2>'+esc(slotName(names, sid))+' <span class="sub">計 '+totalQty+'点 ／ サロン価 ¥'+Math.round(totalYen).toLocaleString()+'<span class="intonly"> ／ <b>仕入額 ¥'+Math.round(totalBuy).toLocaleString()+'</b></span>（税抜）'+(r.supSplit&&supSid?' ／ 仕入先: '+esc(names[supSid]||supSid):'')+'</span></h2>' +
       '<table><tr><th>商品</th><th class="num">個数</th><th class="num">サロン価</th><th class="num intonly">仕入掛け率</th><th class="num intonly">仕入単価</th><th class="num intonly">仕入額</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
-      lines.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+(x.i.unit>1?'（'+x.i.unit+'個/箱）':'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*x.i.price).toLocaleString()+'</td><td class="num intonly">'+buyRateTxt(x.i.pid, supSid)+'</td><td class="num intonly">¥'+Math.round(buyU(x.i.pid)).toLocaleString()+'</td><td class="num intonly">¥'+Math.round(x.qty*buyU(x.i.pid)).toLocaleString()+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
+      lines.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+(x.i.unit>1?'（'+x.i.unit+'個/箱）':'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*x.i.price).toLocaleString()+'</td><td class="num intonly">'+buyRateTxt(x.i.pid, supSid, sid)+'</td><td class="num intonly">¥'+Math.round(buyU(x.i.pid)).toLocaleString()+'</td><td class="num intonly">¥'+Math.round(x.qty*buyU(x.i.pid)).toLocaleString()+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
       '</table></div>';
   }).join('');
   // 🤝外注仕入枠の分は外注先ごとに独立セクションで出す（外注先への共有・検品チェックにも使える。複数外注先対応 2026-07-18）
