@@ -917,7 +917,7 @@ function payRateOf(supRow, brand){
   }
   return null;
 }
-function fmtDec(v){ const n=Number(v)||0; return Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString(undefined,{minimumFractionDigits:1, maximumFractionDigits:2}); }   // MIRA差額表の小数表示
+function fmtDec(v){ const n=Math.round((Number(v)||0)*100)/100; return Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString(undefined,{minimumFractionDigits:1, maximumFractionDigits:2}); }   // 浮動小数点の誤差（1092.0000001）を消してから整数判定   // MIRA差額表の小数表示
 function payEom(y,m){ return new Date(y, m+1, 0); }   // m月（0始まり）の末日
 function payFmt(d){ return d.toLocaleDateString('sv-SE').replace(/-/g,'/'); }
 // 締め日テキスト（末締め/10日締/都度）から期間キーと支払予定日を出す
@@ -942,14 +942,18 @@ function payPeriod(dateStr, closeTxt, payTxt){
     const cut=+cm[1];
     const ey = day<=cut ? y : (mo===11 ? y+1 : y), em = day<=cut ? mo : (mo+1)%12;   // 締め日を過ぎたら翌月締めに計上
     let payLabel = p;
+    const pdC = pdOf(ey,em);
     if(p.indexOf('当月末')>=0) payLabel = payFmt(payEom(ey,em))+'（当月末）';
     else if(p.indexOf('翌月末')>=0) payLabel = payFmt(payEom(ey,em+1))+'（翌月末）';
-    return {key: ey+'/'+mm(em)+'/'+String(cut).padStart(2,'0'), label: ey+'/'+mm(em)+' '+cut+'日締め分', payLabel, pd:pdOf(ey,em)};
+    else if(pdC) payLabel = payFmt(pdC)+'（'+p+'）';   // 翌月27日 など日付指定も実日付で表示（2026-09-25）
+    return {key: ey+'/'+mm(em)+'/'+String(cut).padStart(2,'0'), label: ey+'/'+mm(em)+' '+cut+'日締め分', payLabel, pd:pdC};
   }
   let payLabel = p || '（支払日 確認中）';
+  const pdE = pdOf(y,mo);
   if(p.indexOf('翌月末')>=0) payLabel = payFmt(payEom(y,mo+1))+'（翌月末）';
   else if(p.indexOf('当月末')>=0 || /^末払い/.test(p)) payLabel = payFmt(payEom(y,mo))+'（当月末）';
-  return {key: y+'/'+mm(mo), label: y+'/'+mm(mo)+' 末締め分', payLabel, pd:pdOf(y,mo)};
+  else if(pdE) payLabel = payFmt(pdE)+'（'+p+'）';   // 翌月10日 など日付指定も実日付で表示
+  return {key: y+'/'+mm(mo), label: y+'/'+mm(mo)+' 末締め分', payLabel, pd:pdE};
 }
 // 仕入明細を仕入先ごとに集める（vPayments と資金繰り出金バーで共用。2026-07-19 支払日ベース化で切り出し）
 // inMonthFn: 計上日で絞る関数（省略=全期間） ／ allMonths: 見つかった計上月を追記するSet（省略可）
