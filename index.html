@@ -1900,12 +1900,16 @@ function calcAnbetsu(month){
     // 神澤さんの仲介料は「ピュア経由に回した分の定価×2%」。請求額ベースではない（2026-07-23 実請求書で確定）
     // sup=その段: 手数料はその仕入先から仕入れた分の利益から引く（仕入先ごとの収支・2026-09-08 ユーザー指定）。
     // MIRA名義ナプラ（差額払い）も定価×2%の対象。ピュア分とMIRA分は別明細にして、それぞれの段から引く（2026-09-25 Codexレビュー反映）
-    [[PAYIDS.pure, 'ピュア経由'], [MIRA_NAP.sid, 'MIRA差額払い分']].forEach(([sid0, lab])=>{
-      const seg = g[sid0]; if(!seg || !(seg.listAmt>0)) return;
-      if(sid0===MIRA_NAP.sid && !seg.miraNap) return;
-      const amt = Math.round(seg.listAmt*BROKER_RATE);
+    // 端数: 支払い画面は合算額×2%を丸めるので、合計を合わせるためピュア分を丸め、MIRA分は残り（合計−ピュア分）にする
+    const segs = [[PAYIDS.pure, 'ピュア経由'], [MIRA_NAP.sid, 'MIRA差額払い分']]
+      .map(([sid0, lab])=>({sid0, lab, seg:g[sid0]})).filter(x=>x.seg && x.seg.listAmt>0 && (x.sid0!==MIRA_NAP.sid || x.seg.miraNap));
+    const brokerTotal = Math.round(segs.reduce((a,x)=>a+x.seg.listAmt,0)*BROKER_RATE);
+    let brokerLeft = brokerTotal;
+    segs.forEach((x, i)=>{
+      const amt = (i===segs.length-1) ? brokerLeft : Math.round(x.seg.listAmt*BROKER_RATE);
+      brokerLeft -= amt;
       if(amt>0) l.fees.push({who:salonLabel(salName[PAYIDS.broker]||{})||'神澤さん', what:'仲介'+(BROKER_RATE*100)+'%',
-        note:lab+'の定価 '+yen(seg.listAmt)+'×'+(BROKER_RATE*100)+'%', amt, sup:sid0});
+        note:x.lab+'の定価 '+yen(x.seg.listAmt)+'×'+(BROKER_RATE*100)+'%', amt, sup:x.sid0});
     });
     const w = rows('wholesalers').find(x=>String(x['卸先ID']||'').trim()===l.wid);
     if(w){
@@ -4433,7 +4437,7 @@ function allocRealUnit(pid, supSid, salonSid){
   const sid = String(supSid||'').trim();
   // salonSid（回収先サロン）が分かる場合は擬似行で渡す → MIRA名義ナプラの買取50%が確定前の振り分け表でも効く（2026-09-25）。
   // MIRAの50%は固定ルールなので、商品単位の単価上書き（allocItemUnitOf）より優先する
-  const pseudo = salonSid ? {'サロンID':String(salonSid).trim()} : null;
+  const pseudo = salonSid ? {'サロンID':slotBase(String(salonSid).trim())} : null;   // 2枠目（S0078#2 等）はスロットIDから素のサロンIDに戻す
   if(pseudo && isMiraNap(pseudo, sid, brandOf(pid))) return buyUnitOf(pid, sid, null, brandOf(pid), pseudo).unit;
   const ov = allocItemUnitOf(pid, supSid);
   if(ov!=null) return ov;
