@@ -864,6 +864,10 @@ function fixedBuyUnit(pid){ const v = num((product(pid)||{})[FIXED_BUY_COL]); re
 function buyUnitOf(pid, supId, supRow, brand, row){
   const led = row ? num(row[BUY_UNIT_COL]) : 0;
   if(led>0) return {unit:led, src:'台帳', note:''};
+  if(isMiraNap(row, supId, brand)){   // MIRA名義のナプラ: 当社の仕入原価は 定価×50%（MIRAからの買取価格。差額払いの根拠）
+    const l0 = num((product(pid)||{})['定価（税抜）']);
+    return {unit:l0*MIRA_NAP.buyRate, src:'掛け率', note:'MIRA買取50%', rate:MIRA_NAP.buyRate, miraNap:true};
+  }
   const fx = fixedBuyUnit(pid);
   if(fx!=null) return {unit:fx, src:'固定', note:'固定単価'};
   const list = num((product(pid)||{})['定価（税抜）']);
@@ -888,6 +892,12 @@ function buyUnitOf(pid, supId, supRow, brand, row){
 // 計上ルール: 仕入=回収台帳の生存行（振り分け・外注仕入）。計上日=対象受注の📦発注日（未入力は振分確定日で仮計上・「仮」表示）
 // 単価: 仕入先（サロンマスタのディーラー/外注行）の掛け率列×定価。率が無い商品は商品マスタの仕入価格で仮単価
 const PAYIDS = { pure:'S0014', broker:'S0021', maverick:'S0022' };   // 特殊計算する行（口座請求元/仲介2%先/店販請求元）
+// MIRA名義のナプラ（口座請求元経由）は「差額払い」（2026-09-25 ユーザー確定）:
+//   口座請求元がMIRAへ 定価×43% で請求（MIRAが払う）→ 当社はMIRAから 定価×50% で買い取った扱い → 差額 定価×7% をMIRAへ支払う。
+//   差額は明細ごと小数のまま合計し、税込で円未満四捨五入（見本Excelと一致: 9/10締め分 25,023.6 → 税込 27,526）。
+//   締め・支払はサロンマスタのMIRA行（10日締・翌月27日）。仲介2%（定価×2%）は従来どおり掛かる。仕入原価（案件別収支等）は定価×50%
+const MIRA_NAP = { sid:'S0078', brand:'ナプラ', pureRate:0.43, buyRate:0.50 };
+const isMiraNap = (row, supId, brand)=> !!row && supId===PAYIDS.pure && String(row['サロンID']||'').trim()===MIRA_NAP.sid && String(brand||'').trim()===MIRA_NAP.brand;
 const BROKER_RATE = 0.02;   // 仲介手数料: 口座請求（対象ブランド分）税抜×2%（マスタの41.9%=39.9%+2%の2%側）
 // ピュア商会経由の仕入単価。仕入れマスタのピュア行の率は【ピュアへの支払＋神澤さんの仲介2%】の合算。
 //   ナプラ 41.9% = 39.9%（ピュア）＋2%（神澤さん）
@@ -907,6 +917,7 @@ function payRateOf(supRow, brand){
   }
   return null;
 }
+function fmtDec(v){ const n=Number(v)||0; return Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString(undefined,{minimumFractionDigits:1, maximumFractionDigits:2}); }   // MIRA差額表の小数表示
 function payEom(y,m){ return new Date(y, m+1, 0); }   // m月（0始まり）の末日
 function payFmt(d){ return d.toLocaleDateString('sv-SE').replace(/-/g,'/'); }
 // 締め日テキスト（末締め/10日締/都度）から期間キーと支払予定日を出す
@@ -965,9 +976,17 @@ function collectSupplierLines(inMonthFn, allMonths){
     const unitNote = u.note || (u.src==='台帳' ? '台帳の実額' : '');
     // 受注に紐づかない仕入（手動仕入れ・外注一括の旧データ等）は行自体の発注日が計上日なので「仮」にしない
     // listAmt=定価×数量: 仲介手数料の基準額（2026-07-23 実請求書で「手数料=定価×2%」と確定したため保持）
-    (bySup[supId]=bySup[supId]||[]).push({date, prov:oids.length>0 && !od, kid:String(r['回収ID']||'').trim(), oids:oids.join(', '),
+    const line = {date, prov:oids.length>0 && !od, kid:String(r['回収ID']||'').trim(), oids:oids.join(', '),
       salon:String(r['サロン名']||''), brand, name:String(r['商品名']||''), size:String(r['容量']||''), qty, unit, unitNote,
-      amt:unit*qty, listAmt:list*qty, isOut:String(r['区分']||'').trim()==='外注'});
+      amt:unit*qty, listAmt:list*qty, isOut:String(r['区分']||'').trim()==='外注'};
+    if(u.miraNap){
+      // MIRA差額払い: 口座請求元のカードには載せず（MIRAが払う）、MIRAのカードへ 差額=定価×(50%−43%)×数量 で計上。仲介2%の基準（listAmt）は残す
+      Object.assign(line, {miraNap:true, list, u43:list*MIRA_NAP.pureRate, u50:list*MIRA_NAP.buyRate, unit:list*(MIRA_NAP.buyRate-MIRA_NAP.pureRate),
+        amt:list*(MIRA_NAP.buyRate-MIRA_NAP.pureRate)*qty, unitNote:'差額 定価×7%'});
+      (bySup[MIRA_NAP.sid]=bySup[MIRA_NAP.sid]||[]).push(line);
+      return;
+    }
+    (bySup[supId]=bySup[supId]||[]).push(line);
   });
   return {bySup, sal};
 }
@@ -999,24 +1018,33 @@ function vPayments(){
     const s = sal[supId]||{}; const lines = bySup[supId];
     const close = String(s['締め日']||'').trim(), pay = String(s['支払日']||'').trim();
     const isPure = supId===PAYIDS.pure;
+    const isMira = supId===MIRA_NAP.sid && lines.some(l=>l.miraNap);   // MIRA名義ナプラの差額払いカード
     const kind = String(s['種別']||'').trim();
     const per = {};
     lines.forEach(l=>{ const pr = payPeriod(l.date, close, pay); (per[pr.key]=per[pr.key]||{pr, lines:[]}).lines.push(l); });
-    html += '<div class="card"><div class="row"><b>'+(kind==='外注'?'🤝':'🏭')+' '+esc(salonLabel(s)||supId)+'</b>' +
+    html += '<div class="card"><div class="row"><b>'+(kind==='外注'||isMira?'🤝':'🏭')+' '+esc(salonLabel(s)||supId)+(isMira?'（'+MIRA_NAP.brand+' 差額払い）':'')+'</b>' +
       '<span class="small muted">締め: '+esc(close||'—')+' ／ 支払: '+esc(pay || 'カード引落（引落日 確認中）')+'</span></div>' +
       Object.keys(per).sort().reverse().map(k=>{
-        const g = per[k]; const sub = g.lines.reduce((a,l)=>a+l.amt,0);
-        const tax = isPure ? Math.floor(sub*0.1) : Math.round(sub*0.1);   // 口座請求元は伝票単位で税切捨
+        const g = per[k]; const subRaw = g.lines.reduce((a,l)=>a+l.amt,0);
+        // MIRA差額は小数のまま合計→税込で四捨五入（見本Excel方式）。他は整数なので同じ
+        const sub = isMira ? Math.round(subRaw) : subRaw;
+        const tax = isPure ? Math.floor(sub*0.1) : (isMira ? Math.round(subRaw*1.1)-sub : Math.round(sub*0.1));   // 口座請求元は伝票単位で税切捨
         const open = (viewState.aggOpen||{})['pay_'+supId+'_'+k];
         const prov = g.lines.some(l=>l.prov);
         return '<div style="margin-top:8px;border-top:1px solid var(--axis);padding-top:6px">' +
           '<div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_'+supId+'_'+k+'\')">'+(open?'▾':'▸')+' <b class="small">'+esc(g.pr.label)+'</b>' +
           '<span class="small">支払予定: <b>'+esc(g.pr.payLabel)+'</b></span>' +
           '<span class="right"><b>'+yen(sub+tax)+'</b> <span class="muted small">税込（税抜 '+yen(sub)+'）</span>'+(prov?' <span class="small" style="color:var(--s4)">仮あり</span>':'')+'</span></div>' +
-          (open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>計上日</th><th>回収ID</th><th>受注</th><th>サロン</th><th>ブランド</th><th>商品</th><th class="num">個数</th><th class="num">単価</th><th class="num">金額</th></tr>' +
+          (open && isMira ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>計上日</th><th>回収ID</th><th>受注</th><th>商品</th><th class="num">個数</th><th class="num">定価</th><th class="num">43%単価</th><th class="num">43%合計</th><th class="num">50%単価</th><th class="num">50%合計</th><th class="num">差額</th></tr>' +
+            g.lines.map(l=>'<tr><td class="small">'+esc(l.date)+(l.prov?' <span style="color:var(--s4)">仮</span>':'')+'</td><td class="mono small">'+esc(l.kid)+'</td><td class="mono small">'+esc(l.oids)+'</td><td class="small">'+esc(l.name)+' '+esc(l.size)+'</td><td class="num">'+l.qty+'</td><td class="num">'+yen(l.list)+'</td>' +
+              '<td class="num">'+fmtDec(l.u43)+'</td><td class="num">'+fmtDec(l.u43*l.qty)+'</td><td class="num">'+fmtDec(l.u50)+'</td><td class="num">'+fmtDec(l.u50*l.qty)+'</td><td class="num"><b>'+fmtDec(l.amt)+'</b></td></tr>').join('') +
+            '<tr style="font-weight:700;background:var(--wash)"><td colspan="4">小計</td><td class="num">'+g.lines.reduce((a,l)=>a+l.qty,0)+'</td><td></td><td></td><td class="num">'+fmtDec(g.lines.reduce((a,l)=>a+l.u43*l.qty,0))+'</td><td></td><td class="num">'+fmtDec(g.lines.reduce((a,l)=>a+l.u50*l.qty,0))+'</td><td class="num">'+fmtDec(subRaw)+'</td></tr>' +
+            '</table></div>' :
+          open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>計上日</th><th>回収ID</th><th>受注</th><th>サロン</th><th>ブランド</th><th>商品</th><th class="num">個数</th><th class="num">単価</th><th class="num">金額</th></tr>' +
             g.lines.map(l=>'<tr><td class="small">'+esc(l.date)+(l.prov?' <span style="color:var(--s4)">仮</span>':'')+'</td><td class="mono small">'+esc(l.kid)+'</td><td class="mono small">'+esc(l.oids)+'</td><td class="small">'+esc(l.salon)+'</td><td class="small">'+esc(l.brand)+'</td><td class="small">'+esc(l.name)+' '+esc(l.size)+'</td><td class="num">'+l.qty+'</td><td class="num">'+yen(l.unit)+(l.unitNote?'<br><span class="small" style="color:var(--s4)">'+esc(l.unitNote)+'</span>':'')+'</td><td class="num">'+yen(l.amt)+'</td></tr>').join('') +
             '</table></div>' : '') + '</div>';
       }).join('') +
+      (isMira ? '<p class="muted small" style="margin-top:6px">※ MIRA名義の'+MIRA_NAP.brand+'は、口座請求元がMIRAへ定価×43%で請求（MIRAが支払い）。当社は定価×50%で買い取った扱いにして、差額（定価×7%）をMIRAへ支払う。差額は明細ごと小数のまま合計し、税込で円未満四捨五入。仲介2%は下の🤝カードに従来どおり計上。案件別収支の仕入原価は定価×50%（2026-09-25 確定）</p>' : '') +
       (isPure ? '<p class="muted small" style="margin-top:6px">※ 単価 = 商品マスタのサロン仕入価格×57%／モデニカは定価×70%のサロン価×65%（いずれも円未満切捨。実請求書と全明細照合済みの計算式）。他ブランドは定価×（マスタ率−2%）。仲介2%は定価×2%で下の🤝カードに計上。サロン別口座請求・税は伝票単位切捨。</p>' : '') +
       '</div>';
   });
@@ -1035,7 +1063,7 @@ function vPayments(){
   // 2026-07-23 実請求書（BETSグループ発注手数料¥66,512=定価総額×2%）で基準額を「定価」に確定。
   // 旧実装の「請求想定額×2%」は約4割に過小計上されるため撤回
   const pureRow = sal[PAYIDS.pure]||{}, brokerRow = sal[PAYIDS.broker]||{};
-  const pureLines = bySup[PAYIDS.pure]||[];
+  const pureLines = (bySup[PAYIDS.pure]||[]).concat((bySup[MIRA_NAP.sid]||[]).filter(l=>l.miraNap));   // MIRA差額分も定価×2%の対象（2026-09-25）
   if(pureLines.length){
     const per = {};
     pureLines.forEach(l=>{ const pr = payPeriod(l.date, String(pureRow['締め日']||''), String(pureRow['支払日']||'')); (per[pr.key]=per[pr.key]||{pr, sub:0}).sub+=num(l.listAmt); });
@@ -1518,7 +1546,8 @@ function vDashboard(){
     const per = {};
     csl.bySup[supId].forEach(l=>{ const pr=payPeriod(l.date, String(s['締め日']||''), String(s['支払日']||'')); (per[pr.key]=per[pr.key]||{pr, sub:0, d0:l.date}).sub+=l.amt; });
     Object.values(per).forEach(g=>{
-      const total = g.sub + (isPure ? Math.floor(g.sub*0.1) : Math.round(g.sub*0.1));   // 税込（口座請求元は伝票単位切捨の近似）
+      const isMira = supId===MIRA_NAP.sid;
+      const total = isMira ? Math.round(g.sub*1.1) : g.sub + (isPure ? Math.floor(g.sub*0.1) : Math.round(g.sub*0.1));   // 税込（口座請求元は伝票単位切捨の近似。MIRA差額は小数合計→税込で四捨五入）
       let pd = g.pr.pd, assumed = '';
       if(!pd){ const d0=new Date(String(g.d0||'').replace(/\//g,'-'));
         if(!isNaN(d0)){ pd = payEom(d0.getFullYear(), d0.getMonth()+1); assumed='支払日未確定→翌月末と仮定'; } }
@@ -1528,7 +1557,7 @@ function vDashboard(){
   // 2) 仲介手数料2%（口座請求元経由の全ブランド。基準額=定価×2%・2026-07-23 実請求書で確定。締め支払は口座請求元と同サイクル）
   (()=>{ const pureRow=csl.sal[PAYIDS.pure]||{}, brokerRow=csl.sal[PAYIDS.broker]||{};
     const per={};
-    (csl.bySup[PAYIDS.pure]||[]).forEach(l=>{
+    (csl.bySup[PAYIDS.pure]||[]).concat((csl.bySup[MIRA_NAP.sid]||[]).filter(l=>l.miraNap)).forEach(l=>{   // MIRA差額分も2%の対象
       const pr=payPeriod(l.date, String(pureRow['締め日']||''), String(pureRow['支払日']||'')); (per[pr.key]=per[pr.key]||{pr,sub:0}).sub+=num(l.listAmt); });
     Object.values(per).forEach(g=>pushOut((salonLabel(brokerRow)||'仲介')+' 2%', Math.round(g.sub*BROKER_RATE), g.pr.pd, 'var(--s4)'));
   })();
