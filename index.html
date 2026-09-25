@@ -2328,7 +2328,6 @@ function noticesHtml(){
   const nNew = list.filter(x=>noticeIsNew(x.date)).length;
   const cut = Math.max(3, nNew);
   const head = list.slice(0,cut), rest = list.slice(cut);
-  const nNew = list.filter(x=>noticeIsNew(x.date)).length;
   return '<div class="card">' +
     '<div class="row" style="align-items:center"><b class="small">📣 お知らせ</b>' +
     (nNew ? '<span class="pill" style="background:var(--warn);color:#3d2c00;font-weight:700">新着 '+nNew+'</span>' : '') +
