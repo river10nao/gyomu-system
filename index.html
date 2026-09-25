@@ -2299,9 +2299,10 @@ function noticeList(){
     .filter(r=>String(r['タイトル']||'').trim())
     .filter(r=>{ const e=String(r['掲載終了日']||'').trim(); if(!e) return true;
       const d=new Date(e.replace(/\//g,'-')+'T00:00:00'); return isNaN(d) ? true : d>=t; })
-    .map(r=>({ date:String(r['日付']||'').trim(), kind:String(r['種類']||'').trim(),
-               title:String(r['タイトル']||'').trim(), body:String(r['本文']||'').trim() }))
-    .sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+    .map((r,i)=>({ date:String(r['日付']||'').trim(), kind:String(r['種類']||'').trim(),
+               title:String(r['タイトル']||'').trim(), body:String(r['本文']||'').trim(), idx:i }))
+    // 日付の新しい順。同じ日付はシートの下の行（後から足した方）が上（2026-09-25 ユーザー指摘: 同日分が古い順に並んでいた）
+    .sort((a,b)=>String(b.date).localeCompare(String(a.date)) || (b.idx-a.idx));
 }
 function noticeIsNew(dateStr){
   const d = new Date(String(dateStr||'').replace(/\//g,'-')+'T00:00:00');
@@ -2323,7 +2324,10 @@ function noticeItem(x){
 function noticesHtml(){
   const list = noticeList();
   if(!list.length) return '';
-  const head = list.slice(0,3), rest = list.slice(3);
+  // 開いた状態で出すのは「NEW（7日以内）の全件」か、少なくとも新しい3件。NEWが「過去のお知らせ」に入らないようにする（2026-09-25）
+  const nNew = list.filter(x=>noticeIsNew(x.date)).length;
+  const cut = Math.max(3, nNew);
+  const head = list.slice(0,cut), rest = list.slice(cut);
   const nNew = list.filter(x=>noticeIsNew(x.date)).length;
   return '<div class="card">' +
     '<div class="row" style="align-items:center"><b class="small">📣 お知らせ</b>' +
