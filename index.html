@@ -3521,9 +3521,26 @@ function vStock(){
     '<div class="card tblwrap"><b class="small">🚚 入庫待ち（回収処理中: '+pendingIn.length+'明細・'+pendQty+'点）</b>' +
     '<span class="muted small" style="margin-left:8px">検品して「ロット処理済み」または「ロット処理なし」になると自動でこの下の在庫に入ります</span>' +
     (pendingIn.length ?
-      '<div style="margin-top:8px"><table><tr><th>回収ID</th><th>ステータス</th><th>サロン</th><th>商品</th><th>容量</th><th class="num">個数</th><th>発注日</th></tr>' +
-      pendingIn.map(r=>'<tr><td class="mono small">'+esc(r['回収ID'])+'</td><td>'+pill(r['ステータス'])+'</td><td class="small">'+esc(r['サロン名'])+'</td><td>'+esc(r['商品名'])+'</td><td>'+esc(r['容量'])+'</td><td class="num">'+r['個数']+'</td><td class="small">'+esc(r['発注日'])+'</td></tr>').join('') +
-      '</table></div>'
+      // 回収IDごとに1枚のカード（閉じた状態）。クリックで展開して商品明細を見る（2026-09-25 ユーザー要望: 明細をそのまま並べると行が長くて見にくい）
+      '<div style="margin-top:8px">' + (()=>{
+        const groups = {}, order = [];
+        pendingIn.forEach(r=>{ const k = String(r['回収ID']).trim(); if(!groups[k]){ groups[k]=[]; order.push(k); } groups[k].push(r); });
+        order.sort();
+        return order.map(k=>{
+          const rs = groups[k], r0 = rs[0];
+          const gq = rs.reduce((a,r)=>a+num(r['個数']),0);
+          const brands = [...new Set(rs.map(r=>brandOf(r['商品ID'])).filter(Boolean))].join('・');
+          // 開閉は在庫画面専用のキー（回収画面の開閉状態と混ざらないように）
+          const isOpen = !!(viewState.pendOpen && viewState.pendOpen[k]);
+          return '<details class="ordcard" '+(isOpen?'open':'')+' ontoggle="(viewState.pendOpen=viewState.pendOpen||{})[\''+k+'\']=this.open" style="margin-bottom:6px;padding:8px 12px">' +
+            '<summary><b class="mono">'+esc(k)+'</b> '+pill(r0['ステータス'])+' <span>'+esc(r0['サロン名'])+'</span>' +
+            '<span class="muted small">'+esc(r0['発注日'])+(String(r0['対象受注']||'').trim()?' / 📋 '+esc(r0['対象受注']):'')+(brands?' / '+esc(brands):'')+'</span>' +
+            '<span class="right mono">'+rs.length+'商品・'+gq+'点</span></summary>' +
+            '<div class="tblwrap" style="margin-top:8px"><table><tr><th>商品</th><th>容量</th><th class="num">個数</th></tr>' +
+            rs.map(r=>'<tr><td>'+esc(r['商品名'])+'</td><td>'+esc(r['容量'])+'</td><td class="num">'+r['個数']+'</td></tr>').join('') +
+            '</table></div></details>';
+        }).join('');
+      })() + '</div>'
       : '<p class="muted small" style="margin:6px 0 0">現在、入庫待ちの商品はありません（回収が「回収待ち」「検品待ち」「ロット処理待ち」の間だけここに並びます）</p>') +
     '</div>';
 
