@@ -1070,10 +1070,21 @@ function vPayments(){
   const pureLines = (bySup[PAYIDS.pure]||[]).concat((bySup[MIRA_NAP.sid]||[]).filter(l=>l.miraNap));   // MIRA差額分も定価×2%の対象（2026-09-25）
   if(pureLines.length){
     const per = {};
-    pureLines.forEach(l=>{ const pr = payPeriod(l.date, String(pureRow['締め日']||''), String(pureRow['支払日']||'')); (per[pr.key]=per[pr.key]||{pr, sub:0}).sub+=num(l.listAmt); });
+    pureLines.forEach(l=>{ const pr = payPeriod(l.date, String(pureRow['締め日']||''), String(pureRow['支払日']||'')); (per[pr.key]=per[pr.key]||{pr, sub:0, lines:[]}); per[pr.key].sub+=num(l.listAmt); per[pr.key].lines.push(l); });
     html += '<div class="card"><div class="row"><b>🤝 '+esc(salonLabel(brokerRow)||'仲介')+'（仲介手数料 2%）</b><span class="small muted">発注商品の<b>定価</b>（税抜）×2% ／ 締め支払は'+esc(salonLabel(pureRow))+'と同サイクル（2026-07-23 実請求書で確定）</span></div>' +
-      Object.keys(per).sort().reverse().map(k=>{ const g=per[k];
-        return '<div class="row small" style="margin-top:6px;border-top:1px solid var(--axis);padding-top:6px"><b>'+esc(g.pr.label)+'</b><span>支払予定: <b>'+esc(g.pr.payLabel)+'</b></span><span class="right"><b>'+yen(Math.round(g.sub*BROKER_RATE))+'</b> <span class="muted">（対象定価 '+yen(g.sub)+'×2%）</span></span></div>'; }).join('') +
+      // 税込表示＋クリックで根拠明細（回収ID・サロン・商品・定価×個数・2%）を開く（2026-09-25 ユーザー要望）
+      Object.keys(per).sort().reverse().map(k=>{ const g=per[k]; const fee=Math.round(g.sub*BROKER_RATE), tax=Math.round(fee*0.1);
+        const open = (viewState.aggOpen||{})['pay_broker_'+k];
+        const bySalon = {}; g.lines.forEach(l=>{ const b=bySalon[l.salon]=bySalon[l.salon]||{qty:0, list:0, kids:new Set()}; b.qty+=l.qty; b.list+=num(l.listAmt); b.kids.add(l.kid); });
+        return '<div style="margin-top:6px;border-top:1px solid var(--axis);padding-top:6px">' +
+          '<div class="row small" style="cursor:pointer" onclick="aggToggle(\'pay_broker_'+k+'\')">'+(open?'▾':'▸')+' <b>'+esc(g.pr.label)+'</b><span>支払予定: <b>'+esc(g.pr.payLabel)+'</b></span>' +
+          '<span class="right"><b>'+yen(fee+tax)+'</b> <span class="muted">税込（税抜 '+yen(fee)+'＝対象定価 '+yen(g.sub)+'×2%）</span></span></div>' +
+          (open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>サロン</th><th>回収ID</th><th class="num">個数</th><th class="num">対象定価</th><th class="num">2%</th></tr>' +
+            Object.keys(bySalon).sort().map(sn=>{ const b=bySalon[sn]; return '<tr><td class="small">'+esc(sn)+'</td><td class="mono small">'+esc([...b.kids].join(', '))+'</td><td class="num">'+b.qty+'</td><td class="num">'+yen(b.list)+'</td><td class="num">'+yen(Math.round(b.list*BROKER_RATE))+'</td></tr>'; }).join('') +
+            '<tr style="font-weight:700;background:var(--wash)"><td>合計</td><td></td><td class="num">'+g.lines.reduce((a,l)=>a+l.qty,0)+'</td><td class="num">'+yen(g.sub)+'</td><td class="num">'+yen(fee)+'</td></tr></table>' +
+            '<details style="margin-top:6px"><summary class="small muted" style="cursor:pointer">商品ごとの明細（'+g.lines.length+'行）</summary><div class="tblwrap"><table><tr><th>計上日</th><th>回収ID</th><th>受注</th><th>サロン</th><th>商品</th><th class="num">個数</th><th class="num">定価</th><th class="num">定価計</th></tr>' +
+            g.lines.map(l=>'<tr><td class="small">'+esc(l.date)+(l.prov?' <span style="color:var(--s4)">仮</span>':'')+'</td><td class="mono small">'+esc(l.kid)+'</td><td class="mono small">'+esc(l.oids)+'</td><td class="small">'+esc(l.salon)+'</td><td class="small">'+esc(l.name)+' '+esc(l.size)+'</td><td class="num">'+l.qty+'</td><td class="num">'+yen(l.qty>0?l.listAmt/l.qty:0)+'</td><td class="num">'+yen(l.listAmt)+'</td></tr>').join('') +
+            '</table></div></details></div>' : '') + '</div>'; }).join('') +
       '<p class="muted small" style="margin-top:6px">※ 連携サロン仕入の1%は掛け率確定待ちのため未計上（確定したら足します）。外注仕入（定価×50%・都度）は上の🤝カードに出ます。</p></div>';
   }
 
