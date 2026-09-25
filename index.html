@@ -862,12 +862,12 @@ const BUY_UNIT_COL = '仕入単価', FIXED_BUY_COL = '仕入固定単価';
 function fixedBuyUnit(pid){ const v = num((product(pid)||{})[FIXED_BUY_COL]); return v>0 ? v : null; }
 // row = 回収台帳の行（無い場合は null）。戻り値 {unit, src:'台帳'|'固定'|'掛け率', note}
 function buyUnitOf(pid, supId, supRow, brand, row){
-  const led = row ? num(row[BUY_UNIT_COL]) : 0;
-  if(led>0) return {unit:led, src:'台帳', note:''};
-  if(isMiraNap(row, supId, brand)){   // MIRA名義のナプラ: 当社の仕入原価は 定価×50%（MIRAからの買取価格。差額払いの根拠）
+  if(isMiraNap(row, supId, brand)){   // MIRA名義のナプラ: 当社の仕入原価は 定価×50%（MIRAからの買取価格。差額払いの根拠）。台帳の仕入単価より優先（固定ルール）
     const l0 = num((product(pid)||{})['定価（税抜）']);
     return {unit:l0*MIRA_NAP.buyRate, src:'掛け率', note:'MIRA買取50%', rate:MIRA_NAP.buyRate, miraNap:true};
   }
+  const led = row ? num(row[BUY_UNIT_COL]) : 0;
+  if(led>0) return {unit:led, src:'台帳', note:''};
   const fx = fixedBuyUnit(pid);
   if(fx!=null) return {unit:fx, src:'固定', note:'固定単価'};
   const list = num((product(pid)||{})['定価（税抜）']);
@@ -983,7 +983,7 @@ function collectSupplierLines(inMonthFn, allMonths){
     const line = {date, prov:oids.length>0 && !od, kid:String(r['回収ID']||'').trim(), oids:oids.join(', '),
       salon:String(r['サロン名']||''), brand, name:String(r['商品名']||''), size:String(r['容量']||''), qty, unit, unitNote,
       amt:unit*qty, listAmt:list*qty, isOut:String(r['区分']||'').trim()==='外注'};
-    if(u.miraNap){
+    if(u.miraNap || isMiraNap(r, supId, brand)){
       // MIRA差額払い: 口座請求元のカードには載せず（MIRAが払う）、MIRAのカードへ 差額=定価×(50%−43%)×数量 で計上。仲介2%の基準（listAmt）は残す
       Object.assign(line, {miraNap:true, list, u43:list*MIRA_NAP.pureRate, u50:list*MIRA_NAP.buyRate, unit:list*(MIRA_NAP.buyRate-MIRA_NAP.pureRate),
         amt:list*(MIRA_NAP.buyRate-MIRA_NAP.pureRate)*qty, unitNote:'差額 定価×7%'});
@@ -1734,13 +1734,15 @@ function anbetsuSupply(){
     const unit = u.unit;
     const k = oid+'|'+brand;
     const g = (got[k]=got[k]||{});
-    const e = g[supId] = g[supId] || {qty:0, amt:0, listAmt:0, sales:0, noRate:true, mix:{}};
+    if(u.miraNap) supId = MIRA_NAP.sid;   // MIRA名義ナプラは「MIRA（差額払い）」の段に出す（口座請求元の段には混ぜない。2026-09-25）
+    const e = g[supId] = g[supId] || {qty:0, amt:0, listAmt:0, sales:0, noRate:true, mix:{}, miraNap:!!u.miraNap};
     e.noRate = e.noRate && (rate==null);   // 全商品に率が無いときだけ「率なし」（先頭商品だけで決めない）
     e.qty += qty; e.amt += unit*qty; e.listAmt += list*qty; if(withSales!==false) e.sales += sellOf(oid,pid)*qty;
     // 単価がどう決まったかを分類して積む（メモ欄の説明に使う。2026-09-04 ユーザー要望）。
     // 率は1品ずつだと切り捨ての端数で割れるので、同じルールの分をまとめてから出す
     let why;
-    if(u.src==='台帳') why = '回収台帳の実額';
+    if(u.miraNap) why = 'MIRA買取50%（差額払い）';
+    else if(u.src==='台帳') why = '回収台帳の実額';
     else if(u.src==='固定') why = '仕入固定単価 '+yen(unit);
     else if(supId===PAYIDS.pure && pureSalonPct(brand)!=null){
       const sp = PURE_SALON_PCT[String(brand||'').trim()];
@@ -1819,6 +1821,7 @@ function anbetsuFormOf(x){
   if(k==='ディーラー') return '自社サロン';
   if(k==='外注') return '外注';
   if(k==='在庫') return '余剰在庫';
+  if(k==='差額払い') return '差額払い';
   if(k==='未振分') return '—';
   return k || '—';
 }
@@ -1874,7 +1877,7 @@ function calcAnbetsu(month){
     const g = sup.got[key] || {};
     Object.keys(g).forEach(supId=>{
       const e = g[supId], s = salName[supId] || {};
-      l.sups.push({id:supId, name:salonLabel(s)||supId||'（仕入先未記録）', kind:String(s['種別']||'').trim(),
+      l.sups.push({id:supId, name:(salonLabel(s)||supId||'（仕入先未記録）')+(e.miraNap?'（差額払い）':''), kind:e.miraNap ? '差額払い' : String(s['種別']||'').trim(),
         qty:e.qty, amt:e.amt, sales:e.sales||0, rate:e.listAmt>0?e.amt/e.listAmt:null, noRate:e.noRate,
         mix:Object.values(e.mix||{}).sort((a,b)=>b.qty-a.qty)});
       l.cost += e.amt;
@@ -1894,13 +1897,14 @@ function calcAnbetsu(month){
     l.cost += l.prov;
     // ---- 手数料（案件に紐づくマイナス）: 仲介2% と 紹介報酬。実利益 = 売上 − AXIA仕入 − 手数料 ----
     // 2026-09-02 ユーザー要望。サロン連携1%はコスモの掛け率確定待ちで保留なのでまだ入れていない
-    const pure = g[PAYIDS.pure];
-    if(pure && pure.listAmt>0){
+    const pure = g[PAYIDS.pure], mira = g[MIRA_NAP.sid];
+    const brokerBase = (pure ? pure.listAmt : 0) + (mira && mira.miraNap ? mira.listAmt : 0);   // MIRA名義ナプラ（差額払い）も定価×2%の対象（2026-09-25）
+    if(brokerBase>0){
       // 神澤さんの仲介料は「ピュア経由に回した分の定価×2%」。請求額ベースではない（2026-07-23 実請求書で確定）
-      const amt = Math.round(pure.listAmt*BROKER_RATE);
-      // sup=ピュア商会: この手数料はピュア商会から仕入れた分の利益から引く（仕入先ごとの収支・2026-09-08 ユーザー指定）
+      const amt = Math.round(brokerBase*BROKER_RATE);
+      // sup=ピュア商会: この手数料はピュア商会から仕入れた分の利益から引く（仕入先ごとの収支・2026-09-08 ユーザー指定）。ピュアの段が無ければMIRAの段から引く
       if(amt>0) l.fees.push({who:salonLabel(salName[PAYIDS.broker]||{})||'神澤さん', what:'仲介'+(BROKER_RATE*100)+'%',
-        note:'ピュア経由の定価 '+yen(pure.listAmt)+'×'+(BROKER_RATE*100)+'%', amt, sup:PAYIDS.pure});
+        note:'ピュア経由の定価 '+yen(brokerBase)+'×'+(BROKER_RATE*100)+'%', amt, sup:(pure && pure.listAmt>0) ? PAYIDS.pure : MIRA_NAP.sid});
     }
     const w = rows('wholesalers').find(x=>String(x['卸先ID']||'').trim()===l.wid);
     if(w){
@@ -4424,12 +4428,14 @@ function allocBuyUnit(pid, supSid){
 // 振り分けPDFに出す「実際の仕入単価」。②の上書き＞商品の固定単価＞支払い画面と同じ計算。
 // allocBuyUnit はマスタの率をそのまま使う（ピュアの41.9%＝39.9%＋仲介2%）が、
 // 実際にピュアへ払うのは39.9%相当なので、PDFの金額は支払い画面と同じ buyUnitOf に合わせる（2026-09-04）
-function allocRealUnit(pid, supSid){
+function allocRealUnit(pid, supSid, salonSid){
   const ov = allocItemUnitOf(pid, supSid);
   if(ov!=null) return ov;
   const sid = String(supSid||'').trim();
   const s = rows('salons').find(x=>String(x['サロンID']||'').trim()===sid);
-  return buyUnitOf(pid, sid, s, brandOf(pid), null).unit;
+  // salonSid（回収先サロン）が分かる場合は擬似行で渡す → MIRA名義ナプラの買取50%が確定前の振り分け表でも効く（2026-09-25）
+  const pseudo = salonSid ? {'サロンID':String(salonSid).trim()} : null;
+  return buyUnitOf(pid, sid, s, brandOf(pid), pseudo).unit;
 }
 // 商品×仕入先の単価上書き。正本は「単価」で持ち、掛け率は定価から逆算して表示する
 // （率と単価の二重管理を避ける）。conf.buyItem = { '仕入先ID|商品ID': 単価 }
@@ -5327,7 +5333,7 @@ function allocPrint(batch){
     const totalQty = lines.reduce((a,x)=>a+x.qty,0);
     const totalYen = lines.reduce((a,x)=>a+x.qty*x.i.price,0);
     const supSid = allocSupOf(r, sid);   // サロン別に仕入先を分けている場合は各セクションに明記
-    const buyU = pid=>num(allocRealUnit(pid, supSid));   // 実際の仕入単価（支払い画面と同じ）
+    const buyU = pid=>num(allocRealUnit(pid, supSid, sid));   // 実際の仕入単価（支払い画面と同じ。sid=回収先サロン → MIRA差額払い判定用）
     const totalBuy = lines.reduce((a,x)=>a+x.qty*buyU(x.i.pid),0);
     addTot(names[supSid]||supSid||'（仕入先未選択）', totalQty, totalYen, totalBuy);
     return '<div class="salon" data-sup="'+esc(supSid)+'"><h2>'+esc(slotName(names, sid))+' <span class="sub">計 '+totalQty+'点 ／ サロン価 ¥'+Math.round(totalYen).toLocaleString()+'<span class="intonly"> ／ <b>仕入額 ¥'+Math.round(totalBuy).toLocaleString()+'</b></span>（税抜）'+(r.supSplit&&supSid?' ／ 仕入先: '+esc(names[supSid]||supSid):'')+'</span></h2>' +
