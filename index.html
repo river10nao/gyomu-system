@@ -2378,6 +2378,8 @@ function invoiceStageLabel(kind, pay){
     return via+'全額（'+(kd==='lump'?'受注時に請求':kd==='later'?'納品前に請求':kd==='after'?'納品後に請求':kd==='credit'?'請求済み・翌月末入金':'全額請求')+'）'; }
   return k;
 }
+// 帳票のPDFリンクは https の Google Drive/Docs だけ許可（台帳の値が壊れていても javascript: 等を踏ませない。Codexレビュー 2026-09-28）
+function safeDocUrl(u){ const v=String(u||'').trim(); return /^https:\/\/(drive|docs)\.google\.com\//.test(v) ? v : ''; }
 function docByNo(docNo){ const n=String(docNo||'').trim(); return n ? rows('docLog').find(d=>String(d['管理番号']||'').trim()===n) : null; }
 // 受注ID → {st, pay, via}（要対応の表示用。vDashboard の oInfo と同じ内容）
 function oInfoAll(){ const m={}; rows('orderLedger').forEach(r=>{ const id=String(r['受注ID']||'').trim(); if(id && !m[id]) m[id]={st:r['ステータス'], pay:r['支払方式'], via:String(r[NM.via+'経由']||'').trim()!==''}; }); return m; }
@@ -3737,7 +3739,7 @@ function vHanbai(){
       // 完売はフロー外の終端なので、巻き戻し用フローにだけ 完売 を足す（進めるボタンには出さない）
       const rbFlow = ec ? FLOW.hanbaiEC.concat(['完売']) : FLOW.hanbai;
       const invNo = String(r['請求書No']||'').trim();   // 店販請求書を発行済みなら管理番号（📄クリックでPDF）
-      const invNoHtml = invNo ? (()=>{ const d=docByNo(invNo); return ' <a class="small" href="'+esc((d&&d['PDF URL'])||'#')+'" target="_blank" title="店販請求書 '+esc(invNo)+'">📄</a>'; })() : '';
+      const invNoHtml = invNo ? (()=>{ const d=docByNo(invNo); const u=d?safeDocUrl(d['PDF URL']):''; return u ? ' <a class="small" href="'+esc(u)+'" target="_blank" rel="noopener noreferrer" title="店販請求書 '+esc(invNo)+'">📄</a>' : ' <span class="small muted" title="店販請求書 '+esc(invNo)+'">📄</span>'; })() : '';
       return '<tr><td>'+selBox(id)+'</td><td class="mono">'+id+invNoHtml+'</td><td>'+(ec?'<span class="pill" style="background:color-mix(in srgb,var(--s2) 15%, transparent);color:var(--s2)">EC</span>':'<span class="pill" style="background:color-mix(in srgb,var(--s1) 15%, transparent);color:var(--s1)">店販</span>')+'</td><td class="small">'+esc(r['注文日'])+'</td><td>'+esc(r['サロン名'])+'</td><td>'+esc(r['商品名'])+(String(r['請求元名']||'').trim()?' <span class="muted small">［請求元: '+esc(r['請求元名'])+'］</span>':'')+'</td><td class="num">'+r['個数']+'</td><td>'+pill(st)+'</td>' +
       '<td class="small">'+(ec ? (st==='EC出品中'&&zan!=null ? '残 '+zan+'点' : '') : esc(r['お渡し日']||'')+' '+esc(r['お渡し担当']||''))+'</td>' +
       // 操作ボタンは全行「1行固定・右寄せ・等間隔」に統一（2026-07-19 ユーザー要望「ゴチャつき解消」）。
@@ -3761,6 +3763,15 @@ function vHanbai(){
         (unbilled.length ? '<span class="pill" style="background:color-mix(in srgb,var(--warn) 18%,transparent);color:#3d2c00">請求書 未発行 '+unbilled.length+'件</span>' : (allOfSalon.length ? '<span class="pill" style="background:color-mix(in srgb,var(--good) 15%,transparent);color:var(--good)">請求書 発行済</span>' : '')) +
         (g.sid && unbilled.length ? '<span class="right"><button class="btn pri sm" data-sid="'+esc(g.sid)+'" onclick="event.preventDefault();hanbaiInvoiceOpenForSalon(this.dataset.sid)">📄 請求書（未発行 '+unbilled.length+'件をまとめて）</button></span>' : '') +
         '</summary>' +
+        // 発行済みの店販請求書（このサロン宛・生存分）: PDFの場所が分かるように管理番号・発行日・支払期限・金額・「PDFを開く」を並べる（2026-09-28 ユーザー要望）
+        (()=>{ const nos=[...new Set(allOfSalon.map(r=>String(r['請求書No']||'').trim()).filter(Boolean))];
+          const docs=nos.map(no=>docByNo(no)).filter(d=>d && String(d['削除']||'').trim()==='');
+          if(!docs.length) return '';
+          return '<div class="small" style="margin-top:8px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--good) 8%,transparent)"><b class="muted">📄 発行済みの店販請求書</b>' +
+            '<table style="margin-top:4px"><tr><th>管理番号</th><th>発行日</th><th>支払期限</th><th class="num">金額(税込)</th><th>対象注文</th><th></th><th></th></tr>' +
+            docs.map(d=>'<tr><td class="mono">'+esc(d['管理番号'])+'</td><td>'+esc(d['発行日'])+'</td><td>'+esc(d['支払期限']||'')+'</td><td class="num">'+yen(num(d['金額（税込）']))+'</td><td class="mono small">'+esc(d['受注ID'])+'</td>' +
+              '<td>'+(safeDocUrl(d['PDF URL'])?'<a href="'+esc(safeDocUrl(d['PDF URL']))+'" target="_blank" rel="noopener noreferrer"><b>PDFを開く</b></a>':'<span class="muted">（URLなし）</span>')+'</td><td><button class="btn sm" data-no="'+esc(d['管理番号'])+'" data-url="'+esc(d['PDF URL'])+'" onclick="deleteDocUI(this.dataset.no, this.dataset.url)" title="この請求書を削除（PDFはゴミ箱へ・注文の番号も消えます）">🗑</button></td></tr>').join('') +
+            '</table><span class="muted">PDFはDriveの「'+esc(NM.co)+'帳票／請求書／発行日」フォルダにも保存されています</span></div>'; })() +
         '<div class="tblwrap" style="margin-top:8px"><table><tr><th></th><th>注文ID</th><th>区分</th><th>注文日</th><th>サロン</th><th>商品</th><th class="num">個数</th><th>状態</th><th>お渡し</th><th></th></tr>' +
         g.rows.map(rowHtml).join('') + '</table></div></details>';
     }).join('');
@@ -3820,7 +3831,10 @@ function hanbaiInvoiceCard(){
     '<div class="row" style="margin-top:10px">' +
     (busy('hanbaiInv', st.sid||'-') ? '<button class="btn pri" disabled>⏳ 発行中…（20〜40秒）</button>' : '<button class="btn pri" onclick="hanbaiInvoiceIssue()">発行する</button>') +
     '<button class="btn" onclick="viewState.hbInv.open=false;render()">閉じる</button>' +
-    '<span class="muted small">管理番号 AXH-日付-時刻。PDFはDriveの「'+esc(NM.co)+'帳票／請求書」に保存。発行した注文には 📄 が付きます（再発行はチェックを入れ直して発行）</span></div></div>';
+    '<span class="muted small">管理番号 AXH-日付-時刻。PDFはDriveの「'+esc(NM.co)+'帳票／請求書」に保存。発行した請求書はサロンのカードの「📄 発行済みの店販請求書」から開けます（再発行はチェックを入れ直して発行）</span></div>' +
+    (()=>{ const l=st.last; if(!l || l.sid!==st.sid) return ''; const d=docByNo(l.docNo); if(!d || String(d['削除']||'').trim()!=='') return '';   // 同じサロンで、まだ生きている帳票のときだけ
+      const u=safeDocUrl(d['PDF URL']);
+      return '<div class="small" style="margin-top:8px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--good) 12%,transparent)">✅ 発行しました: <b class="mono">'+esc(l.docNo)+'</b>（税込 '+yen(l.amount)+'） '+(u?'<a href="'+esc(u)+'" target="_blank" rel="noopener noreferrer"><b>PDFを開く</b></a>':'')+'</div>'; })() + '</div>';
 }
 // ===== 受付（JAN貼り付け方式・1サロン×複数商品。2026-09-28 ユーザー要望） =====
 // 受注の案件作成・手動仕入れと同じ「JAN/商品ID列＋数量列を貼って展開→確認→受付」。登録は addHanbaiOrders で1往復
@@ -3829,7 +3843,9 @@ function hanbaiIntakeCard(salonOpts){
   const dealers = rows('salons').filter(x=>String(x['種別']||'').trim()==='ディーラー'&&String(x['サロンID']||'').trim()&&String(x['ストップ']||'').trim()==='');
   const rws = st.rows||[];
   const bad = rws.filter(r=>!r.pid).length;
-  return '<div class="card"><b class="small">新規注文の受付（1サロンに複数商品をまとめて）</b>' +
+  if(!st.open) return '<div class="row" style="margin-bottom:12px"><button class="btn pri" onclick="viewState.hbIn.open=true;render()">＋ 新規注文の受付（JAN貼り付け）</button>' +
+    '<span class="muted small">1サロンに複数商品をまとめて登録できます</span></div>';
+  return '<div class="card" style="background:var(--wash)"><div class="row"><b class="small">新規注文の受付（1サロンに複数商品をまとめて）</b><button class="btn sm" onclick="viewState.hbIn.open=false;render()">閉じる</button></div>' +
     '<div class="row" style="margin-top:8px">' +
     '<label class="small">区分<br><select style="width:100px" onchange="viewState.hbIn.kubun=this.value"><option value="店販" '+(st.kubun!=='EC'?'selected':'')+'>店販</option><option value="EC" '+(st.kubun==='EC'?'selected':'')+'>EC</option></select></label>' +
     '<label class="small">サロン<br><select style="max-width:240px" onchange="viewState.hbIn.sid=this.value"><option value="">サロンを選択</option>'+salonOpts.replace('value="'+esc(st.sid)+'"','value="'+esc(st.sid)+'" selected')+'</select></label>' +
@@ -3882,7 +3898,7 @@ async function hbSubmit(){
   const salon = rows('salons').find(x=>String(x['サロンID']).trim()===st.sid);
   if(!confirm((st.kubun==='EC'?'EC注文':'店販注文')+'を受け付けます。\nサロン: '+salonLabel(salon||{})+'\n商品 '+items.length+'件・計 '+items.reduce((a,x)=>a+x['個数'],0)+'点'+(st.biller?'\n請求元: '+salonLabel(rows('salons').find(x=>String(x['サロンID']).trim()===st.biller)||{}):'')+'\nよろしいですか？')) return;
   const r = await act('addHanbaiOrders', {'区分':st.kubun, 'サロンID':st.sid, '請求元ID':st.biller||'', items}, (st.kubun==='EC'?'EC注文':'店販注文')+' '+items.length+'件を受け付けました', ['hanbaiOrders']);
-  if(r){ st.rows=[]; st.jans=''; st.qtys=''; toast('注文ID: '+(r.orderIds||[]).join(', ')); render(); }
+  if(r){ st.rows=[]; st.jans=''; st.qtys=''; st.open=false; toast('注文ID: '+(r.orderIds||[]).join(', ')); render(); }
 }
 // サロンカードの「📄 請求書（未発行分をまとめて）」: そのサロンの未発行の店販注文を全部チェックした状態でフォームを開く。
 // ディーラーは注文の請求元が1種類ならそれ（複数・未設定なら空欄で選び直し）
@@ -3941,8 +3957,8 @@ async function hanbaiInvoiceIssue(){
   try{
     const r = await apiPost('issueHanbaiInvoice', {ids:items.map(i=>i.id), dealerId:st.dealer, dateStr:st.date, dueStr:st.due, items, reissue:reissue>0}, ['docLog','hanbaiOrders']);   // reissue=true のとき旧請求書はGAS側で取消（削除印＋PDFゴミ箱）
     toast('店販請求書 '+r.docNo+' を発行しました（税込 '+yen(r.amount)+'）');
-    st.sel = {};
-    window.open(r.url, '_blank');
+    st.sel = {}; st.last = {sid:st.sid, docNo:r.docNo, url:r.url, amount:r.amount};   // フォーム上に「発行した請求書」を表示（同じサロン・生存帳票のときだけ。ポップアップがブロックされても開ける）
+    if(safeDocUrl(r.url)) window.open(safeDocUrl(r.url), '_blank', 'noopener');
   }catch(e){ toast(e.message, true); }
   finally{ inflight.delete(key); render(); }
 }
