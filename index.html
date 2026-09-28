@@ -2836,8 +2836,11 @@ function docDisplayLabel(kind){
   return s;
 }
 function docListHtml(orderId){
-  // 受注IDが「O0015, O0016」のように複数入る資料（振り分け表・案件別収支）も、その受注の一覧に出す（2026-09-15）
-  const docs = rows('docLog').filter(d=>String(d['受注ID']||'').split(',').map(x=>x.trim()).includes(String(orderId).trim()));
+  // 受注画面には先方向けの帳票（見積書・請求書・納品書など）だけを出す。社内資料（振り分け表・案件別収支＝管理番号 RP-）は
+  // 帳票発行台帳とドライブには残すが、この一覧には出さない（2026-09-28 ユーザー指示。9/15 に混ぜて出していたのは頼まれていない仕様だった）
+  const INTERNAL_DOC_KINDS = ['振り分け表', '案件別収支'];
+  const docs = rows('docLog').filter(d=>String(d['受注ID']||'').split(',').map(x=>x.trim()).includes(String(orderId).trim()))
+    .filter(d=>!INTERNAL_DOC_KINDS.includes(String(d['種類']||'').trim()) && !/^RP-/.test(String(d['管理番号']||'').trim()));
   if(!docs.length) return '';
   // 削除済み（ゴミ箱方式）は打ち消し表示・PDFリンクなし（PDFはDriveのゴミ箱にあるため）
   return '<div class="small" style="margin-top:8px"><b class="muted">発行済み帳票</b><table style="margin-top:4px">' +
