@@ -902,7 +902,10 @@ const BROKER_RATE = 0.02;   // 仲介手数料: 口座請求（対象ブラン�
 // ブランド別の仲介率（2026-09-28 神澤さんの9月請求Excelで確定: モデニカだけ2.5%・他は2%）。基準は定価×数量
 const BROKER_RATE_BY_BRAND = { 'モデニカ': 0.025 };
 function brokerRateOf(brand){ const r = BROKER_RATE_BY_BRAND[String(brand||'').trim()]; return r!=null ? r : BROKER_RATE; }
-function brokerFeeOfLines(lines){ return Math.round((lines||[]).reduce((a,l)=>a+num(l.listAmt)*brokerRateOf(l.brand),0)); }   // 明細の 定価×数量×率 を合計して円未満四捨五入
+// 仲介手数料の対象外: ポリッシュオイル用ポンプ等の「ポンプ」（神澤さんの請求条件。2026-09-28 ユーザー確定）
+const isBrokerExcluded = l=>{ const p = l && l.pid ? product(l.pid) : null; return /ポンプ/.test(String((p && p['商品名']) || (l&&l.name) || '')); };   // 商品マスタの現在名で判定（台帳の旧名称・空欄に左右されない）
+const brokerLinesOf = lines=>(lines||[]).filter(l=>!isBrokerExcluded(l));
+function brokerFeeOfLines(lines){ return Math.round(brokerLinesOf(lines).reduce((a,l)=>a+num(l.listAmt)*brokerRateOf(l.brand),0)); }   // 明細の 定価×数量×率 を合計して円未満四捨五入
 const BROKER_RATE_LABEL = '2%（モデニカは2.5%）';
 // ピュア商会経由の仕入単価。仕入れマスタのピュア行の率は【ピュアへの支払＋神澤さんの仲介2%】の合算。
 //   ナプラ 41.9% = 39.9%（ピュア）＋2%（神澤さん）
@@ -985,7 +988,7 @@ function collectSupplierLines(inMonthFn, allMonths){
     const unitNote = u.note || (u.src==='台帳' ? '台帳の実額' : '');
     // 受注に紐づかない仕入（手動仕入れ・外注一括の旧データ等）は行自体の発注日が計上日なので「仮」にしない
     // listAmt=定価×数量: 仲介手数料の基準額（2026-07-23 実請求書で「手数料=定価×2%」と確定したため保持）
-    const line = {date, prov:oids.length>0 && !od, kid:String(r['回収ID']||'').trim(), oids:oids.join(', '),
+    const line = {date, prov:oids.length>0 && !od, kid:String(r['回収ID']||'').trim(), oids:oids.join(', '), pid,
       salon:String(r['サロン名']||''), brand, name:String(r['商品名']||''), size:String(r['容量']||''), qty, unit, unitNote,
       amt:unit*qty, listAmt:list*qty, isOut:String(r['区分']||'').trim()==='外注'};
     if(u.miraNap || isMiraNap(r, supId, brand)){
@@ -996,6 +999,21 @@ function collectSupplierLines(inMonthFn, allMonths){
       return;
     }
     (bySup[supId]=bySup[supId]||[]).push(line);
+  });
+  // 店販/EC注文のうち請求元が口座請求元（ピュア）のもの: 当社がピュアに払う（サロンへはJINKS精算の差引で請求）。
+  // ピュアの請求書は卸＋店販の合算で来るため、支払い集計と仲介手数料の基準に含める（2026-09-28 ユーザー確定。BETS 9/3・9/7 店販から）
+  rows('hanbaiOrders').filter(r=>String(r['削除']||'').trim()==='' && String(r['請求元ID']||'').trim()===PAYIDS.pure).forEach(r=>{
+    const qty = num(r['個数']); if(qty<=0) return;
+    const pid = String(r['商品ID']||'').trim();
+    const brand = brandOf(pid)||'（不明）';
+    const date = String(r['注文日']||'').trim();
+    if(allMonths) allMonths.add(monthOf(date));
+    if(inMonthFn && !inMonthFn(date)) return;
+    const list = num((product(pid)||{})['定価（税抜）']);
+    const u = buyUnitOf(pid, PAYIDS.pure, sal[PAYIDS.pure], brand, null);
+    (bySup[PAYIDS.pure]=bySup[PAYIDS.pure]||[]).push({date, prov:false, kid:String(r['注文ID']||'').trim(), oids:'', pid,
+      salon:String(r['サロン名']||''), brand, name:String(r['商品名']||''), size:String(r['容量']||''), qty, unit:u.unit, unitNote:'店販/EC（'+String(r['区分']||'店販')+'）',
+      amt:u.unit*qty, listAmt:list*qty, isOut:false, hanbai:true});
   });
   return {bySup, sal};
 }
@@ -1078,20 +1096,21 @@ function vPayments(){
     pureLines.forEach(l=>{ const pr = payPeriod(l.date, String(pureRow['締め日']||''), String(pureRow['支払日']||'')); (per[pr.key]=per[pr.key]||{pr, sub:0, lines:[]}); per[pr.key].sub+=num(l.listAmt); per[pr.key].lines.push(l); });
     html += '<div class="card"><div class="row"><b>🤝 '+esc(salonLabel(brokerRow)||'仲介')+'（仲介手数料 '+BROKER_RATE_LABEL+'）</b><span class="small muted">発注商品の<b>定価</b>（税抜）×2%・モデニカは×2.5% ／ 締め支払は'+esc(salonLabel(pureRow))+'と同サイクル（2026-07-23 実請求書で確定・モデニカ率は 2026-09-28 神澤さん請求で確定）</span></div>' +
       // 税込表示＋クリックで根拠明細（回収ID・サロン・商品・定価×個数・手数料）を開く（2026-09-25 ユーザー要望）
-      Object.keys(per).sort().reverse().map(k=>{ const g=per[k]; const fee=brokerFeeOfLines(g.lines), tax=Math.round(fee*0.1);
+      Object.keys(per).sort().reverse().map(k=>{ const g=per[k]; const tl=brokerLinesOf(g.lines); const fee=brokerFeeOfLines(tl), tax=Math.round(fee*0.1);
+        const base = tl.reduce((a,l)=>a+num(l.listAmt),0);   // 対象定価（ポンプ除外）
         const open = (viewState.aggOpen||{})['pay_broker_'+k];
-        const bySalon = {}; g.lines.forEach(l=>{ const b=bySalon[l.salon]=bySalon[l.salon]||{qty:0, list:0, feeRaw:0, kids:new Set()}; b.qty+=l.qty; b.list+=num(l.listAmt); b.feeRaw+=num(l.listAmt)*brokerRateOf(l.brand); b.kids.add(l.kid); });
+        const bySalon = {}; tl.forEach(l=>{ const b=bySalon[l.salon]=bySalon[l.salon]||{qty:0, list:0, feeRaw:0, kids:new Set()}; b.qty+=l.qty; b.list+=num(l.listAmt); b.feeRaw+=num(l.listAmt)*brokerRateOf(l.brand); b.kids.add(l.kid); });
         return '<div style="margin-top:6px;border-top:1px solid var(--axis);padding-top:6px">' +
           '<div class="row small" style="cursor:pointer" onclick="aggToggle(\'pay_broker_'+k+'\')">'+(open?'▾':'▸')+' <b>'+esc(g.pr.label)+'</b><span>支払予定: <b>'+esc(g.pr.payLabel)+'</b></span>' +
-          '<span class="right"><b>'+yen(fee+tax)+'</b> <span class="muted">税込（税抜 '+yen(fee)+'＝対象定価 '+yen(g.sub)+'×'+BROKER_RATE_LABEL+'）</span></span></div>' +
+          '<span class="right"><b>'+yen(fee+tax)+'</b> <span class="muted">税込（税抜 '+yen(fee)+'＝対象定価 '+yen(base)+'×'+BROKER_RATE_LABEL+'・ポンプ除外）</span></span></div>' +
           (open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>サロン</th><th>回収ID</th><th class="num">個数</th><th class="num">対象定価</th><th class="num">手数料</th></tr>' +
             // サロン別は個別に丸めると期間合計（全明細合算→1回丸め）と1円ズレうるので、丸め差は最後のサロンに寄せて合計を一致させる（Codexレビュー 2026-09-28）
             (()=>{ const snames=Object.keys(bySalon).sort(); const feeBy={}; let left=fee;
               snames.forEach((sn,i)=>{ const v=(i===snames.length-1)?left:Math.round(bySalon[sn].feeRaw); feeBy[sn]=v; left-=v; });
               return snames.map(sn=>{ const b=bySalon[sn]; return '<tr><td class="small">'+esc(sn)+'</td><td class="mono small">'+esc([...b.kids].join(', '))+'</td><td class="num">'+b.qty+'</td><td class="num">'+yen(b.list)+'</td><td class="num">'+yen(feeBy[sn])+'</td></tr>'; }).join(''); })() +
-            '<tr style="font-weight:700;background:var(--wash)"><td>合計</td><td></td><td class="num">'+g.lines.reduce((a,l)=>a+l.qty,0)+'</td><td class="num">'+yen(g.sub)+'</td><td class="num">'+yen(fee)+'</td></tr></table>' +
+            '<tr style="font-weight:700;background:var(--wash)"><td>合計</td><td></td><td class="num">'+tl.reduce((a,l)=>a+l.qty,0)+'</td><td class="num">'+yen(base)+'</td><td class="num">'+yen(fee)+'</td></tr></table>' +
             '<details style="margin-top:6px"><summary class="small muted" style="cursor:pointer">商品ごとの明細（'+g.lines.length+'行）</summary><div class="tblwrap"><table><tr><th>計上日</th><th>回収ID</th><th>受注</th><th>サロン</th><th>商品</th><th class="num">個数</th><th class="num">定価</th><th class="num">定価計</th></tr>' +
-            g.lines.map(l=>'<tr><td class="small">'+esc(l.date)+(l.prov?' <span style="color:var(--s4)">仮</span>':'')+'</td><td class="mono small">'+esc(l.kid)+'</td><td class="mono small">'+esc(l.oids)+'</td><td class="small">'+esc(l.salon)+'</td><td class="small">'+esc(l.name)+' '+esc(l.size)+'</td><td class="num">'+l.qty+'</td><td class="num">'+yen(l.qty>0?l.listAmt/l.qty:0)+'</td><td class="num">'+yen(l.listAmt)+'</td></tr>').join('') +
+            g.lines.map(l=>{ const ex=isBrokerExcluded(l); return '<tr'+(ex?' style="color:var(--muted);text-decoration:line-through"':'')+'><td class="small">'+esc(l.date)+(l.prov?' <span style="color:var(--s4)">仮</span>':'')+'</td><td class="mono small">'+esc(l.kid)+'</td><td class="mono small">'+esc(l.oids)+'</td><td class="small">'+esc(l.salon)+'</td><td class="small">'+esc(l.name)+' '+esc(l.size)+(ex?' <span class="pill" style="text-decoration:none">仲介対象外（ポンプ）</span>':'')+(l.hanbai?' <span class="pill" style="text-decoration:none">店販</span>':'')+'</td><td class="num">'+l.qty+'</td><td class="num">'+yen(l.qty>0?l.listAmt/l.qty:0)+'</td><td class="num">'+yen(l.listAmt)+'</td></tr>'; }).join('') +
             '</table></div></details></div>' : '') + '</div>'; }).join('') +
       '<p class="muted small" style="margin-top:6px">※ 連携サロン仕入の1%は掛け率確定待ちのため未計上（確定したら足します）。外注仕入（定価×50%・都度）は上の🤝カードに出ます。</p></div>';
   }
@@ -1260,6 +1279,7 @@ function calcSalonPay(month){
     if(b===MTG_BRAND) s.mtg += salonCost(r['商品ID'])*num(r['個数']);
   });
   rows('hanbaiOrders').forEach(r=>{
+    if(String(r['削除']||'').trim()!=='') return;   // ゴミ箱の注文は差引に含めない（GAS側 jinksPayment_ と揃える。Codexレビュー 2026-09-28）
     if(monthOf(r['注文日'])!==month) return;
     // サロン宛請求書の直接払い請求元の分は立替が無いため差引に含めない（2026-07-19 確定）
     if(String(r['請求元ID']||'').trim()===PAYIDS.maverick) return;
@@ -1582,7 +1602,7 @@ function vDashboard(){
     const per={};
     (csl.bySup[PAYIDS.pure]||[]).concat((csl.bySup[MIRA_NAP.sid]||[]).filter(l=>l.miraNap)).forEach(l=>{   // MIRA差額分も2%の対象
       const pr=payPeriod(l.date, String(pureRow['締め日']||''), String(pureRow['支払日']||'')); (per[pr.key]=per[pr.key]||{pr,lines:[]}).lines.push(l); });
-    Object.values(per).forEach(g=>pushOut((salonLabel(brokerRow)||'仲介')+' '+BROKER_RATE_LABEL, brokerFeeOfLines(g.lines), g.pr.pd, 'var(--s4)'));   // ブランド別率（モデニカ2.5%）は brokerFeeOfLines が見る
+    Object.values(per).forEach(g=>{ const f=brokerFeeOfLines(g.lines); pushOut((salonLabel(brokerRow)||'仲介')+' '+BROKER_RATE_LABEL, f+Math.round(f*0.1), g.pr.pd, 'var(--s4)'); });   // 税込で積む（支払いカードと同じ。Codexレビュー 2026-09-28）。ブランド別率は brokerFeeOfLines が見る
   })();
   // 3) 紹介報酬（発注済み案件。発注日1〜15日→当月末・16日〜→翌月10日。2026-07-23 発注ベースに訂正・入金は待たない）
   rows('wholesalers').filter(w=>String(w['紹介者']||'').trim()).forEach(w=>{
@@ -1757,6 +1777,7 @@ function anbetsuSupply(){
     const e = g[supId] = g[supId] || {qty:0, amt:0, listAmt:0, sales:0, noRate:true, mix:{}, miraNap:!!u.miraNap};
     e.noRate = e.noRate && (rate==null);   // 全商品に率が無いときだけ「率なし」（先頭商品だけで決めない）
     e.qty += qty; e.amt += unit*qty; e.listAmt += list*qty; if(withSales!==false) e.sales += sellOf(oid,pid)*qty;
+    e.brokerList = (e.brokerList||0) + (isBrokerExcluded({pid}) ? 0 : list*qty);   // 仲介手数料の基準（ポンプ除外・判定は商品マスタ名）
     // 単価がどう決まったかを分類して積む（メモ欄の説明に使う。2026-09-04 ユーザー要望）。
     // 率は1品ずつだと切り捨ての端数で割れるので、同じルールの分をまとめてから出す
     let why;
@@ -1921,15 +1942,15 @@ function calcAnbetsu(month){
     // MIRA名義・箱単位ブランド（差額払い）も定価×2%の対象。ピュア分とMIRA分は別明細にして、それぞれの段から引く（2026-09-25 Codexレビュー反映）
     // 端数: 支払い画面は合算額×2%を丸めるので、合計を合わせるためピュア分を丸め、MIRA分は残り（合計−ピュア分）にする
     const segs = [[PAYIDS.pure, 'ピュア経由'], [MIRA_NAP.sid, 'MIRA差額払い分']]
-      .map(([sid0, lab])=>({sid0, lab, seg:g[sid0]})).filter(x=>x.seg && x.seg.listAmt>0 && (x.sid0!==MIRA_NAP.sid || x.seg.miraNap));
+      .map(([sid0, lab])=>({sid0, lab, seg:g[sid0]})).filter(x=>x.seg && num(x.seg.brokerList)>0 && (x.sid0!==MIRA_NAP.sid || x.seg.miraNap));
     const bRate = brokerRateOf(l.brand);   // この行は受注×ブランドなので率はブランドで決まる（モデニカ2.5%・他2%）
-    const brokerTotal = Math.round(segs.reduce((a,x)=>a+x.seg.listAmt,0)*bRate);
+    const brokerTotal = Math.round(segs.reduce((a,x)=>a+num(x.seg.brokerList),0)*bRate);   // 基準はポンプ除外の定価
     let brokerLeft = brokerTotal;
     segs.forEach((x, i)=>{
-      const amt = (i===segs.length-1) ? brokerLeft : Math.round(x.seg.listAmt*bRate);
+      const amt = (i===segs.length-1) ? brokerLeft : Math.round(num(x.seg.brokerList)*bRate);
       brokerLeft -= amt;
       if(amt>0) l.fees.push({who:salonLabel(salName[PAYIDS.broker]||{})||'神澤さん', what:'仲介'+(bRate*100)+'%',
-        note:x.lab+'の定価 '+yen(x.seg.listAmt)+'×'+(bRate*100)+'%', amt, sup:x.sid0});
+        note:x.lab+'の定価 '+yen(num(x.seg.brokerList))+'×'+(bRate*100)+'%（ポンプ除外）', amt, sup:x.sid0});
     });
     const w = rows('wholesalers').find(x=>String(x['卸先ID']||'').trim()===l.wid);
     if(w){
