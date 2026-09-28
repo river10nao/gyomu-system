@@ -2337,7 +2337,8 @@ function noticeList(){
 function noticeIsNew(dateStr){
   const d = new Date(String(dateStr||'').replace(/\//g,'-')+'T00:00:00');
   if(isNaN(d)) return false;
-  return (Date.now() - d.getTime()) / 86400000 < NOTICE_NEW_DAYS;
+  const days = (Date.now() - d.getTime()) / 86400000;
+  return days >= 0 && days < NOTICE_NEW_DAYS;   // 未来日の事前登録はNEWにしない（Codexレビュー 2026-09-28）
 }
 const NOTICE_COLOR = {'システム更新':'var(--s1)', 'マニュアル':'var(--s2)', '運用連絡':'var(--s5)'};
 function noticeItem(x){
@@ -2885,7 +2886,7 @@ async function deleteDocUI(docNo, url){
   const typed = prompt('⚠ 帳票 '+docNo+' を削除します。\n台帳の記録はゴミ箱方式で残り、PDFはDriveのゴミ箱に移動します（30日間は復元可能）。\n\n削除するには管理番号「'+docNo+'」をそのまま入力してください:');
   if(typed===null) return;
   if(typed.trim()!==docNo){ toast('管理番号が一致しないため削除を中止しました', true); return; }
-  await act('deleteDocument', {url}, docNo+' を削除しました（PDFはDriveのゴミ箱へ）', ['docLog']);
+  await act('deleteDocument', {url}, docNo+' を削除しました（PDFはDriveのゴミ箱へ）', ['docLog','hanbaiOrders']);   // 店販請求書なら注文行の請求書NoもGAS側で消えるので読み直す
 }
 // ===== 📉 欠品で減らす（2026-09-01 ユーザー要望） =====
 // ディーラー側の在庫切れが検品のときに分かることがある。そのとき受注明細と確定済みの振り分け（回収）を
@@ -3714,6 +3715,7 @@ function vHanbai(){
       rows('salons').filter(s=>String(s['種別']||'').trim()==='ディーラー'&&String(s['サロンID']||'').trim()&&String(s['ストップ']||'').trim()==='').map(s=>'<option value="'+esc(s['サロンID'])+'">'+esc(salonLabel(s))+'</option>').join('') + '</select>' +
     '<button class="btn pri" onclick="addHanbaiUI()">受付</button></div>' +
     '<p class="muted small" style="margin:6px 0 0">請求元＝その注文の請求書が来る会社（注文サイトの運営元）。選んでおくと支払いの集計に載ります</p></div>' +
+  hanbaiInvoiceCard() +
   '<div class="row" style="margin-bottom:12px"><button class="btn right" onclick="exportTable(\'店販EC注文\',\'hanbaiOrders\')">CSV出力</button></div>' +
   // 請求書送付待ちはステータスが終端（お渡し済み等）でも消えない要対応なので、タブにも📨バッジで出す（2026-07-19 ユーザー指摘）
   tabsHtml('hanbai', tab, counts, ['EC出品中','完売'], ['EC出品中'], (()=>{
@@ -3739,7 +3741,9 @@ function vHanbai(){
       : '';
     // 完売はフロー外の終端なので、巻き戻し用フローにだけ 完売 を足す（進めるボタンには出さない）
     const rbFlow = ec ? FLOW.hanbaiEC.concat(['完売']) : FLOW.hanbai;
-    return '<tr><td>'+selBox(id)+'</td><td class="mono">'+id+'</td><td>'+(ec?'<span class="pill" style="background:color-mix(in srgb,var(--s2) 15%, transparent);color:var(--s2)">EC</span>':'<span class="pill" style="background:color-mix(in srgb,var(--s1) 15%, transparent);color:var(--s1)">店販</span>')+'</td><td class="small">'+esc(r['注文日'])+'</td><td>'+esc(r['サロン名'])+'</td><td>'+esc(r['商品名'])+(String(r['請求元名']||'').trim()?' <span class="muted small">［請求元: '+esc(r['請求元名'])+'］</span>':'')+'</td><td class="num">'+r['個数']+'</td><td>'+pill(st)+'</td>' +
+    const invNo = String(r['請求書No']||'').trim();   // 店販請求書を発行済みなら管理番号（📄クリックでPDF）
+    const invNoHtml = invNo ? (()=>{ const d=docByNo(invNo); return ' <a class="small" href="'+esc((d&&d['PDF URL'])||'#')+'" target="_blank" title="店販請求書 '+esc(invNo)+'">📄</a>'; })() : '';
+    return '<tr><td>'+selBox(id)+'</td><td class="mono">'+id+invNoHtml+'</td><td>'+(ec?'<span class="pill" style="background:color-mix(in srgb,var(--s2) 15%, transparent);color:var(--s2)">EC</span>':'<span class="pill" style="background:color-mix(in srgb,var(--s1) 15%, transparent);color:var(--s1)">店販</span>')+'</td><td class="small">'+esc(r['注文日'])+'</td><td>'+esc(r['サロン名'])+'</td><td>'+esc(r['商品名'])+(String(r['請求元名']||'').trim()?' <span class="muted small">［請求元: '+esc(r['請求元名'])+'］</span>':'')+'</td><td class="num">'+r['個数']+'</td><td>'+pill(st)+'</td>' +
     '<td class="small">'+(ec ? (st==='EC出品中'&&zan!=null ? '残 '+zan+'点' : '') : esc(r['お渡し日']||'')+' '+esc(r['お渡し担当']||''))+'</td>' +
     // 操作ボタンは全行「1行固定・右寄せ・等間隔」に統一（2026-07-19 ユーザー要望「ゴチャつき解消」）。
     // rollbackBtn の right クラス（margin-left:auto）と揃え用スペーサーは、この画面では散らばりの原因になるため外す
@@ -3764,6 +3768,74 @@ function vHanbai(){
     return html;
   }).join('') || '<tr><td colspan="3" class="muted">この月の注文はありません</td></tr>') +
   '</table></div></div>';
+}
+// ===== 店販請求書（サロン宛・AXIA名義。2026-09-28 ユーザー要望） =====
+// 宛名=サロン、金額=選んだディーラーの掛け率で計算した仕入価格（支払い画面と同じ buyUnitOf）、支払期限は毎回選ぶ。
+// 1枚=1サロン分。対象は 区分=店販 の注文（EC は対象外）。発行済みの注文は既定で外す（再発行したいときはチェックを入れる）
+function hanbaiInvoiceCard(){
+  const st = viewState.hbInv || (viewState.hbInv = {open:false, sid:'', dealer:'', sel:{}, date:new Date().toLocaleDateString('sv-SE'), due:''});
+  if(!st.open) return '<div class="card"><div class="row"><b class="small">📄 店販請求書（サロン宛・'+esc(NM.co)+'名義）</b>' +
+    '<button class="btn" onclick="viewState.hbInv.open=true;render()">発行フォームを開く</button>' +
+    '<span class="muted small">店販の注文を選んで、ディーラーの掛け率で仕入価格の請求書をサロンへ発行します（支払期限は毎回指定）</span></div></div>';
+  const orders = rows('hanbaiOrders').filter(r=>String(r['削除']||'').trim()==='' && String(r['注文ID']||'').trim() && String(r['区分']||'店販').trim()!=='EC');
+  const salons = []; const seen = new Set();
+  orders.forEach(r=>{ const id=String(r['サロンID']||'').trim(); if(id && !seen.has(id)){ seen.add(id); salons.push({id, name:String(r['サロン名']||id)}); } });
+  const dealers = rows('salons').filter(x=>String(x['種別']||'').trim()==='ディーラー' && String(x['サロンID']||'').trim() && String(x['ストップ']||'').trim()==='');
+  const dRow = dealers.find(x=>String(x['サロンID']).trim()===st.dealer) || null;
+  const mine = orders.filter(r=>String(r['サロンID']||'').trim()===st.sid).sort((a,b)=>String(a['注文日']).localeCompare(String(b['注文日'])) || String(a['注文ID']).localeCompare(String(b['注文ID'])));
+  const unitOf = r=>{ const pid=String(r['商品ID']||'').trim(); if(!dRow || !pid) return 0; return Math.round(num(buyUnitOf(pid, st.dealer, dRow, brandOf(pid), null).unit)); };
+  const isSel = r=>{ const id=String(r['注文ID']).trim(); return id in st.sel ? !!st.sel[id] : String(r['請求書No']||'').trim()===''; };
+  let sub=0, n=0;
+  const trs = mine.map(r=>{ const id=String(r['注文ID']).trim(); const u=unitOf(r), q=num(r['個数']), a=u*q; const on=isSel(r); if(on){ sub+=a; n++; }
+    return '<tr'+(on?'':' style="color:var(--muted)"')+'><td><input type="checkbox" '+(on?'checked':'')+' data-id="'+esc(id)+'" onchange="viewState.hbInv.sel[this.dataset.id]=this.checked;render()" style="width:15px;height:15px"></td>' +
+      '<td class="mono small">'+esc(id)+(String(r['請求書No']||'').trim()?(()=>{ const no=String(r['請求書No']).trim(); const d=docByNo(no); return '<br><span class="small muted">発行済 '+esc(no)+'</span>'+(d&&String(d['削除']||'').trim()===''?' <button class="btn sm" title="この店販請求書を削除（PDFはゴミ箱へ・注文の番号も消えます）" onclick="deleteDocUI(\''+esc(no)+'\',\''+esc(d['PDF URL'])+'\')">🗑</button>':''); })():'')+'</td><td class="small">'+esc(r['注文日'])+'</td><td class="small">'+esc(r['商品名'])+' '+esc(r['容量'])+'</td>' +
+      '<td class="num">'+q+'</td><td class="num">'+(u>0?yen(u):'<span style="color:var(--crit)">率なし</span>')+'</td><td class="num">'+yen(a)+'</td></tr>'; }).join('');
+  const tax = Math.round(sub*0.1);
+  const zero = mine.filter(r=>isSel(r) && unitOf(r)<=0).length;
+  return '<div class="card" style="background:var(--wash)"><b class="small">📄 店販請求書（サロン宛・'+esc(NM.co)+'名義）</b>' +
+    '<div class="row" style="margin-top:8px">' +
+    '<label class="small">サロン（宛名）<br><select style="max-width:220px" onchange="viewState.hbInv.sid=this.value;viewState.hbInv.sel={};render()"><option value="">選択してください</option>'+salons.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===st.sid?'selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select></label>' +
+    '<label class="small">ディーラー（掛け率の基準）<br><select style="max-width:220px" onchange="viewState.hbInv.dealer=this.value;render()"><option value="">選択してください</option>'+dealers.map(x=>{ const id=String(x['サロンID']).trim(); return '<option value="'+esc(id)+'" '+(id===st.dealer?'selected':'')+'>'+esc(salonLabel(x))+'</option>'; }).join('')+'</select></label>' +
+    '<label class="small">発行日<br><input type="date" value="'+esc(st.date)+'" onchange="viewState.hbInv.date=this.value"></label>' +
+    '<label class="small">支払期限（必須）<br><input type="date" value="'+esc(st.due)+'" onchange="viewState.hbInv.due=this.value"></label>' +
+    '</div>' +
+    (st.sid ? (mine.length ? '<div class="tblwrap" style="margin-top:10px"><table><tr><th></th><th>注文ID</th><th>注文日</th><th>商品</th><th class="num">個数</th><th class="num">単価（仕入）</th><th class="num">金額</th></tr>'+trs+
+        '<tr style="font-weight:700;background:var(--surface)"><td colspan="4">選択 '+n+'件 小計（税抜）</td><td></td><td></td><td class="num">'+yen(sub)+'</td></tr>' +
+        '<tr><td colspan="4" class="small muted">消費税10%</td><td></td><td></td><td class="num">'+yen(tax)+'</td></tr>' +
+        '<tr style="font-weight:700"><td colspan="4">合計（税込）</td><td></td><td></td><td class="num">'+yen(sub+tax)+'</td></tr></table></div>' : '<p class="muted small" style="margin-top:8px">このサロンの店販注文はありません</p>') : '') +
+    (st.sid && !dRow ? '<p class="small" style="margin:6px 0 0;color:var(--s4)">ディーラーを選ぶと単価が出ます</p>' : '') +
+    (zero ? '<p class="small" style="margin:6px 0 0;color:var(--crit)">単価が出ない商品があります（そのディーラーの掛け率がブランドに未設定）。マスタ管理で率を入れるか、別のディーラーを選んでください</p>' : '') +
+    '<div class="row" style="margin-top:10px">' +
+    (busy('hanbaiInv', st.sid||'-') ? '<button class="btn pri" disabled>⏳ 発行中…（20〜40秒）</button>' : '<button class="btn pri" onclick="hanbaiInvoiceIssue()">発行する</button>') +
+    '<button class="btn" onclick="viewState.hbInv.open=false;render()">閉じる</button>' +
+    '<span class="muted small">管理番号 AXH-日付-時刻。PDFはDriveの「'+esc(NM.co)+'帳票／請求書」に保存。発行した注文には 📄 が付きます（再発行はチェックを入れ直して発行）</span></div></div>';
+}
+async function hanbaiInvoiceIssue(){
+  const st = viewState.hbInv||{};
+  if(!st.sid){ toast('サロンを選んでください', true); return; }
+  if(!st.dealer){ toast('ディーラーを選んでください', true); return; }
+  if(!st.date){ toast('発行日を入れてください', true); return; }
+  if(!st.due){ toast('支払期限を選んでください', true); return; }
+  const dRow = rows('salons').find(x=>String(x['サロンID']).trim()===st.dealer);
+  const mine = rows('hanbaiOrders').filter(r=>String(r['削除']||'').trim()==='' && String(r['サロンID']||'').trim()===st.sid && String(r['区分']||'店販').trim()!=='EC');
+  const picked = mine.filter(r=>{ const id=String(r['注文ID']).trim(); return id in st.sel ? !!st.sel[id] : String(r['請求書No']||'').trim()===''; });
+  if(!picked.length){ toast('注文を1つ以上選んでください', true); return; }
+  const items = picked.map(r=>{ const pid=String(r['商品ID']||'').trim(); return {id:String(r['注文ID']).trim(), unit:Math.round(num(buyUnitOf(pid, st.dealer, dRow, brandOf(pid), null).unit))}; });
+  const bad = items.filter(i=>!(i.unit>0));
+  if(bad.length){ toast('単価が出ない注文があります: '+bad.map(i=>i.id).join(', '), true); return; }
+  const reissue = picked.filter(r=>String(r['請求書No']||'').trim()).length;
+  const sName = salonLabel(rows('salons').find(x=>String(x['サロンID']).trim()===st.sid)||{}) || st.sid;
+  if(!confirm(sName+' 宛に店販請求書を発行します（'+picked.length+'件・'+salonLabel(dRow)+'の掛け率）。'+(reissue?'\n発行済みの注文 '+reissue+'件 が含まれています。再発行として新しい番号にし、元の請求書は取消（PDFはゴミ箱）になります。':'')+'\nよろしいですか？')) return;
+  const key = 'hanbaiInv:'+st.sid;
+  if(inflight.has(key)) return;
+  inflight.add(key); render();
+  try{
+    const r = await apiPost('issueHanbaiInvoice', {ids:items.map(i=>i.id), dealerId:st.dealer, dateStr:st.date, dueStr:st.due, items, reissue:reissue>0}, ['docLog','hanbaiOrders']);   // reissue=true のとき旧請求書はGAS側で取消（削除印＋PDFゴミ箱）
+    toast('店販請求書 '+r.docNo+' を発行しました（税込 '+yen(r.amount)+'）');
+    st.sel = {};
+    window.open(r.url, '_blank');
+  }catch(e){ toast(e.message, true); }
+  finally{ inflight.delete(key); render(); }
 }
 async function addHanbaiUI(){
   const sid = document.getElementById('hbSalon').value;
@@ -4454,7 +4526,9 @@ function allocRemoveSalon(slot){
   r.salonIds = r.salonIds.filter(x=>x!==slot);
   delete r.m[slot];
   if(r.supBy) delete r.supBy[slot];
-  const g = allocGroups()[slotGroupIdx(slot)];
+  // スロットの #n は「サロンが選ばれているグループだけを詰めた番号」なので、allocCalcGroups().src で元のグループ番号に戻す（Codexレビュー 2026-09-28）
+  const cg = allocCalcGroups()[slotGroupIdx(slot)];
+  const g = cg ? allocGroups()[cg.src] : null;
   if(g && g.sel) delete g.sel[slotBase(slot)];
   toast((names[slotBase(slot)]||slot)+' の列を外しました');
   render();
@@ -4466,6 +4540,9 @@ function allocRemoveOut(idx){
   const qty = r.items.reduce((a,i)=>a+num((o.q||{})[i.pid]),0);
   if(!confirm('🤝 '+(names[o.sid]||o.sid||'外注')+' の列を外します。'+(qty>0?'\nこの列の '+qty+'点 は余りに戻ります。':'')+'\nよろしいですか？')) return;
   outs.splice(Number(idx),1);
+  // 分割発注のデータは外注列の番号で持っている（outq['0|商品ID']）ので、消した列より後ろの番号を1つ詰める（Codexレビュー 2026-09-28）
+  const sp = allocSplit(r);
+  if(sp && sp.outq){ const nq = {}; Object.keys(sp.outq).forEach(k=>{ const m=k.match(/^(\d+)\|(.*)$/); if(!m){ nq[k]=sp.outq[k]; return; } const i=Number(m[1]); if(i===Number(idx)) return; nq[(i>Number(idx)?i-1:i)+'|'+m[2]] = sp.outq[k]; }); sp.outq = nq; }
   toast('外注の列を外しました');
   render();
 }
