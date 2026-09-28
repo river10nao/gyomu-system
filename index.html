@@ -4409,6 +4409,33 @@ function allocAddOut(sid){
   toast('🤝 '+(s?salonLabel(s):sid)+' の列を足しました。数量を直接入力してください');
   render();
 }
+// 結果表の列を外す（2026-09-28 ユーザー要望: 上のサロン選択で外すと再計算が走って数量が変わるため、表で直接外せるように）。
+// 再計算しない。外した列の数量は消える（余りとして残る）ので、他の列に入れ直してもらう。salonIds/m/supBy/groups.sel の4つを揃えて外す
+function allocRemoveSalon(slot){
+  const r = ALLOC.result[ALLOC.brand]; if(!r) return;
+  slot = String(slot||'').trim();
+  if(!r.salonIds.includes(slot)) return;
+  const names = {}; rows('salons').forEach(x=>names[String(x['サロンID']).trim()]=salonLabel(x));
+  const qty = r.items.reduce((a,i)=>a+num((r.m[slot]||{})[i.pid]),0);
+  if(!confirm((names[slotBase(slot)]||slot)+' の列を外します。'+(qty>0?'\nこの列に入っている '+qty+'点 は余りに戻ります（他の列に入れ直してください）。':'')+'\n他の列の数量は変わりません。よろしいですか？')) return;
+  r.salonIds = r.salonIds.filter(x=>x!==slot);
+  delete r.m[slot];
+  if(r.supBy) delete r.supBy[slot];
+  const g = allocGroups()[slotGroupIdx(slot)];
+  if(g && g.sel) delete g.sel[slotBase(slot)];
+  toast((names[slotBase(slot)]||slot)+' の列を外しました');
+  render();
+}
+function allocRemoveOut(idx){
+  const r = ALLOC.result[ALLOC.brand]; if(!r) return;
+  const outs = allocOutsOf(r); const o = outs[Number(idx)]; if(!o) return;
+  const names = {}; rows('salons').forEach(x=>names[String(x['サロンID']).trim()]=salonLabel(x));
+  const qty = r.items.reduce((a,i)=>a+num((o.q||{})[i.pid]),0);
+  if(!confirm('🤝 '+(names[o.sid]||o.sid||'外注')+' の列を外します。'+(qty>0?'\nこの列の '+qty+'点 は余りに戻ります。':'')+'\nよろしいですか？')) return;
+  outs.splice(Number(idx),1);
+  toast('外注の列を外しました');
+  render();
+}
 function allocSupOf(r,sid){ return String(((r.supSplit&&r.supBy)?r.supBy[sid]:'')||r.supplier||'').trim(); }
 // ②の外注仕入枠（計算前の設定。ALLOC.conf[brand].outs = [{sid, budget}]。2026-07-18「計算の前に枠を入れる」方式へ変更）
 function allocCOuts(){ const c=ALLOC.conf[ALLOC.brand]=ALLOC.conf[ALLOC.brand]||{}; return c.outs=c.outs||[]; }
@@ -5007,7 +5034,8 @@ function vAllocation(){
               '<button class="btn sm" onclick="viewState.swapSlot=null;render()">やめる</button></div></th>';
           }
           return '<th class="num small" style="'+colBgHead(salonSup(s))+'">'+esc(names[slotBase(s)]||slotBase(s)) +
-            ' <button class="btn sm" title="このサロンを別のサロンに差し替える（数量はそのまま）" style="padding:1px 6px;font-weight:normal" onclick="viewState.swapSlot=\''+esc(s)+'\';render()">↔</button></th>';
+            ' <button class="btn sm" title="このサロンを別のサロンに差し替える（数量はそのまま）" style="padding:1px 6px;font-weight:normal" onclick="viewState.swapSlot=\''+esc(s)+'\';render()">↔</button>' +
+            '<button class="btn sm" title="この列を外す（他の列の数量はそのまま・再計算しない）" style="padding:1px 6px;font-weight:normal;margin-left:2px;color:var(--crit)" onclick="allocRemoveSalon(\''+esc(s)+'\')">✕</button></th>';
         }).join('') +
         // ＋ = 空の列を足して数量を手打ちする（再計算しない）
         (()=>{ const gs = allocGroups();
@@ -5029,7 +5057,8 @@ function vAllocation(){
             '<button class="btn pri sm" onclick="allocAddSalon('+gi+', document.getElementById(\'addSel\').value)">追加</button>' +
             '<button class="btn sm" onclick="viewState.addSalon=null;render()">やめる</button></div></th>';
         })() +
-        (allocMode!=='own' ? outs.map(o=>'<th class="num small" style="'+colBgHead(o.sid)+'">🤝'+esc(names[o.sid]||'外注')+'</th>').join('') : '')+'<th class="num">割当計</th><th class="num">余り</th></tr>' +
+        (allocMode!=='own' ? outs.map((o,oi)=>'<th class="num small" style="'+colBgHead(o.sid)+'">🤝'+esc(names[o.sid]||'外注') +
+          ' <button class="btn sm" title="この外注列を外す（他の列の数量はそのまま・再計算しない）" style="padding:1px 6px;font-weight:normal;color:var(--crit)" onclick="allocRemoveOut('+oi+')">✕</button></th>').join('') : '')+'<th class="num">割当計</th><th class="num">余り</th></tr>' +
         r.items.map(i=>{
           const asg = assignedOf(i.pid), oq = outQty(i.pid), left = i.need-asg-oq;
           return '<tr><td class="small">'+esc(i.name)+(i.unit>1?' <span class="muted">［'+i.unit+'個/箱］</span>':'')+'</td><td class="small">'+esc(i.size||'')+'</td><td class="num">'+i.need+'</td>' +
