@@ -839,6 +839,37 @@ function render(){
 
 // 紹介報酬の対象額に使う「実額の仕入」。案件別収支と同じ計算（回収台帳の仕入先×掛け率、
 // まだ振り分けていない分だけ商品マスタの仕入価格で仮置き）。2026-09-01 ユーザー指定で実額ベースに。
+// 紹介報酬の明細を1か所で計算（支払いカードと資金繰りで同じ数字にする。Codexレビュー 2026-09-30）
+// 対象=紹介者が入った卸先の受注×ブランド（報酬対象ブランドの絞り込みあり）。基準=売上 or 利益（仕入は refRealCost の実額）。
+// 支払予定=発注日1〜15日→当月末・16日〜→翌月10日。発注日未入力はまだ計上しない。inMonthFn は発注日で絞る（省略=全期間）
+function collectReferralFees(inMonthFn){
+  const out = [];
+  rows('wholesalers').filter(w=>String(w['紹介者']||'').trim()).forEach(w=>{
+    const wid = String(w['卸先ID']||'').trim(); const rid = String(w['紹介者']||'').trim();
+    const base = String(w['報酬基準']||'利益').trim(); const rateV = num(w['報酬率']); const rate = rateV>1 ? rateV/100 : rateV;
+    const only = String(w['報酬対象ブランド']||'').trim();
+    const byOrder = {};
+    rows('orderLedger').filter(r=>String(r['卸先ID']||'').trim()===wid && String(r['削除']||'').trim()==='').forEach(r=>{
+      const oid=String(r['受注ID']||'').trim(); if(!oid) return;
+      const brand = brandOf(r['商品ID']) || '（メーカー不明）';
+      if(only && brand!==only) return;
+      const key = oid+'|'+brand;
+      (byOrder[key]=byOrder[key]||{oid, brand, ord:String(r['発注日']||'').trim(), sales:0});
+      byOrder[key].sales += num(r['小計（税抜）']);
+    });
+    Object.values(byOrder).filter(o=>o.ord && (!inMonthFn || inMonthFn(o.ord))).forEach(o=>{
+      const cost = refRealCost(o.oid, o.brand);
+      const b = base==='売上' ? o.sales : (o.sales-cost);
+      const fee = Math.round(b*rate);
+      const d = new Date(o.ord.replace(/\//g,'-'));
+      let pd = null, due = '（発注日なし）';
+      if(!isNaN(d)){ pd = d.getDate()<=15 ? payEom(d.getFullYear(), d.getMonth()) : new Date(d.getFullYear(), d.getMonth()+1, 10);
+        due = payFmt(pd)+(d.getDate()<=15?'（当月末）':'（翌月10日）'); }
+      out.push({rid, wname:String(w['卸先名']||''), oid:o.oid, brand:o.brand, base, rate, sales:o.sales, cost, b, fee, ord:o.ord, due, pd});
+    });
+  });
+  return out;
+}
 function refRealCost(oid, brand){
   const sup = anbetsuSupplyMemo();
   let cost = 0;
@@ -1119,40 +1150,13 @@ function vPayments(){
   const refWs = rows('wholesalers').filter(w=>String(w['紹介者']||'').trim());
   if(refWs.length){
     const byRef = {};
-    refWs.forEach(w=>{
-      const wid = String(w['卸先ID']||'').trim(); const rid = String(w['紹介者']||'').trim();
-      const base = String(w['報酬基準']||'利益').trim(); const rateV = num(w['報酬率']); const rate = rateV>1 ? rateV/100 : rateV;
-      // 報酬対象ブランド: 入っていればそのブランドの明細だけが対象。空欄なら全ブランド（2026-09-01 ユーザー指定）
-      const only = String(w['報酬対象ブランド']||'').trim();
-      const byOrder = {};
-      // 2026-07-23 ユーザー確定: 判定は発注日ベース（入金日ではない）。発注日1〜15日→当月末・16日〜末日→翌月10日。
-      // 卸先からの入金完了は待たない（発注した月末に先方が請求書を作成→入金する運用）
-      rows('orderLedger').filter(r=>String(r['卸先ID']||'').trim()===wid && String(r['削除']||'').trim()==='').forEach(r=>{
-        const oid=String(r['受注ID']||'').trim(); if(!oid) return;
-        const brand = brandOf(r['商品ID']) || '（メーカー不明）';
-        if(only && brand!==only) return;
-        const key = oid+'|'+brand;
-        (byOrder[key]=byOrder[key]||{oid, brand, ord:String(r['発注日']||'').trim(), sales:0});
-        byOrder[key].sales += num(r['小計（税抜）']);
-      });
-      Object.values(byOrder).filter(o=>o.ord && inMonth(o.ord)).forEach(o=>{   // 対象月は発注日基準（発注日未入力はまだ計上しない）
-        // 仕入は実額（回収台帳の仕入先×掛け率。未振分の分だけ商品マスタで仮）。案件別収支と同じ（2026-09-01 ユーザー指定）
-        const cost = refRealCost(o.oid, o.brand);
-        const b = base==='売上' ? o.sales : (o.sales-cost);
-        const fee = Math.round(b*rate);
-        // 発注日が15日まで→当月末、16日以降→翌月10日
-        const d = new Date(o.ord.replace(/\//g,'-'));
-        let due = '（発注日なし）';
-        if(!isNaN(d)) due = d.getDate()<=15 ? payFmt(payEom(d.getFullYear(), d.getMonth()))+'（当月末）'
-                                            : payFmt(new Date(d.getFullYear(), d.getMonth()+1, 10))+'（翌月10日）';
-        (byRef[rid]=byRef[rid]||[]).push({wname:String(w['卸先名']||''), oid:o.oid, brand:o.brand,
-          base, rate, sales:o.sales, cost, b, fee, ord:o.ord, due});
-      });
-    });
+    collectReferralFees(inMonth).forEach(x=>{ (byRef[x.rid]=byRef[x.rid]||[]).push(x); });   // 明細の計算は collectReferralFees（資金繰りと共通）
     Object.keys(byRef).forEach(rid=>{
       const list = byRef[rid]; const total = list.reduce((a,x)=>a+x.fee,0);
+      // 紹介報酬は課税（請求書に消費税10%が乗る。2026-09-30 森岡さん請求で確認）。税は支払日ごとに丸めて合計（資金繰りと同じ単位で一致させる）
+      const refTax = (()=>{ const per={}; list.forEach(x=>{ const k=x.pd?payFmt(x.pd):'-'; per[k]=(per[k]||0)+x.fee; }); return Object.values(per).reduce((a,v)=>a+Math.round(v*0.1),0); })();
       const open = (viewState.aggOpen||{})['pay_ref_'+rid];
-      html += '<div class="card"><div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_ref_'+rid+'\')">'+(open?'▾':'▸')+' <b>🤝 '+esc(salonLabel(sal[rid]||{})||rid)+'（紹介報酬）</b><span class="small muted">紹介卸先の発注済み案件 × 報酬率 ／ <b>発注日</b>1〜15日→当月末・16日〜→翌月10日（発注ベース・入金は待たない）</span><span class="right"><b>'+yen(total)+'</b></span></div>' +
+      html += '<div class="card"><div class="row" style="cursor:pointer" onclick="aggToggle(\'pay_ref_'+rid+'\')">'+(open?'▾':'▸')+' <b>🤝 '+esc(salonLabel(sal[rid]||{})||rid)+'（紹介報酬）</b><span class="small muted">紹介卸先の発注済み案件 × 報酬率 ／ <b>発注日</b>1〜15日→当月末・16日〜→翌月10日（発注ベース・入金は待たない）</span><span class="right"><b>'+yen(total+refTax)+'</b> <span class="muted small">税込（税抜 '+yen(total)+'）</span></span></div>' +
         (open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>卸先</th><th>受注</th><th>ブランド</th><th class="num">売上</th><th class="num">'+NM.co+'仕入</th><th>基準</th><th class="num">対象額</th><th class="num">率</th><th class="num">報酬</th><th>発注日</th><th>支払予定</th></tr>' +
           list.map(x=>'<tr><td class="small">'+esc(x.wname)+'</td><td class="mono small">'+esc(x.oid)+'</td><td class="small">'+esc(x.brand||'')+'</td>' +
             '<td class="num">'+yen(x.sales)+'</td><td class="num">'+yen(x.cost)+'</td>' +
@@ -1605,20 +1609,11 @@ function vDashboard(){
     Object.values(per).forEach(g=>{ const f=brokerFeeOfLines(g.lines); pushOut((salonLabel(brokerRow)||'仲介')+' '+BROKER_RATE_LABEL, f+Math.round(f*0.1), g.pr.pd, 'var(--s4)'); });   // 税込で積む（支払いカードと同じ。Codexレビュー 2026-09-28）。ブランド別率は brokerFeeOfLines が見る
   })();
   // 3) 紹介報酬（発注済み案件。発注日1〜15日→当月末・16日〜→翌月10日。2026-07-23 発注ベースに訂正・入金は待たない）
-  rows('wholesalers').filter(w=>String(w['紹介者']||'').trim()).forEach(w=>{
-    const wid=String(w['卸先ID']||'').trim(), rid=String(w['紹介者']||'').trim();
-    const base=String(w['報酬基準']||'利益').trim(); const rv=num(w['報酬率']); const rate=rv>1?rv/100:rv;
-    const byOrder={};
-    rows('orderLedger').filter(r=>String(r['卸先ID']||'').trim()===wid && String(r['削除']||'').trim()==='').forEach(r=>{
-      const oid=String(r['受注ID']||'').trim(); if(!oid) return;
-      (byOrder[oid]=byOrder[oid]||{ord:String(r['発注日']||'').trim(), sales:0, cost:0});
-      byOrder[oid].sales+=num(r['小計（税抜）']); byOrder[oid].cost+=num(r['個数'])*ownCost(String(r['商品ID']||'').trim()); });
-    Object.values(byOrder).filter(o=>o.ord).forEach(o=>{
-      const d=new Date(o.ord.replace(/\//g,'-')); if(isNaN(d)) return;
-      const pd = d.getDate()<=15 ? payEom(d.getFullYear(), d.getMonth()) : new Date(d.getFullYear(), d.getMonth()+1, 10);
-      pushOut((salonLabel(csl.sal[rid]||{})||'紹介')+'報酬', Math.round((base==='売上'?o.sales:(o.sales-o.cost))*rate), pd, 'var(--s4)');
-    });
-  });
+  //    明細は支払いカードと同じ collectReferralFees。紹介者×支払日で税抜を合算してから税を1回丸める（カードの合計と一致。Codexレビュー 2026-09-30）
+  (()=>{ const per={};
+    collectReferralFees().forEach(x=>{ if(!x.pd) return; const k=x.rid+'|'+payFmt(x.pd); (per[k]=per[k]||{rid:x.rid, pd:x.pd, fee:0}).fee+=x.fee; });
+    Object.values(per).forEach(g=>pushOut((salonLabel(csl.sal[g.rid]||{})||'紹介')+'報酬', g.fee+Math.round(g.fee*0.1), g.pd, 'var(--s4)'));
+  })();
   // 4) 精算代行: 前月分の月次精算（当月末払い・消し込み済みなら確定扱い）＋振込手数料目安＋当月のMTG前払い（都度）
   (()=>{ const [cy,cm0]=m.split('/').map(Number);
     const prevM = cm0===1 ? (cy-1)+'/12' : cy+'/'+String(cm0-1).padStart(2,'0');
