@@ -1102,6 +1102,7 @@ function vPayments(){
             g.lines.map(l=>'<tr><td class="small">'+esc(l.date)+(l.prov?' <span style="color:var(--s4)">仮</span>':'')+'</td><td class="mono small">'+esc(l.kid)+'</td><td class="mono small">'+esc(l.oids)+'</td><td class="small">'+esc(l.salon)+'</td><td class="small">'+esc(l.brand)+'</td><td class="small">'+esc(l.name)+' '+esc(l.size)+'</td><td class="num">'+l.qty+'</td><td class="num">'+yen(l.unit)+(l.unitNote?'<br><span class="small" style="color:var(--s4)">'+esc(l.unitNote)+'</span>':'')+'</td><td class="num">'+yen(l.amt)+'</td></tr>').join('') +
             '</table></div>' : '') +
           (open && kind==='外注' && !isMira ? supNoticeBlock(supId, g, sub) : '') +   // 外注先: 締め期間ごとの📄支払い通知書（2026-10-02）
+          (open && isMira ? supNoticeBlock(supId, g, sub, {mode:'boxDiff', tax}) : '') +   // MIRA差額払い: 10日締めごとの📄支払い通知書（差額=定価×7%・税込は小数合計×1.1を四捨五入）
           '</div>';
       }).join('') +
       (isMira ? '<p class="muted small" style="margin-top:6px">※ MIRA名義の'+MIRA_NAP.brand+'は、口座請求元がMIRAへ定価×43%で請求（MIRAが支払い）。当社は定価×50%で買い取った扱いにして、差額（定価×7%）をMIRAへ支払う。差額は明細ごと小数のまま合計し、税込で円未満四捨五入。仲介2%は下の🤝カードに従来どおり計上。案件別収支の仕入原価は定価×50%（2026-09-25 確定）</p>' : '') +
@@ -2318,7 +2319,7 @@ async function allocRedo(brand){
 
 // 📣 お知らせ（2026-08-21 ユーザー要望）: スプシ「お知らせ」シートに1行足すだけで全員のダッシュボードに出る。
 // 掲載終了日が空なら出しっぱなし・過ぎたら自動で消える。削除列は他の台帳と同じゴミ箱方式（rows()が除外）。
-// 新しい3件は開いた状態、それより前は「過去のお知らせ」で折りたたむ。
+// 新しい3件は開いた状態、それより前は「過去のお知らせ」で折りたたむ（NEWでも3件を超える分は畳む・2026-10-02）。
 const NOTICE_NEW_DAYS = 7;   // これ以内の日付に NEW バッジ
 function noticeList(){
   const t = new Date(); t.setHours(0,0,0,0);
@@ -2352,16 +2353,17 @@ function noticeItem(x){
 function noticesHtml(){
   const list = noticeList();
   if(!list.length) return '';
-  // 開いた状態で出すのは「NEW（7日以内）の全件」か、少なくとも新しい3件。NEWが「過去のお知らせ」に入らないようにする（2026-09-25）
+  // 開いた状態で出すのは新しい3件だけ（2026-10-02 ユーザー指示: NEW全件を開くと長くなりすぎる）。残りは「過去のお知らせ」に畳み、NEWの件数を見出しに添える
   const nNew = list.filter(x=>noticeIsNew(x.date)).length;
-  const cut = Math.max(3, nNew);
+  const cut = 3;
   const head = list.slice(0,cut), rest = list.slice(cut);
+  const restNew = rest.filter(x=>noticeIsNew(x.date)).length;
   return '<div class="card">' +
     '<div class="row" style="align-items:center"><b class="small">📣 お知らせ</b>' +
     (nNew ? '<span class="pill" style="background:var(--warn);color:#3d2c00;font-weight:700">新着 '+nNew+'</span>' : '') +
     '<span class="muted small" style="margin-left:auto">スプシ「お知らせ」シートに1行足すと、ここに出ます</span></div>' +
     head.map(noticeItem).join('') +
-    (rest.length ? '<details style="margin-top:6px"><summary class="small muted" style="cursor:pointer">過去のお知らせ '+rest.length+'件</summary>' +
+    (rest.length ? '<details style="margin-top:6px"><summary class="small muted" style="cursor:pointer">過去のお知らせ '+rest.length+'件'+(restNew?'（うち新着 '+restNew+'件）':'')+'</summary>' +
       rest.map(noticeItem).join('') + '</details>' : '') +
     '</div>';
 }
@@ -4054,26 +4056,27 @@ function exportSalonPay(){
 // ===== 外注先宛 支払い通知書（2026-10-02 ユーザー要望。MIRA の月次通知書をシステムから出す） =====
 // 外注先カードの締め期間を開いた中にボタン。金額はGAS側で回収台帳から計算し直し、画面の税抜小計と一致しないと発行されない。
 // 月末締めの外注先だけ（期間キー yyyy/MM）。消費税は見本どおり円未満切捨（カードの表示は四捨五入なので1円ずれることがある）
-function supNoticeBlock(supId, g, sub){
+function supNoticeBlock(supId, g, sub, opt){
   const key = g.pr.key;
-  const monthly = /^\d{4}\/\d{2}$/.test(key);
+  const boxDiff = !!(opt && opt.mode==='boxDiff');
+  const monthly = boxDiff ? /^\d{4}\/\d{2}\/10$/.test(key) : /^\d{4}\/\d{2}$/.test(key);
   const prov = g.lines.some(l=>l.prov);
-  const ntax = Math.floor(sub*0.1);
+  const ntax = boxDiff ? num(opt.tax) : Math.floor(sub*0.1);
   const docs = rows('docLog').filter(d=>String(d['削除']||'').trim()==='' && String(d['種類']||'').trim()==='支払通知書' && String(d['備考']||'').includes('sup='+supId+'／period='+key+'／'));
   const docsHtml = docs.length ? '<div class="small" style="margin-top:6px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--good) 8%,transparent)"><b class="muted">📄 発行済みの支払い通知書</b> ' +
     docs.map(d=>{ const u=safeDocUrl(d['PDF URL']); return '<span style="margin-left:10px">'+esc(d['管理番号'])+' <span class="muted">'+esc(d['発行日'])+'発行・支払い日 '+esc(d['支払期限'])+'・税込 '+yen(num(d['金額（税込）']))+'</span>'+(u?' <a href="'+esc(u)+'" target="_blank" rel="noopener noreferrer">PDFを開く</a>':'')+' <button class="btn sm" title="この通知書を削除（PDFはゴミ箱へ・30日間は復元可）" onclick="deleteDocUI(\''+esc(d['管理番号'])+'\',\''+esc(d['PDF URL'])+'\')">🗑</button></span>'; }).join('') + '</div>' : '';
   if(!monthly) return '<div class="muted small" style="margin-top:8px">支払い通知書の発行は月末締めの外注先のみ対応（10日締めは未対応）</div>'+docsHtml;
   const busy = inflight.has('supNotice:'+supId+':'+key);
-  return '<div class="row" style="margin-top:8px"><button class="btn" '+(busy?'disabled':'')+' onclick="issueSupNotice(\''+esc(supId)+'\',\''+esc(key)+'\')">'+(busy?'発行中…':'📄 支払い通知書PDF')+'</button>' +
-    '<span class="muted small">税抜 '+yen(sub)+' ＋ 消費税 '+yen(ntax)+'（切捨）＝ 税込 '+yen(sub+ntax)+'。明細は上の表と同じ商品・単価。備考に相手の口座（仕入れマスタ「口座情報」）。PDFはDriveの「'+esc(NM.co)+'帳票／支払通知書」</span></div>' +
+  return '<div class="row" style="margin-top:8px"><button class="btn" '+(busy?'disabled':'')+' onclick="issueSupNotice(\''+esc(supId)+'\',\''+esc(key)+'\','+(boxDiff?'true':'false')+')">'+(busy?'発行中…':'📄 支払い通知書PDF')+'</button>' +
+    '<span class="muted small">'+(boxDiff ? '差額（定価×7%）の小計 '+yen(sub)+' → 税込 '+yen(sub+ntax)+'（小数のまま合計し税込で四捨五入）。明細は商品ごとに 数量×差額単価' : '税抜 '+yen(sub)+' ＋ 消費税 '+yen(ntax)+'（切捨）＝ 税込 '+yen(sub+ntax)+'。明細は上の表と同じ商品・単価')+'。備考に相手の口座（仕入れマスタ「口座情報」）。PDFはDriveの「'+esc(NM.co)+'帳票／支払通知書」</span></div>' +
     (prov ? '<div class="small" style="color:var(--s4)">⚠ 発注日が未入力の「仮」明細が含まれています。受注カードで📦発注日を入れると計上月が変わることがあります</div>' : '') + docsHtml;
 }
-async function issueSupNotice(supId, key){
+async function issueSupNotice(supId, key, boxDiff){
   const k = 'supNotice:'+supId+':'+key; if(inflight.has(k)) return;
   const {bySup, sal} = collectSupplierLines();   // 画面の対象月フィルタに関係なく、この締め期間の全明細
   const s = sal[supId]||{};
   const close = String(s['締め日']||'').trim(), pay = String(s['支払日']||'').trim();
-  const lines = (bySup[supId]||[]).filter(l=>!l.miraNap && payPeriod(l.date, close, pay).key===key);
+  const lines = (bySup[supId]||[]).filter(l=>(boxDiff ? l.miraNap : !l.miraNap) && payPeriod(l.date, close, pay).key===key);
   if(!lines.length){ toast('この期間の明細がありません', true); return; }
   if(lines.some(l=>!l.kid)){ toast('回収IDの無い明細があるため発行できません', true); return; }
   const kids = [...new Set(lines.map(l=>l.kid))];
@@ -4084,13 +4087,13 @@ async function issueSupNotice(supId, key){
   if(!confirm((salonLabel(s)||supId)+' 宛に '+g_periodLabel(key)+' の支払い通知書を発行します。\n回収 '+kids.join(', ')+'（'+lines.length+'明細・税抜 '+yen(sub)+'）\nよろしいですか？')) return;
   inflight.add(k); render();
   try{
-    const r = await apiPost('issueSupplierPayNotice', {supId, periodKey:key, kids, dateStr:dateStr.trim(), expectSubtotal:Math.round(sub)}, ['docLog']);
+    const r = await apiPost('issueSupplierPayNotice', {supId, periodKey:key, kids, dateStr:dateStr.trim(), expectSubtotal:Math.round(sub), mode: boxDiff ? 'boxDiff' : ''}, ['docLog']);
     toast(r.docNo+' を発行しました（税込 '+yen(r.amount)+'・支払い日 '+r.payDate+'）');
     const u = safeDocUrl(r.url); if(u) window.open(u, '_blank', 'noopener');   // ブロックされても期間の中の「発行済み」から開ける
   }catch(e){ toast(e.message, true); }
   finally{ inflight.delete(k); render(); }
 }
-function g_periodLabel(key){ return key+' 末締め分'; }
+function g_periodLabel(key){ const m=key.match(/^(\d{4}\/\d{2})\/(\d{2})$/); return m ? m[1]+' '+Number(m[2])+'日締め分' : key+' 末締め分'; }
 
 // ===== 画面: 仕入枠 =====
 // サロン1行 = 積み上げバー1本。バーの中をブランドごとに色分けし、分母はそのサロンの枠合計
