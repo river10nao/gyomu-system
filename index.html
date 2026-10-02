@@ -2779,12 +2779,22 @@ async function bulkAdvance(entity, to){
   if(!ids.length){ toast('対象を選択してください', true); return; }
   const keys = ids.map(id=>entity+':'+id);
   if(keys.some(k=>inflight.has(k))){ toast('選択の中に処理中の案件があります。完了までお待ちください', true); return; }
-  // 店販品でお渡し済みへ進む注文が混ざる場合に備えて担当者名を1回だけ聞く（空欄OK）
+  // 店販品で、選択の中に「お渡し済み」へ進む注文（今が預かり中）があるときだけ担当者名を1回聞く（空欄OK）
+  // 受付→ディーラー発注済 などの段では聞かない（2026-10-02 ユーザー指摘）
   let who = '';
   if(entity==='hanbai'){
-    const w = prompt('「お渡し済み」になる注文がある場合、お渡し担当者の名前（不要なら空欄のままOK）:', '');
-    if(w===null) return;
-    who = w.trim();
+    const flow = FLOW.hanbai;
+    const toHandover = rows('hanbaiOrders').some(r=>{
+      const id = String(r['注文ID']||'').trim();
+      if(!viewState.sel[id] || String(r['削除']||'').trim()!=='') return false;
+      const i = flow.indexOf(String(r['ステータス']||'').trim());
+      return i>=0 && flow[i+1]==='お渡し済み';
+    });
+    if(toHandover){
+      const w = prompt('「お渡し済み」になる注文があります。お渡し担当者の名前（不要なら空欄のままOK）:', '');
+      if(w===null) return;
+      who = w.trim();
+    }
   }
   keys.forEach(k=>inflight.add(k)); render();   // 選択した案件だけ処理中に。他は操作できる
   try{
