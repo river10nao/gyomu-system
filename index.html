@@ -102,6 +102,27 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 .dot.now{background:var(--accent);border-color:var(--accent)}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--page);padding:10px 20px;border-radius:10px;font-size:13px;z-index:99;box-shadow:0 4px 20px rgba(0,0,0,.3);max-width:90vw}
 .toast.err{background:var(--crit);color:#fff}
+/* 💬 AI窓口（右下の丸ボタン＋小さなチャット窓。見て答えるだけ） */
+.aichat-fab{position:fixed;right:22px;bottom:22px;width:52px;height:52px;border-radius:50%;border:0;background:var(--accent);color:#fff;font-size:22px;line-height:1;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.2);z-index:45;display:flex;align-items:center;justify-content:center}
+.aichat-fab .aichat-dot{position:absolute;top:4px;right:4px;width:11px;height:11px;border-radius:50%;background:var(--crit);border:2px solid var(--page)}
+.aichat-panel{position:fixed;right:22px;bottom:86px;width:360px;max-width:calc(100% - 44px);max-height:440px;background:var(--surface);border:1px solid var(--grid);border-radius:14px;box-shadow:0 12px 32px rgba(0,0,0,.18);display:flex;flex-direction:column;z-index:46;overflow:hidden}
+.aichat-head{padding:10px 14px;border-bottom:1px solid var(--grid);display:flex;align-items:center;gap:8px;font-size:14px}
+.aichat-head .aichat-x{margin-left:auto;border:0;background:none;color:var(--muted);font-size:16px;cursor:pointer;padding:0 4px}
+.aichat-msgs{padding:12px 14px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:10px;min-height:120px}
+.aichat-m{max-width:85%;padding:8px 12px;border-radius:12px;font-size:13px;white-space:pre-wrap;word-break:break-word}
+.aichat-me{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:4px}
+.aichat-ai{align-self:flex-start;background:var(--wash);border-bottom-left-radius:4px}
+.aichat-sys{align-self:center;color:var(--muted);font-size:12px;text-align:center}
+.aichat-who{font-size:11px;color:var(--muted);align-self:flex-end;margin-bottom:-6px}
+.aichat-in{padding:10px 12px;border-top:1px solid var(--grid);display:flex;gap:8px}
+.aichat-in input{flex:1;border:1px solid var(--grid);border-radius:8px;padding:8px 10px;background:var(--page);color:var(--ink);font-size:13px;min-width:0}
+.aichat-in button{border:0;background:var(--accent);color:#fff;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer}
+.aichat-err{color:var(--crit);font-size:12px;padding:0 14px 6px;display:none}
+.aichat-note{font-size:12px;color:var(--muted);padding:0 14px 10px}
+@media (max-width:760px){
+  .aichat-fab{right:14px;bottom:70px}           /* 下のタブバー（#mnav）にかぶらない位置 */
+  .aichat-panel{right:12px;left:12px;width:auto;max-width:none;bottom:130px;max-height:min(440px,calc(100vh - 150px))}
+}
 .search{min-width:220px}
 .muted{color:var(--muted)}
 .small{font-size:12px}
@@ -191,6 +212,15 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
   <div id="mnav"></div>
 </div>
 <div id="loadbox" class="loading" style="display:none"><div>データ読み込み中…</div><div class="small muted" id="loadmsg"></div></div>
+
+<button id="aichatFab" class="aichat-fab" style="display:none" onclick="aiChatToggle()" title="AI窓口" aria-label="AI窓口を開く">💬<span class="aichat-dot" id="aichatDot" style="display:none"></span></button>
+<div id="aichatPanel" class="aichat-panel" style="display:none">
+  <div class="aichat-head">💬 <b>AI窓口</b><button class="aichat-x" onclick="aiChatToggle()" aria-label="閉じる">✕</button></div>
+  <div class="aichat-msgs" id="aichatMsgs"></div>
+  <div class="aichat-err" id="aichatErr"></div>
+  <div class="aichat-in"><input id="aichatInput" maxlength="500" placeholder="質問を書く（1回1つ・500字まで）"><button onclick="aiChatSend()">送る</button></div>
+  <div class="aichat-note">返事はあなたにだけ表示されます。やりとりはスプシ「AI窓口」に残ります。</div>
+</div>
 
 <script>
 'use strict';
@@ -382,6 +412,7 @@ async function boot(){
     return;
   }
   document.getElementById('loadbox').style.display='none';
+  aiChatMount();   // 💬 AI窓口のボタン（ログイン後のみ）
 }
 
 // 起動時に全データを並列ロード → 以後の検索・絞込みはブラウザ内で即時
@@ -6974,6 +7005,102 @@ async function masterSave(tab, id){
   await act(id?conf.upd:conf.add, payload, id?'更新しました':'追加しました（ID自動採番）', [conf.sheet]);
   const f = document.getElementById('mform'); if(f) f.innerHTML='';
 }
+
+// ===== 💬 AI窓口（読み取り専用のチャット。質問を送る→サーバー側のシートにたまる→回答が来たら差し替え）=====
+// 画面はUIの文言だけを持つ。業務ルール・名称・合言葉は置かない（公開ページ）。
+const AICHAT_SEEN_KEY = 'gyomu_biz_aichat_seen';   // 既読にした回答のID（この端末だけ）
+const AICHAT_POLL_MS = 15000;                       // 窓が開いている間だけ回答を取りに行く間隔
+const AICHAT_INTRO = '使い方の質問と、金額の確認ができます。データの変更はできません。';
+const AICHAT_ACK_UP = 'いま確認しています。1〜2分で回答します。';
+const AICHAT_ACK_DOWN = '受け付けました。少し時間をいただきます。';
+let aiChatOpen = false, aiChatTimer = null, aiChatItems = [], aiChatBusy = false;
+const aiChatAck = {};   // 送った直後の受付文（質問ID→文言。この表示の間だけ）
+
+// 書き込みの共通ガード（最新データ読み込み中は保存不可）はチャットには関係ないので、直接送る
+async function aiChatPost(action, payload){
+  const res = await fetch(GAS_URL, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
+    body: JSON.stringify({token, action, payload: payload||{}})});
+  const j = await res.json();
+  if(!j.ok) throw new Error(j.error);
+  return j.data;
+}
+function aiChatSeen(){ try{ return new Set(JSON.parse(localStorage.getItem(AICHAT_SEEN_KEY)||'[]')); }catch(e){ return new Set(); } }
+function aiChatSaveSeen(set){ try{ localStorage.setItem(AICHAT_SEEN_KEY, JSON.stringify([...set].slice(-100))); }catch(e){} }
+function aiChatAnswered(it){ return it.status==='done' || it.status==='error'; }
+
+function aiChatMount(){
+  const fab = document.getElementById('aichatFab'); if(!fab || fab.style.display==='flex') return;
+  fab.style.display = 'flex';
+  aiChatFetch().catch(()=>{});   // 未読の赤点のため、ページ読み込み時に1回だけ
+}
+async function aiChatFetch(){
+  const d = await apiGet('aiMine');
+  aiChatItems = (d && d.items) || [];
+  aiChatUpdateDot();
+  if(aiChatOpen) aiChatRender();
+}
+function aiChatUpdateDot(){
+  const seen = aiChatSeen();
+  const unread = aiChatItems.some(it=>aiChatAnswered(it) && !seen.has(it.id));
+  document.getElementById('aichatDot').style.display = unread ? 'block' : 'none';
+}
+function aiChatToggle(){
+  aiChatOpen = !aiChatOpen;
+  document.getElementById('aichatPanel').style.display = aiChatOpen ? 'flex' : 'none';
+  if(aiChatOpen){
+    aiChatRender();
+    aiChatFetch().catch(()=>{});   // 窓を開いた時に1回
+    aiChatTimer = setInterval(()=>aiChatFetch().catch(()=>{}), AICHAT_POLL_MS);
+    const inp = document.getElementById('aichatInput'); if(inp && !/Mobi|Android/i.test(navigator.userAgent)) inp.focus();
+  }else{
+    clearInterval(aiChatTimer); aiChatTimer = null;   // 閉じたら止める
+  }
+}
+function aiChatRender(){
+  const box = document.getElementById('aichatMsgs'); if(!box) return;
+  const seen = aiChatSeen(); let changed = false;
+  let html = '<div class="aichat-sys">'+esc(AICHAT_INTRO)+'</div>';
+  const items = aiChatItems.slice().sort((a,b)=>String(a.id).localeCompare(String(b.id)));   // 古い順に並べる（質問IDは時刻始まり）
+  for(const it of items){
+    if(it.user) html += '<div class="aichat-who">'+esc(it.user)+'</div>';   // 管理者だけ全員分が返るので誰の質問か出す
+    html += '<div class="aichat-m aichat-me">'+esc(it.text)+'</div>';
+    if(aiChatAnswered(it)){
+      html += '<div class="aichat-m aichat-ai">'+esc(it.reply||'うまく答えられませんでした。もう一度、具体的に聞いてください。')+'</div>';
+      if(!seen.has(it.id)){ seen.add(it.id); changed = true; }
+    }else if(aiChatAck[it.id]){
+      html += '<div class="aichat-sys">'+esc(aiChatAck[it.id])+'</div>';
+    }
+  }
+  box.innerHTML = html;
+  box.scrollTop = box.scrollHeight;
+  if(changed){ aiChatSaveSeen(seen); aiChatUpdateDot(); }
+}
+function aiChatError(msg){
+  const el = document.getElementById('aichatErr');
+  el.textContent = msg||''; el.style.display = msg ? 'block' : 'none';
+}
+async function aiChatSend(){
+  if(aiChatBusy) return;
+  const inp = document.getElementById('aichatInput');
+  const text = (inp.value||'').trim();
+  aiChatError('');
+  if(!text){ aiChatError('質問を書いてください'); return; }
+  if(text.length>500){ aiChatError('500字までにしてください'); return; }
+  aiChatBusy = true;
+  try{
+    const r = await aiChatPost('aiAsk', {text});
+    inp.value = '';
+    // 送れたら、見回り役が動いているかを1回だけ確かめて受付文を決める（固定文・時刻は出さない）
+    let up = false;
+    try{ const st = await apiGet('aiStatus'); up = !!(st && st.up); }catch(e){}
+    aiChatAck[r.id] = up ? AICHAT_ACK_UP : AICHAT_ACK_DOWN;
+    aiChatItems.unshift({id:r.id, ts:'', text, status:'new', reply:'', repliedAt:''});
+    aiChatRender();
+  }catch(e){
+    aiChatError(e.message||'送れませんでした');
+  }finally{ aiChatBusy = false; }
+}
+document.getElementById('aichatInput').addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.isComposing) aiChatSend(); });
 
 // ===== 起動 =====
 document.getElementById('tokenInput').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
