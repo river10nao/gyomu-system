@@ -5688,8 +5688,12 @@ function allocSplitMismatch(r){
   }));
   return bad;
 }
+// 振り分け表（印刷）用: 商品マスタから JAN と定価を引く（2026-10-05 なおさん指示。空なら —）
+function allocPrintJan_(pid){ const j=String((product(pid)||{})['JANコード']||'').trim(); return j ? esc(j) : '—'; }
+function allocPrintYen_(v){ v=num(v); return v ? '¥'+Math.round(v).toLocaleString() : '—'; }
+function allocPrintList_(pid){ return allocPrintYen_((product(pid)||{})['定価（税抜）']); }
 function allocPrint(batch){
-  // サロンごとの商品リスト形式（各サロンが何を何個か一目で分かる。検品時のチェック欄つき）
+  // サロンごとの商品リスト形式（各サロンが何を何個か一目で分かる）。JAN・定価・サロン価・仕入単価を載せ、✓欄は廃止（2026-10-05）
   // 印刷ページ内の「出力範囲」ボタンで 一括／ディーラー別 を切り替えられる（2026-07-29 ユーザー要望）
   // batch を渡すとその回の分だけ出す（発注を分けたときの確認用。2026-09-02 ユーザー要望）
   const brand = ALLOC.brand, r = ALLOC.result[brand];
@@ -5724,8 +5728,8 @@ function allocPrint(batch){
     const totalBuy = lines.reduce((a,x)=>a+x.qty*buyU(x.i.pid),0);
     addTot(names[supSid]||supSid||'（仕入先未選択）', totalQty, totalYen, totalBuy);
     return '<div class="salon" data-sup="'+esc(supSid)+'"><h2>'+esc(slotName(names, sid))+' <span class="sub">計 '+totalQty+'点 ／ サロン価 ¥'+Math.round(totalYen).toLocaleString()+'<span class="intonly"> ／ <b>仕入額 ¥'+Math.round(totalBuy).toLocaleString()+'</b></span>（税抜）'+(r.supSplit&&supSid?' ／ 仕入先: '+esc(names[supSid]||supSid):'')+'</span></h2>' +
-      '<table><tr><th>商品</th><th class="num">個数</th><th class="num">サロン価</th><th class="num intonly">仕入掛け率</th><th class="num intonly">仕入単価</th><th class="num intonly">仕入額</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
-      lines.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+(x.i.unit>1?'（'+x.i.unit+'個/箱）':'')+'</td><td class="num">'+x.qty+'</td><td class="num">¥'+Math.round(x.qty*x.i.price).toLocaleString()+'</td><td class="num intonly">'+buyRateTxt(x.i.pid, supSid, sid)+'</td><td class="num intonly">¥'+Math.round(buyU(x.i.pid)).toLocaleString()+'</td><td class="num intonly">¥'+Math.round(x.qty*buyU(x.i.pid)).toLocaleString()+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
+      '<table><tr><th class="jan">JAN</th><th>商品</th><th class="num">個数</th><th class="num">定価</th><th class="num">サロン価</th><th class="num">サロン価 計</th><th class="num intonly">仕入掛け率</th><th class="num intonly">仕入単価</th><th class="num intonly">仕入額</th></tr>' +
+      lines.map(x=>'<tr><td class="jan">'+allocPrintJan_(x.i.pid)+'</td><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+(x.i.unit>1?'（'+x.i.unit+'個/箱）':'')+'</td><td class="num">'+x.qty+'</td><td class="num">'+allocPrintList_(x.i.pid)+'</td><td class="num">'+allocPrintYen_(x.i.price)+'</td><td class="num">¥'+Math.round(x.qty*x.i.price).toLocaleString()+'</td><td class="num intonly">'+buyRateTxt(x.i.pid, supSid, sid)+'</td><td class="num intonly">¥'+Math.round(buyU(x.i.pid)).toLocaleString()+'</td><td class="num intonly">¥'+Math.round(x.qty*buyU(x.i.pid)).toLocaleString()+'</td></tr>').join('') +
       '</table></div>';
   }).join('');
   // 🤝外注仕入枠の分は外注先ごとに独立セクションで出す（外注先への共有・検品チェックにも使える。複数外注先対応 2026-07-18）
@@ -5737,14 +5741,14 @@ function allocPrint(batch){
     const omoney = ls.reduce((a,x)=>a+x.qty*allocRealUnit(x.i.pid, o.sid),0);
     addTot(oname, ls.reduce((a,x)=>a+x.qty,0), ls.reduce((a,x)=>a+x.qty*x.i.price,0), omoney);   // 外注枠の金額は元から仕入額
     return '<div class="salon" data-sup="out:'+esc(o.sid||'')+'"><h2>🤝 外注仕入: '+esc(oname)+' <span class="sub">計 '+ls.reduce((a,x)=>a+x.qty,0)+'点 ／ <b>仕入額 ¥'+Math.round(omoney).toLocaleString()+'</b>（外注先掛け率・税抜）</span></h2>' +
-    '<table><tr><th>商品</th><th class="num">個数</th><th class="num intonly">仕入掛け率</th><th class="num intonly">仕入単価</th><th class="num">仕入額</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
-    ls.map(x=>'<tr><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+'</td><td class="num">'+x.qty+'</td><td class="num intonly">'+buyRateTxt(x.i.pid, o.sid)+'</td><td class="num intonly">¥'+Math.round(allocRealUnit(x.i.pid, o.sid)).toLocaleString()+'</td><td class="num">¥'+Math.round(x.qty*allocRealUnit(x.i.pid, o.sid)).toLocaleString()+'</td><td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>').join('') +
+    '<table><tr><th class="jan">JAN</th><th>商品</th><th class="num">個数</th><th class="num">定価</th><th class="num">サロン価</th><th class="num intonly">仕入掛け率</th><th class="num intonly">仕入単価</th><th class="num">仕入額</th></tr>' +
+    ls.map(x=>'<tr><td class="jan">'+allocPrintJan_(x.i.pid)+'</td><td>'+esc(x.i.name)+' '+esc(x.i.size||'')+'</td><td class="num">'+x.qty+'</td><td class="num">'+allocPrintList_(x.i.pid)+'</td><td class="num">'+allocPrintYen_(x.i.price)+'</td><td class="num intonly">'+buyRateTxt(x.i.pid, o.sid)+'</td><td class="num intonly">¥'+Math.round(allocRealUnit(x.i.pid, o.sid)).toLocaleString()+'</td><td class="num">¥'+Math.round(x.qty*allocRealUnit(x.i.pid, o.sid)).toLocaleString()+'</td></tr>').join('') +
     '</table></div>'; }).join('');
-  // 📦余剰在庫からの充当分（回収・検品はスキップしてロット処理から始まるため、チェック欄はロットのみ 2026-07-18）
+  // 📦余剰在庫からの充当分（仕入なし。チェック欄は 2026-10-05 に全表から廃止）
   const stocks = (b!=null && b>0) ? [] : (r.stock || []);   // 在庫充当は分けない（1回目にまとめる）
   const stockSection = stocks.length ? '<div class="salon" data-sup="stock"><h2>📦 余剰在庫から充当 <span class="sub">計 '+stocks.reduce((a,x)=>a+x.qty,0)+'点（仕入れなし・手元在庫から出荷）</span></h2>' +
-    '<table><tr><th>商品</th><th>引当元ロット</th><th class="num">個数</th><th class="chk">ロット✓</th></tr>' +
-    stocks.map(x=>'<tr><td>'+esc(x.name)+' '+esc(x.size||'')+'</td><td>'+esc(x.zid)+'</td><td class="num">'+x.qty+'</td><td class="chk">□</td></tr>').join('') +
+    '<table><tr><th class="jan">JAN</th><th>商品</th><th>引当元ロット</th><th class="num">個数</th><th class="num">定価</th><th class="num">サロン価</th></tr>' +
+    stocks.map(x=>'<tr><td class="jan">'+allocPrintJan_(x.pid)+'</td><td>'+esc(x.name)+' '+esc(x.size||'')+'</td><td>'+esc(x.zid)+'</td><td class="num">'+x.qty+'</td><td class="num">'+allocPrintList_(x.pid)+'</td><td class="num">'+allocPrintYen_(salonCost(x.pid))+'</td></tr>').join('') +
     '</table></div>' : '';
   // 仕入先ごとの合計（確定後PDFと同じ。社内用なので intonly）
   const supSummary = Object.keys(SUPTOT).length ? '<div class="intonly" style="margin:10px 0 14px"><table style="width:auto;min-width:420px">' +
@@ -5799,7 +5803,7 @@ function allocPrint(batch){
   const w = window.open('', '_blank');
   w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(brand)+' サロン振り分け'+esc(batchLabel)+'</title>' +
     '<style>body{font-family:"Hiragino Sans",sans-serif;font-size:12px;margin:24px}h1{font-size:16px}h2{font-size:14px;margin:18px 0 6px;border-left:4px solid #333;padding-left:8px}h2 .sub{font-size:11px;font-weight:normal;color:#555}' +
-    'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:5px 8px;text-align:left}td.num,th.num{text-align:right;white-space:nowrap}td.chk,th.chk{text-align:center;width:40px;padding:5px 3px}th.chk{font-size:10px}th{background:#f2f2f2;white-space:nowrap}' +
+    'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:5px 8px;text-align:left}td.num,th.num{text-align:right;white-space:nowrap}td.jan,th.jan{font-family:Menlo,monospace;font-size:11px;white-space:nowrap;color:#444}th{background:#f2f2f2;white-space:nowrap}' +
     '.salon{margin-bottom:10px}tr{page-break-inside:avoid}h2{page-break-after:avoid}@page{size:A4 portrait;margin:12mm}@media print{button,.no-print{display:none}}</style></head><body>' +
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
     toolbar +
@@ -5850,13 +5854,14 @@ function allocPrintDone(brand, kidsCsv, opts){
     const sup = isStock ? '📦 余剰在庫（仕入なし）' : (String(rs[0]['仕入先名']||'').trim() || '（仕入先未記録）');
     TOT[sup]=TOT[sup]||{q:0,y:0,b:0}; TOT[sup].q+=totalQty; TOT[sup].y+=totalYen; TOT[sup].b+=totalBuy;
     return '<div class="salon" data-sup="'+esc(sup)+'"><h2>'+esc(rs[0]['サロン名']||'')+' <span class="sub">'+esc(kid)+' ／ 計 '+totalQty+'点 ／ サロン価 ¥'+Math.round(totalYen).toLocaleString()+(isStock?'':' <span class="intonly">／ <b>仕入額 ¥'+Math.round(totalBuy).toLocaleString()+'</b></span>')+'（税抜）'+(sup?' ／ 仕入先: '+esc(sup):'')+'</span></h2>' +
-      '<table><tr><th>商品</th><th class="num">個数</th><th class="num">サロン価</th><th class="num intonly">仕入単価</th><th class="num intonly">仕入額</th><th class="chk">回収✓</th><th class="chk">検品✓</th><th class="chk">ロット✓</th></tr>' +
-      rs.map(r=>{ const q=num(r['個数']), u=buyOf(r);
-        return '<tr><td>'+esc(r['商品名'])+' '+esc(r['容量']||'')+'</td><td class="num">'+q+'</td>' +
-        '<td class="num">¥'+Math.round(q*salonCost(r['商品ID'])).toLocaleString()+'</td>' +
+      '<table><tr><th class="jan">JAN</th><th>商品</th><th class="num">個数</th><th class="num">定価</th><th class="num">サロン価</th><th class="num">サロン価 計</th><th class="num intonly">仕入単価</th><th class="num intonly">仕入額</th></tr>' +
+      rs.map(r=>{ const q=num(r['個数']), u=buyOf(r), pid=String(r['商品ID']||'').trim();
+        return '<tr><td class="jan">'+allocPrintJan_(pid)+'</td><td>'+esc(r['商品名'])+' '+esc(r['容量']||'')+'</td><td class="num">'+q+'</td>' +
+        '<td class="num">'+allocPrintList_(pid)+'</td>' +
+        '<td class="num">'+allocPrintYen_(salonCost(pid))+'</td>' +
+        '<td class="num">¥'+Math.round(q*salonCost(pid)).toLocaleString()+'</td>' +
         '<td class="num intonly">'+(isStock?'—':'¥'+Math.round(u).toLocaleString())+'</td>' +
-        '<td class="num intonly">'+(isStock?'—':'¥'+Math.round(q*u).toLocaleString())+'</td>' +
-        '<td class="chk">□</td><td class="chk">□</td><td class="chk">□</td></tr>'; }).join('') +
+        '<td class="num intonly">'+(isStock?'—':'¥'+Math.round(q*u).toLocaleString())+'</td></tr>'; }).join('') +
       '</table></div>';
   }).join('');
   // 仕入先ごとの仕入額合計（社内用。先頭に出す）
@@ -5884,7 +5889,7 @@ function allocPrintDone(brand, kidsCsv, opts){
     'pick("");<\/script>';
   const head = '<!doctype html><html><head><meta charset="utf-8"><title>'+esc(brand)+' サロン振り分け</title>' +
     '<style>body{font-family:"Hiragino Sans",sans-serif;font-size:12px;margin:24px}h1{font-size:16px}h2{font-size:14px;margin:18px 0 6px;border-left:4px solid #333;padding-left:8px}h2 .sub{font-size:11px;font-weight:normal;color:#555}' +
-    'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:5px 8px;text-align:left}td.num,th.num{text-align:right;white-space:nowrap}td.chk,th.chk{text-align:center;width:40px;padding:5px 3px}th.chk{font-size:10px}th{background:#f2f2f2;white-space:nowrap}' +
+    'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:5px 8px;text-align:left}td.num,th.num{text-align:right;white-space:nowrap}td.jan,th.jan{font-family:Menlo,monospace;font-size:11px;white-space:nowrap;color:#444}th{background:#f2f2f2;white-space:nowrap}' +
     '.salon{margin-bottom:10px}tr{page-break-inside:avoid}h2{page-break-after:avoid}@page{size:A4 portrait;margin:12mm}@media print{button,.no-print{display:none}}</style></head><body>';
   const core =
     '<h1>'+esc(brand)+' サロン振り分け表<span id="supTag"></span>（'+today()+'）</h1>' +
