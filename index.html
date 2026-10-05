@@ -118,6 +118,13 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 .aichat-in input{flex:1;border:1px solid var(--grid);border-radius:8px;padding:8px 10px;background:var(--page);color:var(--ink);font-size:13px;min-width:0}
 .aichat-in button{border:0;background:var(--accent);color:#fff;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer}
 .aichat-err{color:var(--crit);font-size:12px;padding:0 14px 6px;display:none}
+.aichat-files{display:none;flex-wrap:wrap;gap:6px;padding:0 12px 6px}
+.aichat-chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;font-size:12px;border:1px solid var(--grid);border-radius:999px;padding:2px 6px 2px 10px;background:var(--page);color:var(--ink)}
+.aichat-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+.aichat-chip small{color:var(--muted)}
+.aichat-chip button{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:0 2px}
+.aichat-clip{border:1px solid var(--grid)!important;background:var(--page)!important;color:var(--ink)!important;padding:8px 10px!important;font-weight:400!important}
+.aichat-att{align-self:flex-end;font-size:11px;color:var(--muted);margin:-4px 2px 2px 0;max-width:85%;text-align:right;word-break:break-all}
 .aichat-note{font-size:12px;color:var(--muted);padding:0 14px 10px}
 @media (max-width:760px){
   .aichat-fab{right:14px;bottom:70px}           /* 下のタブバー（#mnav）にかぶらない位置 */
@@ -218,7 +225,8 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
   <div class="aichat-head">💬 <b>AI窓口</b><button class="aichat-x" onclick="aiChatToggle()" aria-label="閉じる">✕</button></div>
   <div class="aichat-msgs" id="aichatMsgs"></div>
   <div class="aichat-err" id="aichatErr"></div>
-  <div class="aichat-in"><input id="aichatInput" maxlength="500" placeholder="質問を書く（1回1つ・500字まで）"><button onclick="aiChatSend()">送る</button></div>
+  <div class="aichat-files" id="aichatFiles"></div>
+  <div class="aichat-in"><button class="aichat-clip" onclick="document.getElementById('aichatFile').click()" title="ファイルを付ける（PDF・Excel・CSV・画像。3つまで・1つ8MBまで）" aria-label="ファイルを付ける">📎</button><input type="file" id="aichatFile" multiple accept=".pdf,.xlsx,.csv,.png,.jpg,.jpeg" style="display:none" onchange="aiChatPickFiles(this)"><input id="aichatInput" maxlength="500" placeholder="質問を書く（1回1つ・500字まで）"><button id="aichatSendBtn" onclick="aiChatSend()">送る</button></div>
   <div class="aichat-note">返事はあなたにだけ表示されます。</div>
 </div>
 
@@ -7018,7 +7026,11 @@ const AICHAT_POLL_MS = 15000;                       // 窓が開いている間�
 const AICHAT_INTRO = '使い方の質問と、金額の確認ができます。データの変更はできません。';
 const AICHAT_ACK_UP = 'いま確認しています。1〜2分で回答します。';
 const AICHAT_ACK_DOWN = '受け付けました。少し時間をいただきます。';
+// 添付（2026-10-05）: 形式・件数・大きさは送る前にここで止める（サーバー側でも同じ検証をしている）
+const AICHAT_FILE_MAX = 3, AICHAT_FILE_BYTES = 8 * 1024 * 1024;
+const AICHAT_FILE_EXT = ['pdf', 'xlsx', 'csv', 'png', 'jpg', 'jpeg'];
 let aiChatOpen = false, aiChatTimer = null, aiChatItems = [], aiChatBusy = false;
+let aiChatFiles = [];   // 送る前に選んだ File（チップ表示。送ったら空にする）
 const aiChatAck = {};   // 送った直後の受付文（質問ID→文言。この表示の間だけ）
 
 // 書き込みの共通ガード（最新データ読み込み中は保存不可）はチャットには関係ないので、直接送る
@@ -7069,6 +7081,7 @@ function aiChatRender(){
   for(const it of items){
     if(it.user) html += '<div class="aichat-who">'+esc(it.user)+'</div>';   // 管理者だけ全員分が返るので誰の質問か出す
     html += '<div class="aichat-m aichat-me">'+esc(it.text)+'</div>';
+    if(it.files && it.files.length) html += '<div class="aichat-att">📎 '+it.files.map(f=>esc(f.name)+(f.size?' ('+aiChatFmtSize(f.size)+')':'')).join('、')+'</div>';
     if(aiChatAnswered(it)){
       html += '<div class="aichat-m aichat-ai">'+esc(it.reply||'うまく答えられませんでした。もう一度、具体的に聞いてください。')+'</div>';
       if(!seen.has(it.id)){ seen.add(it.id); changed = true; }
@@ -7084,6 +7097,42 @@ function aiChatError(msg){
   const el = document.getElementById('aichatErr');
   el.textContent = msg||''; el.style.display = msg ? 'block' : 'none';
 }
+function aiChatFmtSize(n){ n = Number(n)||0; return n>=1024*1024 ? (n/1024/1024).toFixed(1)+'MB' : Math.max(1, Math.round(n/1024))+'KB'; }
+function aiChatFileExt(name){ const m = String(name||'').toLowerCase().match(/\.([a-z0-9]+)$/); return m ? m[1] : ''; }
+// 📎 で選んだファイルを検査して、通ったものだけチップに足す（accept は目安。ここで形式・大きさ・件数を見る）
+function aiChatPickFiles(input){
+  const picked = Array.from(input.files||[]); input.value = '';
+  const bad = [];
+  for(const f of picked){
+    if(!AICHAT_FILE_EXT.includes(aiChatFileExt(f.name))){ bad.push(f.name+'：PDF・Excel(xlsx)・CSV・PNG・JPG だけ付けられます'); continue; }
+    if(f.size>AICHAT_FILE_BYTES){ bad.push(f.name+'：1つ 8MB までです（'+aiChatFmtSize(f.size)+'）'); continue; }
+    if(f.size===0){ bad.push(f.name+'：中身が空です'); continue; }
+    if(aiChatFiles.some(x=>x.name===f.name && x.size===f.size)) continue;   // 同じものは1回だけ
+    if(aiChatFiles.length>=AICHAT_FILE_MAX){ bad.push('付けられるのは '+AICHAT_FILE_MAX+' つまでです'); break; }
+    aiChatFiles.push(f);
+  }
+  if(bad.length) toast(bad[0], true);
+  aiChatRenderFiles();
+}
+function aiChatRemoveFile(i){ aiChatFiles.splice(i, 1); aiChatRenderFiles(); }
+function aiChatRenderFiles(){
+  const box = document.getElementById('aichatFiles'); if(!box) return;
+  box.style.display = aiChatFiles.length ? 'flex' : 'none';
+  box.innerHTML = aiChatFiles.map((f,i)=>'<span class="aichat-chip" title="'+esc(f.name)+'"><span>'+esc(f.name)+'</span><small>'+aiChatFmtSize(f.size)+'</small>'
+    +'<button type="button" onclick="aiChatRemoveFile('+i+')" aria-label="外す"'+(aiChatBusy?' disabled':'')+'>✕</button></span>').join('');
+}
+function aiChatReadB64(file){
+  return new Promise((ok, ng)=>{
+    const rd = new FileReader();
+    rd.onload = ()=>ok(String(rd.result||'').replace(/^data:[^,]*,/, ''));
+    rd.onerror = ()=>ng(new Error(file.name+' を読めませんでした'));
+    rd.readAsDataURL(file);
+  });
+}
+function aiChatSending(msg){   // 送信中の表示（送るボタンの文言を変える。終わったら戻す）
+  const b = document.getElementById('aichatSendBtn'); if(!b) return;
+  b.disabled = !!msg; b.textContent = msg || '送る';
+}
 async function aiChatSend(){
   if(aiChatBusy) return;
   const inp = document.getElementById('aichatInput');
@@ -7091,19 +7140,31 @@ async function aiChatSend(){
   aiChatError('');
   if(!text){ aiChatError('質問を書いてください'); return; }
   if(text.length>500){ aiChatError('500字までにしてください'); return; }
-  aiChatBusy = true;
+  if(aiChatFiles.length>AICHAT_FILE_MAX){ aiChatError('ファイルは '+AICHAT_FILE_MAX+' つまでです'); return; }
+  aiChatBusy = true; aiChatRenderFiles();
   try{
-    const r = await aiChatPost('aiAsk', {text});
-    inp.value = '';
+    // ① 添付を1つずつ先に上げる（大きいので1回の送信にまとめない）。途中で失敗したら質問は送らず、チップは残す
+    const fileIds = [], sent = [];
+    for(let i=0;i<aiChatFiles.length;i++){
+      const f = aiChatFiles[i];
+      aiChatSending('ファイルを送っています… ('+(i+1)+'/'+aiChatFiles.length+')');
+      const b64 = await aiChatReadB64(f);
+      const u = await aiChatPost('aiUpload', {name:f.name, size:f.size, type:f.type||'', b64});
+      fileIds.push(u.fileId); sent.push({name:u.name, size:u.size, type:u.type});
+    }
+    // ② 質問本文と fileId を送る
+    aiChatSending('送っています…');
+    const r = await aiChatPost('aiAsk', fileIds.length ? {text, fileIds} : {text});
+    inp.value = ''; aiChatFiles = [];
     // 送れたら、見回り役が動いているかを1回だけ確かめて受付文を決める（固定文・時刻は出さない）
     let up = false;
     try{ const st = await apiGet('aiStatus'); up = !!(st && st.up); }catch(e){}
     aiChatAck[r.id] = up ? AICHAT_ACK_UP : AICHAT_ACK_DOWN;
-    aiChatItems.unshift({id:r.id, ts:'', text, status:'new', reply:'', repliedAt:''});
+    aiChatItems.unshift({id:r.id, ts:'', text, status:'new', reply:'', repliedAt:'', files:(r.files||sent)});
     aiChatRender();
   }catch(e){
     aiChatError(e.message||'送れませんでした');
-  }finally{ aiChatBusy = false; }
+  }finally{ aiChatBusy = false; aiChatSending(''); aiChatRenderFiles(); }
 }
 document.getElementById('aichatInput').addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.isComposing) aiChatSend(); });
 
