@@ -3139,7 +3139,7 @@ function newOrderForm(){
   const rws = viewState.noRows||[];
   let sub=0;
   const gridRows = rws.map((r,i)=>{
-    const unit = (r.rate!=='' && r.list) ? Math.round(r.list*num(r.rate)) : 0;
+    const unit = noUnitOf(r);
     const s = unit * (num(r.qty)||0); sub += s;
     return '<tr'+(r.pid?'':' style="color:var(--crit)"')+'><td class="mono small">'+esc(r.jan)+'</td><td>'+esc(r.name)+'</td><td class="small">'+esc(r.size)+'</td>' +
       '<td class="num">'+yen(r.list)+'</td>' +
@@ -3221,15 +3221,20 @@ function noApplyRates(){
   });
   render();
 }
+// 明細1行の卸値（税抜）。定価売りは掛け率を見ず定価そのもの（表示・送信・学習で同じ判定を使う）
+function noUnitOf(r){
+  if(poFixed(product(r.pid))) return Math.round(num(r.list));
+  return (r.rate!=='' && r.list) ? Math.round(r.list*num(r.rate)) : 0;
+}
 function noRecalcRow(i){
   const r = viewState.noRows[i];
-  const unit = (r.rate!=='' && r.list) ? Math.round(r.list*num(r.rate)) : 0;
+  const unit = noUnitOf(r);
   const s = unit * (num(r.qty)||0);
   const u = document.getElementById('noUnit'+i); if(u) u.textContent = yen(unit);
   const c = document.getElementById('noSubC'+i); if(c) c.textContent = yen(s);
   let sub=0;
   viewState.noRows.forEach(rr=>{
-    const uu = (rr.rate!=='' && rr.list) ? Math.round(rr.list*num(rr.rate)) : 0;
+    const uu = noUnitOf(rr);
     sub += uu * (num(rr.qty)||0);
   });
   const ts = document.getElementById('noTotalSub'); if(ts) ts.textContent = yen(sub);
@@ -3263,6 +3268,10 @@ async function noSubmit(){
   const wid = viewState.noW || document.getElementById('noW').value;
   if(!wid){ toast('卸先を選択してください', true); return; }
   const w = rows('wholesalers').find(x=>String(x['卸先ID']).trim()===wid);
+  // 送信直前に定価売りを再判定して掛け率を1に正規化（表示・送信・学習の判定を一致させる。2026-10-07 Codexレビュー対応）
+  (viewState.noRows||[]).forEach(r=>{ if(r.pid && poFixed(product(r.pid))) r.rate = '1'; });
+  const fixedNoList = (viewState.noRows||[]).filter(r=>r.pid && num(r.qty)>0 && poFixed(product(r.pid)) && num(r.list)<=0).length;
+  if(fixedNoList){ toast('定価売りで定価が0の明細があります（'+fixedNoList+'件）。商品マスタの定価を確認してください', true); return; }
   const items = (viewState.noRows||[]).filter(r=>r.pid && num(r.qty)>0).map(r=>({
     '商品ID':r.pid, '商品名':r.name, '容量':r.size, '個数':num(r.qty),
     '定価（税抜）':r.list, '掛け率':num(r.rate)
