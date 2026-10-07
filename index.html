@@ -3143,7 +3143,9 @@ function newOrderForm(){
     const s = unit * (num(r.qty)||0); sub += s;
     return '<tr'+(r.pid?'':' style="color:var(--crit)"')+'><td class="mono small">'+esc(r.jan)+'</td><td>'+esc(r.name)+'</td><td class="small">'+esc(r.size)+'</td>' +
       '<td class="num">'+yen(r.list)+'</td>' +
-      '<td class="vline"><input data-i="'+i+'" value="'+(r.rate!==''?Math.round(num(r.rate)*1000)/10:'')+'" style="width:64px;padding:4px 8px" oninput="noRateInput('+i+',this.value)"></td>' +
+      '<td class="vline">'+(poFixed(product(r.pid))
+        ? '<input data-i="'+i+'" value="100" disabled title="定価売り（掛け率は使わず卸値＝定価）" style="width:64px;padding:4px 8px"><span class="small muted"> 定価</span>'
+        : '<input data-i="'+i+'" value="'+(r.rate!==''?Math.round(num(r.rate)*1000)/10:'')+'" style="width:64px;padding:4px 8px" oninput="noRateInput('+i+',this.value)">')+'</td>' +
       '<td class="num" id="noUnit'+i+'">'+yen(unit)+'</td>' +
       '<td><input class="noQty" data-i="'+i+'" type="text" inputmode="numeric" value="'+esc(r.qty||'')+'" style="width:64px;padding:4px 8px" oninput="noQtyInput('+i+',this.value)" onpaste="noQtyPaste(event,'+i+')"></td>' +
       '<td class="num" id="noSubC'+i+'">'+yen(s)+'</td></tr>';
@@ -3202,8 +3204,9 @@ function noExpand(){
       : (jan ? rows('products').find(pp=>String(pp['JANコード']||'').replace(/\D/g,'')===jan) : null);
     if(!p) return {jan: raw, pid:'', name:'⚠ 未登録（商品マスタにJAN/商品IDが見つかりません）', size:'', list:0, rate:'', qty};
     const brand = String(p['ブランド']||p['カテゴリー']||'').trim();
+    // 定価売り（ポンプ等）は卸先の掛け率を使わず 100%（卸値＝定価）。発注書 poFixed と同じ判定（2026-10-07 なおさん承認）
     return {jan, pid:String(p['商品ID']).trim(), name:p['商品名'], size:p['容量']||'',
-      list:num(p['定価（税抜）']), rate: wid ? rateFor(wid, brand) : '', qty};
+      list:num(p['定価（税抜）']), rate: poFixed(p) ? '1' : (wid ? rateFor(wid, brand) : ''), qty};
   });
   render();
 }
@@ -3212,6 +3215,7 @@ function noApplyRates(){
   (viewState.noRows||[]).forEach(r=>{
     if(!r.pid) return;
     const p = product(r.pid);
+    if(poFixed(p)){ r.rate = '1'; return; }   // 定価売りは卸先を変えても100%のまま
     const brand = p ? String(p['ブランド']||p['カテゴリー']||'').trim() : '';
     r.rate = viewState.noW ? rateFor(viewState.noW, brand) : '';
   });
@@ -3238,7 +3242,9 @@ function noFormToggle(name, on){
   render();
 }
 // 掛け率は％で入力（65 → 0.65）。移行期の小数入力（0.65）もそのまま受ける（1以下は小数とみなす）
-function noRateInput(i, v){ const n=num(v); viewState.noRows[i].rate = v==='' ? '' : (n>1 ? String(n/100) : String(n)); noRecalcRow(i); }
+function noRateInput(i, v){
+  if(poFixed(product(viewState.noRows[i].pid))){ viewState.noRows[i].rate = '1'; noRecalcRow(i); return; }   // 定価売りは常に100%
+  const n=num(v); viewState.noRows[i].rate = v==='' ? '' : (n>1 ? String(n/100) : String(n)); noRecalcRow(i); }
 // 数量マスに複数行を貼ったら、そこから下の行へ順に流し込む
 function noQtyPaste(e, i){
   const text = (e.clipboardData||window.clipboardData).getData('text');
@@ -3272,7 +3278,7 @@ async function noSubmit(){
   const rateLearn = (()=>{
     const byBrand = {};
     (viewState.noRows||[]).forEach(r=>{
-      if(!r.pid || num(r.qty)<=0) return;
+      if(!r.pid || num(r.qty)<=0 || poFixed(product(r.pid))) return;   // 定価売りの100%はブランド掛け率として覚えない
       const b = brandOf(r.pid); const v = num(r.rate);
       if(!b || !(v>0)) return;
       (byBrand[b] = byBrand[b] || new Set()).add(v);
@@ -3319,7 +3325,7 @@ function editOrderUI(oid){
     const pid = String(r['商品ID']||'').trim();
     const p = product(pid)||{};
     return {jan: String(p['JANコード']||'').trim()||pid, pid, name: String(r['商品名']||''), size: String(r['容量']||''),
-      list: num(r['定価（税抜）']), rate: String(num(r['掛け率'])||''), qty: String(num(r['個数'])||'')};
+      list: num(r['定価（税抜）']), rate: poFixed(p) ? '1' : String(num(r['掛け率'])||''), qty: String(num(r['個数'])||'')};   // 定価売りは編集で開いた時点で100%に直す
   });
   // JAN/数量枠にも既存明細を入れておく（商品を追加したいときは枠に足して「③展開」を押し直す）
   viewState.noJansTxt = viewState.noRows.map(r=>r.jan).join('\n');
