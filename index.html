@@ -315,12 +315,20 @@ let viewState = {};     // 画面ごとのタブ・検索など
 let selMonth = new Date().toLocaleDateString('sv-SE').slice(0,7).replace('-','/');
 
 // ===== API =====
-async function apiGet(action, params){
+async function apiGet(action, params, timeoutMs){
   const q = new URLSearchParams(Object.assign({action, token}, params||{}));
-  const res = await fetch(GAS_URL + '?' + q.toString());
-  const j = await res.json();
-  if(!j.ok) throw new Error(j.error);
-  return j.data;
+  // timeoutMs: 指定時だけ打ち切る（応答が返らないまま待ち続けないように）
+  const ctl = timeoutMs ? new AbortController() : null;
+  const timer = ctl ? setTimeout(()=>ctl.abort(), timeoutMs) : null;
+  try{
+    const res = await fetch(GAS_URL + '?' + q.toString(), ctl ? {signal: ctl.signal} : undefined);
+    const j = await res.json();
+    if(!j.ok) throw new Error(j.error);
+    return j.data;
+  }catch(e){
+    if(ctl && ctl.signal.aborted) throw new Error('時間内に応答がありませんでした。もう一度お試しください');
+    throw e;
+  }finally{ if(timer) clearTimeout(timer); }
 }
 async function apiPost(action, payload, refresh){
   // 起動直後の裏読み込み中（スナップショット表示中）は書き込みさせない（古いデータを見たまま操作する事故防止）
@@ -2338,18 +2346,23 @@ async function openDocPdf(u, w, auto){
   if(!w) w = docPendingWindow('開いています…');
   if(!w){ docOpening.delete(v); toast('新しいタブを開けませんでした（ポップアップのブロックを解除してください）', true); return; }
   toast('PDFを開いています…');
+  let url = null, shown = false;
   try{
-    const d = await apiGet('docFile', {url: v});
+    const d = await apiGet('docFile', {url: v}, 60000);   // 60秒で打ち切り（待ちのタブと二重押し防止が残り続けないように）
     const bytes = Uint8Array.from(atob(d.base64), c=>c.charCodeAt(0));
-    const url = URL.createObjectURL(new Blob([bytes], {type: 'application/pdf'}));   // 型は常にPDF固定
-    if(w.closed){ toast('タブが閉じられたため表示を中止しました', true); URL.revokeObjectURL(url); return; }
+    url = URL.createObjectURL(new Blob([bytes], {type: 'application/pdf'}));   // 型は常にPDF固定
+    if(w.closed){ toast('タブが閉じられたため表示を中止しました', true); return; }
     try{ w.opener = null; }catch(e){}
     w.location.href = url;
-    setTimeout(()=>URL.revokeObjectURL(url), 10*60*1000);
+    shown = true;
   }catch(e){
     try{ w.close(); }catch(e2){}
     toast('PDFを開けませんでした: '+(e.message||e), true);
-  }finally{ docOpening.delete(v); }
+  }finally{
+    docOpening.delete(v);
+    // 表示できたらタブが読み終わる頃（10分後）に、表示できなかったらすぐに解放する
+    if(url){ const u2 = url; setTimeout(()=>{ try{ URL.revokeObjectURL(u2); }catch(e){} }, shown ? 10*60*1000 : 0); }
+  }
 }
 function docByNo(docNo){ const n=String(docNo||'').trim(); return n ? rows('docLog').find(d=>String(d['管理番号']||'').trim()===n) : null; }
 // 受注ID → {st, pay, via}（要対応の表示用。vDashboard の oInfo と同じ内容）
