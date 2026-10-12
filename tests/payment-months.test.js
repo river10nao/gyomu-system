@@ -10,6 +10,7 @@ process.stdin.on('end', () => {
   if (!response.ok) throw new Error(response.error);
   const payload = response.data || {};
   const names = (payload.whoami && payload.whoami.names) || {};
+  const who = payload.whoami || {};   // 支払先コード等もログイン応答から受け取る
   delete payload.whoami;
 
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
@@ -40,11 +41,12 @@ process.stdin.on('end', () => {
     window: {scrollTo() {}, open() { return null; }},
     location: {reload() {}},
     inputData: payload,
-    inputNames: names
+    inputNames: names,
+    inputWho: who
   };
   vm.createContext(ctx);
   vm.runInContext(script, ctx);
-  vm.runInContext('Object.assign(DB,inputData); NM=inputNames;', ctx);
+  vm.runInContext('Object.assign(DB,inputData); NM=inputNames; applyServerConf(inputWho); NM=inputNames;', ctx);
 
   const result = vm.runInContext(`(()=>{
     const lines=Object.values(collectSupplierLines(null).bySup).flat();

@@ -362,10 +362,26 @@ async function doLogin(){
   try{ r = await whoami(t); }
   catch(e){ msg.textContent = '通信エラー。少し待ってやり直してください'; return; }
   if(!r){ msg.textContent = '合言葉が違います'; return; }
-  token = t; role = r.role; userName = r.name || ''; if(r.names) NM = r.names; if(r.coopOff) COOP_OFF = r.coopOff; localStorage.setItem('gyomu_biz_token', t);
+  token = t; role = r.role; userName = r.name || ''; applyServerConf(r); localStorage.setItem('gyomu_biz_token', t);
   msg.textContent = '';
   boot();
 }
+// ログイン応答（whoami）の設定値を取り込む。文字列・数値だけを受け取り、形が違う値は無視する
+function applyServerConf(r){
+  if(!r) return;
+  if(r.names) NM = r.names;
+  if(r.coopOff) COOP_OFF = r.coopOff;
+  const str = v=> (typeof v==='string' && v.trim()) ? v.trim() : undefined;
+  const rate = v=> (typeof v==='number' && isFinite(v) && v>0 && v<1) ? v : undefined;
+  // 一部だけ届いた状態（IDだけで率が無い等）は使わない＝全部そろった時だけ反映
+  const p = r.payIds || {}, ids = [str(p.pure), str(p.broker), str(p.maverick)];
+  if(ids.every(Boolean)){ PAYIDS.pure = ids[0]; PAYIDS.broker = ids[1]; PAYIDS.maverick = ids[2]; }
+  const b = r.boxDiff || {}, sid = str(b.sid), pr = rate(b.pureRate), br = rate(b.buyRate);
+  if(sid && pr!=null && br!=null && br>pr){ MIRA_NAP.sid = sid; MIRA_NAP.pureRate = pr; MIRA_NAP.buyRate = br; }
+  if(!payConfReady()) setTimeout(()=>toast('支払い設定を読み込めませんでした。支払いの金額は正しくありません。再読み込みしてください', true), 0);
+}
+// 支払い計算に必要な設定値がそろっているか（そろっていなければ支払い画面で警告を出す）
+function payConfReady(){ return !!(PAYIDS.pure && PAYIDS.broker && PAYIDS.maverick && MIRA_NAP.sid && MIRA_NAP.pureRate!=null && MIRA_NAP.buyRate!=null); }
 function logout(){ localStorage.removeItem('gyomu_biz_token'); localStorage.removeItem('gyomu_biz_snap'); location.reload(); }
 
 // ===== 表示モード（ライト / ダーク / 自動=OS設定。端末ごとに記憶・既定はライト 2026-07-18 ユーザー指定） =====
@@ -393,7 +409,7 @@ async function boot(){
     // 合言葉が無効なときだけ消す。通信エラー（電波不良・GAS一時不調）では合言葉を保持して再試行画面を出す
     let r = null, netFail = false;
     try{ r = await whoami(token); }catch(e){ netFail = true; }
-    if(r){ role = r.role; userName = r.name || ''; if(r.names) NM = r.names; if(r.coopOff) COOP_OFF = r.coopOff; }
+    if(r){ role = r.role; userName = r.name || ''; applyServerConf(r); }
     else if(!netFail){ token=''; localStorage.removeItem('gyomu_biz_token'); }
     else{
       document.getElementById('loadbox').style.display='flex';
@@ -933,7 +949,7 @@ function fixedBuyUnit(pid){ const v = num((product(pid)||{})[FIXED_BUY_COL]); re
 function buyUnitOf(pid, supId, supRow, brand, row){
   if(isMiraNap(row, supId, brand)){
     const l0 = num((product(pid)||{})['定価（税抜）']);
-    return {unit:l0*MIRA_NAP.buyRate, src:'掛け率', note:'MIRA買取50%', rate:MIRA_NAP.buyRate, miraNap:true};
+    return {unit:l0*MIRA_NAP.buyRate, src:'掛け率', note:'MIRA買取'+miraPct.buy, rate:MIRA_NAP.buyRate, miraNap:true};
   }
   const led = row ? num(row[BUY_UNIT_COL]) : 0;
   if(led>0) return {unit:led, src:'台帳', note:''};
@@ -956,8 +972,13 @@ function buyUnitOf(pid, supId, supRow, brand, row){
 // ===== 画面: 💰支払い（支払先ごとの支払予定と根拠明細。Task#22 Phase②・2026-07-18） =====
 // 計上ルール: 仕入=回収台帳の生存行（振り分け・外注仕入）。計上日=対象受注の📦発注日（未入力は振分確定日で仮計上・「仮」表示）
 // 単価: 仕入先（サロンマスタのディーラー/外注行）の掛け率列×定価。率が無い商品は商品マスタの仕入価格で仮単価
-const PAYIDS = { pure:'S0014', broker:'S0021', maverick:'S0022' };
-const MIRA_NAP = { sid:'S0078', get brand(){ return String(NM.boxBrand||'').trim(); }, pureRate:0.43, buyRate:0.50 };   // brand=箱単位ブランド（ログイン後に注入）
+// 支払先コードと差額払いの率はコードに直書きせず、ログイン成功時にサーバーから受け取る（applyServerConf）。
+// 届くまでは undefined のまま: ID比較は一致せず、該当の明細は作られない
+const PAYIDS = { pure:undefined, broker:undefined, maverick:undefined };
+const MIRA_NAP = { sid:undefined, get brand(){ return String(NM.boxBrand||'').trim(); }, pureRate:undefined, buyRate:undefined };   // brand=箱単位ブランド（ログイン後に注入）
+const pctTxt = r=> (typeof r==='number' && isFinite(r)) ? (Math.round(r*1000)/10)+'%' : '—';
+const miraPct = { get pure(){ return pctTxt(MIRA_NAP.pureRate); }, get buy(){ return pctTxt(MIRA_NAP.buyRate); },
+  get diff(){ return (typeof MIRA_NAP.buyRate==='number' && typeof MIRA_NAP.pureRate==='number') ? pctTxt(Math.round((MIRA_NAP.buyRate-MIRA_NAP.pureRate)*1000)/1000) : '—'; } };
 const isMiraNap = (row, supId, brand)=> !!row && supId===PAYIDS.pure && String(row['サロンID']||'').trim()===MIRA_NAP.sid && String(brand||'').trim()===MIRA_NAP.brand;
 const BROKER_RATE = 0.02;
 const BROKER_RATE_BY_BRAND = { 'モデニカ': 0.025 };
@@ -1041,8 +1062,8 @@ function collectSupplierLines(inMonthFn, allMonths){
       salon:String(r['サロン名']||''), brand, name:String(r['商品名']||''), size:String(r['容量']||''), qty, unit, unitNote,
       amt:unit*qty, listAmt:list*qty, isOut:String(r['区分']||'').trim()==='外注'};
     if(u.miraNap || isMiraNap(r, supId, brand)){
-      Object.assign(line, {miraNap:true, list, u43:list*MIRA_NAP.pureRate, u50:list*MIRA_NAP.buyRate, unit:list*(MIRA_NAP.buyRate-MIRA_NAP.pureRate),
-        amt:list*(MIRA_NAP.buyRate-MIRA_NAP.pureRate)*qty, unitNote:'差額 定価×7%'});
+      Object.assign(line, {miraNap:true, list, uPure:list*MIRA_NAP.pureRate, uBuy:list*MIRA_NAP.buyRate, unit:list*(MIRA_NAP.buyRate-MIRA_NAP.pureRate),
+        amt:list*(MIRA_NAP.buyRate-MIRA_NAP.pureRate)*qty, unitNote:'差額 定価×'+miraPct.diff});
       (bySup[MIRA_NAP.sid]=bySup[MIRA_NAP.sid]||[]).push(line);
       return;
     }
@@ -1077,6 +1098,7 @@ function vPayments(){
     [...allMonths].sort().reverse().map(m=>'<option '+(m===payM?'selected':'')+'>'+m+'</option>').join('')+'</select>';
 
   let html = '<h1>'+esc(NM.co)+'支払い</h1><div class="sub">仕入先・支払先ごとの支払予定。計上日は受注カードの📦発注日（未入力の分は振分確定日で「仮」計上）。行を開くと根拠明細が見られます</div>' +
+    (payConfReady() ? '' : '<div class="card" style="border-color:var(--serious)"><b>⚠️ 支払い設定を読み込めませんでした。下の金額は正しくありません。再読み込みしてください</b></div>') +
     '<div class="row" style="margin-bottom:12px">対象月（計上日）: '+monthSel+'</div>';
 
   // ---- MTG前払いアラート（✔完了ボタンつき。サロン精算画面とは別フラグで連動しない。対象月フィルタに関わらず未完了は常に出す） ----
@@ -1107,10 +1129,10 @@ function vPayments(){
           '<div class="row" style="cursor:pointer" data-k="'+esc('pay_'+supId+'_'+k)+'" onclick="aggToggle(this.dataset.k)">'+(open?'▾':'▸')+' <b class="small">'+esc(g.pr.label)+'</b>' +
           '<span class="small">支払予定: <b>'+esc(g.pr.payLabel)+'</b></span>' +
           '<span class="right"><b>'+yen(sub+tax)+'</b> <span class="muted small">税込（税抜 '+yen(sub)+'）</span>'+(prov?' <span class="small" style="color:var(--s4)">仮あり</span>':'')+'</span></div>' +
-          (open && isMira ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>計上日</th><th>回収ID</th><th>受注</th><th>商品</th><th class="num">個数</th><th class="num">定価</th><th class="num">43%単価</th><th class="num">43%合計</th><th class="num">50%単価</th><th class="num">50%合計</th><th class="num">差額</th></tr>' +
+          (open && isMira ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>計上日</th><th>回収ID</th><th>受注</th><th>商品</th><th class="num">個数</th><th class="num">定価</th><th class="num">'+miraPct.pure+'単価</th><th class="num">'+miraPct.pure+'合計</th><th class="num">'+miraPct.buy+'単価</th><th class="num">'+miraPct.buy+'合計</th><th class="num">差額</th></tr>' +
             g.lines.map(l=>'<tr><td class="small">'+esc(l.date)+(l.prov?' <span style="color:var(--s4)">仮</span>':'')+'</td><td class="mono small">'+esc(l.kid)+'</td><td class="mono small">'+esc(l.oids)+'</td><td class="small">'+esc(l.name)+' '+esc(l.size)+'</td><td class="num">'+l.qty+'</td><td class="num">'+yen(l.list)+'</td>' +
-              '<td class="num">'+fmtDec(l.u43)+'</td><td class="num">'+fmtDec(l.u43*l.qty)+'</td><td class="num">'+fmtDec(l.u50)+'</td><td class="num">'+fmtDec(l.u50*l.qty)+'</td><td class="num"><b>'+fmtDec(l.amt)+'</b></td></tr>').join('') +
-            '<tr style="font-weight:700;background:var(--wash)"><td colspan="4">小計</td><td class="num">'+g.lines.reduce((a,l)=>a+l.qty,0)+'</td><td></td><td></td><td class="num">'+fmtDec(g.lines.reduce((a,l)=>a+l.u43*l.qty,0))+'</td><td></td><td class="num">'+fmtDec(g.lines.reduce((a,l)=>a+l.u50*l.qty,0))+'</td><td class="num">'+fmtDec(subRaw)+'</td></tr>' +
+              '<td class="num">'+fmtDec(l.uPure)+'</td><td class="num">'+fmtDec(l.uPure*l.qty)+'</td><td class="num">'+fmtDec(l.uBuy)+'</td><td class="num">'+fmtDec(l.uBuy*l.qty)+'</td><td class="num"><b>'+fmtDec(l.amt)+'</b></td></tr>').join('') +
+            '<tr style="font-weight:700;background:var(--wash)"><td colspan="4">小計</td><td class="num">'+g.lines.reduce((a,l)=>a+l.qty,0)+'</td><td></td><td></td><td class="num">'+fmtDec(g.lines.reduce((a,l)=>a+l.uPure*l.qty,0))+'</td><td></td><td class="num">'+fmtDec(g.lines.reduce((a,l)=>a+l.uBuy*l.qty,0))+'</td><td class="num">'+fmtDec(subRaw)+'</td></tr>' +
             '</table></div>' :
           open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>計上日</th><th>回収ID</th><th>受注</th><th>サロン</th><th>ブランド</th><th>商品</th><th class="num">個数</th><th class="num">単価</th><th class="num">金額</th></tr>' +
             g.lines.map(l=>'<tr><td class="small">'+esc(l.date)+(l.prov?' <span style="color:var(--s4)">仮</span>':'')+'</td><td class="mono small">'+esc(l.kid)+'</td><td class="mono small">'+esc(l.oids)+'</td><td class="small">'+esc(l.salon)+'</td><td class="small">'+esc(l.brand)+'</td><td class="small">'+esc(l.name)+' '+esc(l.size)+'</td><td class="num">'+l.qty+'</td><td class="num">'+yen(l.unit)+(l.unitNote?'<br><span class="small" style="color:var(--s4)">'+esc(l.unitNote)+'</span>':'')+'</td><td class="num">'+yen(l.amt)+'</td></tr>').join('') +
@@ -1119,7 +1141,7 @@ function vPayments(){
           (open && isMira ? supNoticeBlock(supId, g, sub, {mode:'boxDiff', tax}) : '') +
           '</div>';
       }).join('') +
-      (isMira ? '<p class="muted small" style="margin-top:6px">※ MIRA名義の'+MIRA_NAP.brand+'は、口座請求元がMIRAへ定価×43%で請求（MIRAが支払い）。当社は定価×50%で買い取った扱いにして、差額（定価×7%）をMIRAへ支払う。差額は明細ごと小数のまま合計し、税込で円未満四捨五入。仲介2%は下の🤝カードに従来どおり計上。案件別収支の仕入原価は定価×50%（2026-09-25 確定）</p>' : '') +
+      (isMira ? '<p class="muted small" style="margin-top:6px">※ MIRA名義の'+MIRA_NAP.brand+'は、口座請求元がMIRAへ定価×'+miraPct.pure+'で請求（MIRAが支払い）。当社は定価×'+miraPct.buy+'で買い取った扱いにして、差額（定価×'+miraPct.diff+'）をMIRAへ支払う。差額は明細ごと小数のまま合計し、税込で円未満四捨五入。仲介2%は下の🤝カードに従来どおり計上。案件別収支の仕入原価は定価×'+miraPct.buy+'（2026-09-25 確定）</p>' : '') +
       (isPure ? '<p class="muted small" style="margin-top:6px">※ 単価 = 商品マスタのサロン仕入価格×57%／モデニカは定価×70%のサロン価×65%（いずれも円未満切捨。実請求書と全明細照合済みの計算式）。他ブランドは定価×（マスタ率−2%）。仲介2%は定価×2%で下の🤝カードに計上。サロン別口座請求・税は伝票単位切捨。</p>' : '') +
       '</div>';
   });
@@ -1748,7 +1770,7 @@ function anbetsuSupply(){
     // 単価がどう決まったかを分類して積む（メモ欄の説明に使う。2026-09-04 ユーザー要望）。
     // 率は1品ずつだと切り捨ての端数で割れるので、同じルールの分をまとめてから出す
     let why;
-    if(u.miraNap) why = 'MIRA買取50%（差額払い）';
+    if(u.miraNap) why = 'MIRA買取'+miraPct.buy+'（差額払い）';
     else if(u.src==='台帳') why = '回収台帳の実額';
     else if(u.src==='固定') why = '仕入固定単価 '+yen(unit);
     else if(supId===PAYIDS.pure && pureSalonPct(brand)!=null){
@@ -4059,7 +4081,7 @@ function supNoticeBlock(supId, g, sub, opt){
   if(!monthly) return '<div class="muted small" style="margin-top:8px">支払い通知書の発行は月末締めの外注先のみ対応（10日締めは未対応）</div>'+docsHtml;
   const busy = inflight.has('supNotice:'+supId+':'+key);
   return '<div class="row" style="margin-top:8px"><button class="btn" '+(busy?'disabled':'')+' data-s="'+esc(supId)+'" data-k="'+esc(key)+'" onclick="issueSupNotice(this.dataset.s,this.dataset.k,'+(boxDiff?'true':'false')+')">'+(busy?'発行中…':'📄 支払い通知書PDF')+'</button>' +
-    '<span class="muted small">'+(boxDiff ? '差額（定価×7%）の小計 '+yen(sub)+' → 税込 '+yen(sub+ntax)+'（小数のまま合計し税込で四捨五入）。明細は商品ごとに 数量×差額単価' : '税抜 '+yen(sub)+' ＋ 消費税 '+yen(ntax)+'（切捨）＝ 税込 '+yen(sub+ntax)+'。明細は上の表と同じ商品・単価')+'。備考に相手の口座（仕入れマスタ「口座情報」）。PDFはDriveの「'+esc(NM.co)+'帳票／支払通知書」</span></div>' +
+    '<span class="muted small">'+(boxDiff ? '差額（定価×'+miraPct.diff+'）の小計 '+yen(sub)+' → 税込 '+yen(sub+ntax)+'（小数のまま合計し税込で四捨五入）。明細は商品ごとに 数量×差額単価' : '税抜 '+yen(sub)+' ＋ 消費税 '+yen(ntax)+'（切捨）＝ 税込 '+yen(sub+ntax)+'。明細は上の表と同じ商品・単価')+'。備考に相手の口座（仕入れマスタ「口座情報」）。PDFはDriveの「'+esc(NM.co)+'帳票／支払通知書」</span></div>' +
     (prov ? '<div class="small" style="color:var(--s4)">⚠ 発注日が未入力の「仮」明細が含まれています。受注カードで📦発注日を入れると計上月が変わることがあります</div>' : '') + docsHtml;
 }
 async function issueSupNotice(supId, key, boxDiff){
