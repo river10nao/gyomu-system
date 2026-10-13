@@ -2382,6 +2382,8 @@ async function openDocPdf(u, w, auto){
 // PDFタブの中身を組み立てる（2026-10-13 なおさん）: 上にファイル名と「このファイル名で保存」、下にPDF。
 // 10/12にドライブのリンクをやめて画面内で受け取る形にしたら、保存名がランダムな記号になった（「〇〇御中」が消えた）ための対応。
 // PDFのURLはそのタブ側で作る（タブを閉じれば消える。10分で切れて保存できなくなる、が起きない）
+// 宛名の敬称（2026-10-13 なおさん）: 「様」で終わる宛先には「御中」を付けない（末尾の空白は無視）。GAS の gochuSuffix_ と同じ判定
+function withGochu(n){ const s=String(n||''); return /様$/.test(s.replace(/[\s　]+$/,'')) ? s : s+' 御中'; }
 function docSafeName(n){
   let s = String(n||'').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim();
   if(!s) s = '帳票';
@@ -6658,7 +6660,7 @@ function poBuild(wid){
     const items = poItems(b), rate = poRateNum(wid,b), L = poLayout(items);
     const rws = [];
     rws.push([{v:'発 注 書', s:XLS.title}]);
-    rws.push([{v:wname+' 御中', s:XLS.label}]);
+    rws.push([{v:withGochu(wname), s:XLS.label}]);
     rws.push([{v:'ブランド', s:XLS.label},{v:b}]);
     rws.push([{v:'発行日', s:XLS.label},{v:issued}]);
     rws.push([{v:'希望納期', s:XLS.label},{v:due}]);
@@ -6733,7 +6735,7 @@ function poBuild(wid){
   const c = [];
   c.push([{v:'発 注 書', s:XLS.title}]);
   c.push([]);
-  c.push([{v:'卸先', s:XLS.label},{v:wname+' 御中'}]);
+  c.push([{v:'卸先', s:XLS.label},{v:withGochu(wname)}]);
   c.push([{v:'発行日', s:XLS.label},{v:issued}]);
   c.push([{v:'希望納期', s:XLS.label},{v:due}]);
   c.push([]);
