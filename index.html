@@ -2383,7 +2383,7 @@ async function openDocPdf(u, w, auto){
 // 10/12にドライブのリンクをやめて画面内で受け取る形にしたら、保存名がランダムな記号になった（「〇〇御中」が消えた）ための対応。
 // PDFのURLはそのタブ側で作る（タブを閉じれば消える。10分で切れて保存できなくなる、が起きない）
 // 宛名の敬称（2026-10-13 なおさん）: 「様」で終わる宛先には「御中」を付けない（末尾の空白は無視）。GAS の gochuSuffix_ と同じ判定
-function withGochu(n){ const s=String(n||''); return /様$/.test(s.replace(/[\s　]+$/,'')) ? s : s+' 御中'; }
+function withGochu(n){ const s=String(n||'').trim(); return /様$/.test(s.replace(/[\s　]+$/,'')) ? s : s+' 御中'; }
 function docSafeName(n){
   let s = String(n||'').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim();
   if(!s) s = '帳票';
