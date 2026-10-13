@@ -2368,23 +2368,58 @@ async function openDocPdf(u, w, auto){
   if(!w) w = docPendingWindow('開いています…');
   if(!w){ docOpening.delete(v); toast('新しいタブを開けませんでした（ポップアップのブロックを解除してください）', true); return; }
   toast('PDFを開いています…');
-  let url = null, shown = false;
   try{
     const d = await apiGet('docFile', {url: v}, 60000);   // 60秒で打ち切り（待ちのタブと二重押し防止が残り続けないように）
-    const bytes = Uint8Array.from(atob(d.base64), c=>c.charCodeAt(0));
-    url = URL.createObjectURL(new Blob([bytes], {type: 'application/pdf'}));   // 型は常にPDF固定
     if(w.closed){ toast('タブが閉じられたため表示を中止しました', true); return; }
-    try{ w.opener = null; }catch(e){}
-    w.location.href = url;
-    shown = true;
+    showDocInTab(w, d);
   }catch(e){
     try{ w.close(); }catch(e2){}
     toast('PDFを開けませんでした: '+(e.message||e), true);
   }finally{
     docOpening.delete(v);
-    // 表示できたらタブが読み終わる頃（10分後）に、表示できなかったらすぐに解放する
-    if(url){ const u2 = url; setTimeout(()=>{ try{ URL.revokeObjectURL(u2); }catch(e){} }, shown ? 10*60*1000 : 0); }
   }
+}
+// PDFタブの中身を組み立てる（2026-10-13 なおさん）: 上にファイル名と「このファイル名で保存」、下にPDF。
+// 10/12にドライブのリンクをやめて画面内で受け取る形にしたら、保存名がランダムな記号になった（「〇〇御中」が消えた）ための対応。
+// PDFのURLはそのタブ側で作る（タブを閉じれば消える。10分で切れて保存できなくなる、が起きない）
+function docSafeName(n){
+  let s = String(n||'').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim();
+  if(!s) s = '帳票';
+  if(!/\.pdf$/i.test(s)) s += '.pdf';
+  return s;
+}
+function showDocInTab(w, d){
+  const name = docSafeName(d && d.name);
+  const bytes = Uint8Array.from(atob(d.base64), c=>c.charCodeAt(0));
+  const BlobW = w.Blob || Blob, URLW = w.URL || URL;
+  const url = URLW.createObjectURL(new BlobW([bytes], {type: 'application/pdf'}));   // 型は常にPDF固定
+  try{ w.opener = null; }catch(e){}
+  const doc = w.document;
+  doc.title = name;
+  doc.body.textContent = '';
+  const st = doc.createElement('style');
+  st.textContent = 'html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;background:#f4f4f2;color:#222}' +
+    '.bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:10px 16px;background:#fff;border-bottom:1px solid #ddd;box-sizing:border-box}' +
+    '.nm{flex:1 1 260px;min-width:0;font-size:14px;font-weight:600;word-break:break-all}' +
+    '.btns{display:flex;flex-wrap:wrap;gap:8px}' +
+    '.b{display:inline-block;padding:8px 14px;border-radius:8px;font-size:14px;text-decoration:none;white-space:nowrap}' +
+    '.b.p{background:#1f6feb;color:#fff}.b.s{background:#fff;color:#1f6feb;border:1px solid #1f6feb}' +
+    'iframe{display:block;width:100%;height:calc(100% - 58px);border:0;background:#fff}' +
+    '.note{display:none;padding:16px;font-size:13px;color:#555}' +
+    '@media (max-width:700px){iframe{display:none}.note{display:block}.b{flex:1 1 auto;text-align:center}.btns{width:100%}}';
+  doc.head.appendChild(st);
+  const bar = doc.createElement('div'); bar.className = 'bar';
+  const nm = doc.createElement('div'); nm.className = 'nm'; nm.textContent = '📄 ' + name;
+  const btns = doc.createElement('div'); btns.className = 'btns';
+  const save = doc.createElement('a'); save.className = 'b p'; save.href = url; save.download = name; save.textContent = '⬇ このファイル名で保存';
+  const full = doc.createElement('a'); full.className = 'b s'; full.href = url; full.textContent = 'PDFだけを開く';
+  btns.appendChild(save); btns.appendChild(full);
+  bar.appendChild(nm); bar.appendChild(btns);
+  doc.body.appendChild(bar);
+  const note = doc.createElement('div'); note.className = 'note'; note.textContent = 'スマホでは「PDFだけを開く」で中身を見られます。保存は上の青いボタンから（ファイル名つき）。';
+  doc.body.appendChild(note);
+  const fr = doc.createElement('iframe'); fr.src = url; fr.title = name;
+  doc.body.appendChild(fr);
 }
 function docByNo(docNo){ const n=String(docNo||'').trim(); return n ? rows('docLog').find(d=>String(d['管理番号']||'').trim()===n) : null; }
 // 受注ID → {st, pay, via}（要対応の表示用。vDashboard の oInfo と同じ内容）
