@@ -2149,7 +2149,7 @@ function printAnbetsu(opts){
       const rowsHtml = sr.map((s,i)=>{
         let tds = '';
         if(firstOfGroup && i===0) tds += '<td rowspan="'+gRows+'" class="brandcell"><b>'+esc(g.brand)+'</b></td>';
-        if(i===0) tds += '<td rowspan="'+n+'">'+esc(l.w)+(l.form?'<div class="small">'+esc(l.form)+'</div>':'')+'</td>' +
+        if(i===0) tds += '<td class="wcell" rowspan="'+n+'">'+esc(l.w)+(l.form?'<div class="small">'+esc(l.form)+'</div>':'')+'</td>' +
           '<td class="num" rowspan="'+n+'">'+pct(l.list>0?l.sales/l.list:null)+'</td>' +
           '<td class="num" rowspan="'+n+'"><b>'+y(l.sales)+'</b></td>';
         tds += '<td class="num">'+y(s.sales)+'</td>' +
@@ -2161,7 +2161,7 @@ function printAnbetsu(opts){
                '<td class="num">'+feeCellOf(s.fee, s.fees)+'</td>' +
                '<td class="num"><b>'+y(s.net)+'</b></td><td class="num">'+pct(s.amt>0?s.net/s.amt:null)+'</td>';
         if(i===0) tds += '<td class="small" rowspan="'+n+'">'+esc(l.st||'')+'</td><td class="small" rowspan="'+n+'">'+esc(l.oid)+'</td>' +
-                 '<td class="small" rowspan="'+n+'">'+esc(anbetsuMemoText(l))+'</td>';
+                 '<td class="small memo" rowspan="'+n+'">'+esc(anbetsuMemoText(l))+'</td>';
         firstOfGroup = false;
         return '<tr>'+tds+'</tr>';
       }).join('');
@@ -2173,19 +2173,23 @@ function printAnbetsu(opts){
     'table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:4px 7px;text-align:left}td.num,th.num{text-align:right}th{background:#f2f2f2}' +
     'tr.brand td{background:#eef1f5}td.brandcell{background:#eef1f5}td.indent{padding-left:22px}.small{font-size:10px;color:#555}' +
     'table.anbetsu td{vertical-align:middle}' +
-    'tr{page-break-inside:avoid}@media print{button{display:none}}</style></head><body>' +
+    'td.num{white-space:nowrap}td.num .small{white-space:normal;min-width:9em}td.wcell{min-width:7em}td.memo{min-width:16em}' +
+    // 印刷は A4 横・小さめの文字。メモ欄を広く取り、行が縦に伸びすぎないようにする（2026-10-28 なおさん指示）
+    '@page{size:A4 landscape;margin:8mm}' +
+    'tr{page-break-inside:avoid}thead{display:table-header-group}' +
+    '@media print{button{display:none}body{margin:0;font-size:8.5px}h1{font-size:13px;margin:0 0 6px}th,td{padding:2px 4px}.small{font-size:7.5px}td.memo{min-width:200px}}</style></head><body>' +
     '<button onclick="print()" style="padding:6px 14px">🖨 印刷 / PDF保存</button>' +
     '<h1>案件別収支（'+esc(m)+'）</h1>' +
-    '<table class="anbetsu"><tr><th>メーカー</th><th>卸先</th><th class="num">掛率(卸)</th><th class="num">総売上</th><th class="num">仕入ごとの売上</th>' +
+    '<table class="anbetsu"><thead><tr><th>メーカー</th><th>卸先</th><th class="num">掛率(卸)</th><th class="num">総売上</th><th class="num">仕入ごとの売上</th>' +
     '<th class="num">掛率（仕入）</th><th class="num">'+esc(NM.co)+'仕入</th><th>仕入先</th><th>仕入形態</th>' +
     '<th class="num">利益額</th><th class="num">利益率</th><th class="num">手数料</th><th class="num">実利益</th><th class="num">実利益率</th>' +
-    '<th>状態</th><th>受注ID</th><th>メモ</th></tr>' +
+    '<th>状態</th><th>受注ID</th><th>メモ</th></tr></thead><tbody>' +
     body +
     '<tr class="brand"><td colspan="3"><b>合計</b></td><td class="num"><b>'+y(t.sales)+'</b></td><td class="num"><b>'+y(t.seg)+'</b>'+(Math.round(t.seg)!==Math.round(t.sales)?' ⚠':'')+'</td>' +
     '<td class="num"><b>'+pct(t.list>0?t.cost/t.list:null)+'</b></td><td class="num"><b>'+y(t.cost)+'</b></td><td></td><td></td>' +
     '<td class="num"><b>'+y(profit(t))+'</b></td><td class="num"><b>'+pct(t.cost>0?profit(t)/t.cost:null)+'</b></td>' +
     '<td class="num"><b>'+(t.fee?'−'+y(t.fee):'—')+'</b></td><td class="num"><b>'+y(t.net)+'</b></td><td class="num"><b>'+pct(t.cost>0?t.net/t.cost:null)+'</b></td><td colspan="3"></td></tr>' +
-    '</table>' +
+    '</tbody></table>' +
     '<p class="small">仕入ごとの売上・仕入・利益・手数料・実利益は仕入先ごと（仕入ごとの売上＝その仕入先から仕入れた本数×卸値。足すと総売上）。神澤さんの仲介2%はピュア商会の段から、紹介報酬は最初の段から引く。実利益率＝実利益÷'+esc(NM.co)+'仕入。<br>仕入額は実額（回収台帳の仕入先×仕入先マスタの掛け率）。まだ振り分けていない分だけ商品マスタの仕入価格で仮置きし「仮」と表示。仕入先は1社1段で、掛率（仕入）はその仕入先の実率（合計行だけ全体の'+esc(NM.co)+'仕入÷定価）。' +
     '利益率=利益額÷'+esc(NM.co)+'仕入、掛率(卸)=卸値÷定価、実利益=売上−'+esc(NM.co)+'仕入−手数料。手数料=仲介2%（ピュア経由の定価×2%）＋紹介報酬（出力日: '+today()+'）</p>' +
     (opts.save ? '<p style="color:#777;font-size:11px">保存: '+new Date().toLocaleString('ja-JP')+'（'+esc(opts.reason||'手動保存')+'）</p>' : '') +
