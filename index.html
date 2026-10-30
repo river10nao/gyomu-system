@@ -6419,8 +6419,14 @@ function allocResumeDraft(id){
   let parsed = null;
   try{ parsed = allocCleanDraft_(JSON.parse(d.json)); }catch(e){ parsed = null; }
   if(!parsed){ toast('下書きの読み込みに失敗しました', true); return; }
+  // 保存後に受注から消えた案件（失注など）は対象から外す。残すと確定が「受注が見つかりません」で止まり、
+  // 一覧に出ないので画面からチェックも外せない（2026-10-30 O0055 の件）。個数は自動では直さない
+  const live = new Set(rows('orderLedger').map(r=>String(r['受注ID']||'').trim()).filter(Boolean));
+  const gone = live.size ? Object.keys(parsed.sel).filter(k=>parsed.sel[k] && !live.has(k)) : [];
+  gone.forEach(k=>{ delete parsed.sel[k]; if(parsed.open && typeof parsed.open==='object') delete parsed.open[k]; });
   ALLOC = parsed;
-  toast(d['ブランド']+' の振り分けを再開しました。数を直すか、そのまま確定してください');
+  if(gone.length) toast(d['ブランド']+' の振り分けを再開しました。受注から消えている '+gone.join('・')+' は対象から外しました。各サロンの個数が合っているか確認してから確定してください');
+  else toast(d['ブランド']+' の振り分けを再開しました。数を直すか、そのまま確定してください');
   render();
 }
 async function allocDeleteDraft(id){
