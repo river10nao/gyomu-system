@@ -444,7 +444,7 @@ async function boot(){
 }
 
 // 起動時に全データを並列ロード → 以後の検索・絞込みはブラウザ内で即時
-const SHEETS = ['products','wholesalers','salons','orderLedger','collectionLedger','shipments','hanbaiOrders','stock','stockLog','monthlyGoals','quotaMaster','orders','collection','docLog','alerts','allocDrafts','salonPayLog','notices'];
+const SHEETS = ['products','wholesalers','salons','orderLedger','collectionLedger','shipments','hanbaiOrders','stock','stockLog','monthlyGoals','quotaMaster','orders','collection','docLog','alerts','allocDrafts','salonPayLog','notices','payConfirms'];
 // alerts はGAS側で6シート読む一番重い項目（単体約4秒）なので、起動・全読み直しの完了を待たせず後から差し込む
 const CORE_SHEETS = SHEETS.filter(n => n !== 'alerts');
 let dbFresh = false;   // 保存スナップショットで先に画面を出している間は false（書き込み操作をガード）
@@ -1069,20 +1069,66 @@ function collectSupplierLines(inMonthFn, allMonths){
     }
     (bySup[supId]=bySup[supId]||[]).push(line);
   });
-  rows('hanbaiOrders').filter(r=>String(r['削除']||'').trim()==='' && String(r['請求元ID']||'').trim()===PAYIDS.pure).forEach(r=>{
+  // 店販/ECは請求元の支払いに入れる。以前はピュアだけだった（2026-11-03 コスモ請求の店販 T0009 が支払いに出ない件で全請求元に拡大）。
+  // サロン直接払いの請求元は立替が無いので入れない。請求元が空欄の注文はどこに払うか分からないので入れない
+  rows('hanbaiOrders').filter(r=>{ const b=String(r['請求元ID']||'').trim(); return String(r['削除']||'').trim()==='' && b!=='' && b!==PAYIDS.maverick; }).forEach(r=>{
     const qty = num(r['個数']); if(qty<=0) return;
+    const biller = String(r['請求元ID']||'').trim();
     const pid = String(r['商品ID']||'').trim();
     const brand = brandOf(pid)||'（不明）';
     const date = String(r['注文日']||'').trim();
     if(allMonths) allMonths.add(monthOf(date));
     if(inMonthFn && !inMonthFn(date)) return;
     const list = num((product(pid)||{})['定価（税抜）']);
-    const u = buyUnitOf(pid, PAYIDS.pure, sal[PAYIDS.pure], brand, null);
-    (bySup[PAYIDS.pure]=bySup[PAYIDS.pure]||[]).push({date, prov:false, kid:String(r['注文ID']||'').trim(), oids:'', pid,
+    const u = buyUnitOf(pid, biller, sal[biller], brand, null);
+    (bySup[biller]=bySup[biller]||[]).push({date, prov:false, kid:String(r['注文ID']||'').trim(), oids:'', pid,
       salon:String(r['サロン名']||''), brand, name:String(r['商品名']||''), size:String(r['容量']||''), qty, unit:u.unit, unitNote:'店販/EC（'+String(r['区分']||'店販')+'）',
       amt:u.unit*qty, listAmt:list*qty, isOut:false, hanbai:true});
   });
   return {bySup, sal};
+}
+// ✅ 支払いの確認OK・メモ（2026-11-03 なおさん要望）。支払い1回＝支払先×締め期間（紹介報酬は支払日、精算代行は月）。
+// 確認時の金額を残し、あとで登録・修正が入って金額が変わったら「未確認」に戻して知らせる。記録は「支払い確認」シート
+const PAYCTL = {};   // key → {payee, period, due, amount}（描画のたびに作り直す。ボタンからは data-k で引く）
+function payConfOf(key){ return rows('payConfirms').find(r=>String(r['キー']||'').trim()===key) || null; }
+function payCtl(key, payee, period, due, amount){
+  PAYCTL[key] = {payee:String(payee||''), period:String(period||''), due:String(due||''), amount:Math.round(num(amount))};
+  const c = payConfOf(key) || {};
+  const ok = String(c['確認']||'').trim()==='OK';
+  const changed = ok && Math.round(num(c['確認時の金額']))!==PAYCTL[key].amount;
+  const memo = String(c['メモ']||'');
+  const st = ok && !changed
+    ? '<span class="pill" style="background:color-mix(in srgb,var(--good) 15%, transparent);color:var(--good)">✔ 確認済み</span>' +
+      '<span class="muted">'+esc(String(c['確認者']||''))+' '+esc(String(c['確認日時']||''))+'</span>' +
+      '<button class="btn sm" data-k="'+esc(key)+'" onclick="payConfirmUI(this.dataset.k,true)">↩ 取消</button>'
+    : (changed ? '<b style="color:var(--warn)">⚠ 確認後に金額が変わりました（確認時 '+yen(num(c['確認時の金額']))+'）</b>' : '<span class="muted">未確認</span>') +
+      '<button class="btn sm" style="font-weight:700" data-k="'+esc(key)+'" onclick="payConfirmUI(this.dataset.k)">✅ 確認OK</button>';
+  return '<div class="payctl row small" data-k="'+esc(key)+'" style="margin-top:4px;gap:8px;flex-wrap:wrap">'+st +
+    '<span class="paymemo row" style="flex:1;min-width:240px;gap:6px"><span class="muted" style="flex:1;min-width:0;white-space:pre-wrap;word-break:break-word">'+(memo?'📝 '+esc(memo):'')+'</span>' +
+    '<button class="btn sm" onclick="payMemoOpen(this)">'+(memo?'📝 メモを編集':'📝 メモ')+'</button></span></div>';
+}
+function payConfirmUI(key, off){
+  const m = PAYCTL[key]; if(!m) return;
+  act('setPayConfirm', {key, payee:m.payee, period:m.period, due:m.due, amount:m.amount, ...(off?{off:true}:{})},
+    off ? '確認を取り消しました' : m.payee+' '+m.period+'（'+yen(m.amount)+'）を確認済みにしました', ['payConfirms']);
+}
+// メモ欄は DOM の差し替えだけで開く（案件メモと同じ。保存したら描き直す）
+function payMemoOpen(btn){
+  const wrap = btn.closest('.paymemo'), key = btn.closest('.payctl').dataset.k;
+  const v = String((payConfOf(key)||{})['メモ']||'');
+  wrap.innerHTML = '<textarea rows="2" placeholder="請求書との照合結果・振込予定など（誰でも書けます）" style="flex:1;min-width:240px;padding:6px 8px;font-family:inherit;font-size:12.5px"></textarea>' +
+    '<button class="btn pri sm" onclick="payMemoSave(this)">保存</button><button class="btn sm" onclick="render()">やめる</button>';
+  const t = wrap.querySelector('textarea'); t.value = v; t.focus(); t.setSelectionRange(v.length, v.length);
+}
+async function payMemoSave(btn){
+  const key = btn.closest('.payctl').dataset.k, m = PAYCTL[key]; if(!m) return;
+  const v = btn.closest('.paymemo').querySelector('textarea').value;
+  btn.disabled = true; btn.textContent = '保存中…';
+  try{
+    await apiPost('setPayMemo', {key, payee:m.payee, period:m.period, due:m.due, memo:v}, ['payConfirms']);
+    toast(v.trim() ? 'メモを保存しました' : 'メモを消しました');
+    render();
+  }catch(e){ toast(e.message, true); btn.disabled = false; btn.textContent = '保存'; }
 }
 function vPayments(){
   // 対象月フィルタ（計上日の月で絞る。既定=すべて。2026-07-18 ユーザー要望）
@@ -1092,6 +1138,8 @@ function vPayments(){
   // ---- 仕入明細を仕入先ごとに集める（collectSupplierLines に切り出し。2026-07-19） ----
   const allMonths = new Set();
   const {bySup, sal} = collectSupplierLines(inMonth, allMonths);
+  // 確認OKの金額は締め期間まるごとで比べる（対象月で絞ると10日締めの期間が途中で切れ、確認時と違う金額に見えるため）
+  const fullBySup = payM==='すべて' ? bySup : collectSupplierLines(null).bySup;
   rows('hanbaiOrders').forEach(r=>allMonths.add(monthOf(r['注文日'])));
   allMonths.delete('');
   const monthSel = '<select onchange="viewState.payMonth=this.value;render()"><option '+(payM==='すべて'?'selected':'')+'>すべて</option>' +
@@ -1120,15 +1168,18 @@ function vPayments(){
     html += '<div class="card"><div class="row"><b>'+(kind==='外注'||isMira?'🤝':'🏭')+' '+esc(salonLabel(s)||supId)+(isMira?'（'+MIRA_NAP.brand+' 差額払い）':'')+'</b>' +
       '<span class="small muted">締め: '+esc(close||'—')+' ／ 支払: '+esc(pay || 'カード引落（引落日 確認中）')+'</span></div>' +
       Object.keys(per).sort().reverse().map(k=>{
-        const g = per[k]; const subRaw = g.lines.reduce((a,l)=>a+l.amt,0);
-        const sub = isMira ? Math.round(subRaw) : subRaw;
-        const tax = isPure ? Math.floor(sub*0.1) : (isMira ? Math.round(subRaw*1.1)-sub : Math.round(sub*0.1));
+        const g = per[k];
+        const taxed = ls=>{ const subRaw = ls.reduce((a,l)=>a+l.amt,0); const sub = isMira ? Math.round(subRaw) : subRaw;
+          return {subRaw, sub, tax: isPure ? Math.floor(sub*0.1) : (isMira ? Math.round(subRaw*1.1)-sub : Math.round(sub*0.1))}; };
+        const {subRaw, sub, tax} = taxed(g.lines);
+        const full = taxed((fullBySup[supId]||[]).filter(l=>payPeriod(l.date, close, pay).key===k));
         const open = (viewState.aggOpen||{})['pay_'+supId+'_'+k];
         const prov = g.lines.some(l=>l.prov);
         return '<div style="margin-top:8px;border-top:1px solid var(--axis);padding-top:6px">' +
           '<div class="row" style="cursor:pointer" data-k="'+esc('pay_'+supId+'_'+k)+'" onclick="aggToggle(this.dataset.k)">'+(open?'▾':'▸')+' <b class="small">'+esc(g.pr.label)+'</b>' +
           '<span class="small">支払予定: <b>'+esc(g.pr.payLabel)+'</b></span>' +
           '<span class="right"><b>'+yen(sub+tax)+'</b> <span class="muted small">税込（税抜 '+yen(sub)+'）</span>'+(prov?' <span class="small" style="color:var(--s4)">仮あり</span>':'')+'</span></div>' +
+          payCtl('sup|'+supId+'|'+k, salonLabel(s)||supId, g.pr.label, g.pr.payLabel, full.sub+full.tax) +
           (open && isMira ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>計上日</th><th>回収ID</th><th>受注</th><th>商品</th><th class="num">個数</th><th class="num">定価</th><th class="num">'+miraPct.pure+'単価</th><th class="num">'+miraPct.pure+'合計</th><th class="num">'+miraPct.buy+'単価</th><th class="num">'+miraPct.buy+'合計</th><th class="num">差額</th></tr>' +
             g.lines.map(l=>'<tr><td class="small">'+esc(l.date)+(l.prov?' <span style="color:var(--s4)">仮</span>':'')+'</td><td class="mono small">'+esc(l.kid)+'</td><td class="mono small">'+esc(l.oids)+'</td><td class="small">'+esc(l.name)+' '+esc(l.size)+'</td><td class="num">'+l.qty+'</td><td class="num">'+yen(l.list)+'</td>' +
               '<td class="num">'+fmtDec(l.uPure)+'</td><td class="num">'+fmtDec(l.uPure*l.qty)+'</td><td class="num">'+fmtDec(l.uBuy)+'</td><td class="num">'+fmtDec(l.uBuy*l.qty)+'</td><td class="num"><b>'+fmtDec(l.amt)+'</b></td></tr>').join('') +
@@ -1163,12 +1214,15 @@ function vPayments(){
     pureLines.forEach(l=>{ const pr = payPeriod(l.date, String(pureRow['締め日']||''), String(pureRow['支払日']||'')); (per[pr.key]=per[pr.key]||{pr, sub:0, lines:[]}); per[pr.key].sub+=num(l.listAmt); per[pr.key].lines.push(l); });
     html += '<div class="card"><div class="row"><b>🤝 '+esc(salonLabel(brokerRow)||'仲介')+'（仲介手数料 '+BROKER_RATE_LABEL+'）</b><span class="small muted">発注商品の<b>定価</b>（税抜）×2%・モデニカは×2.5% ／ 締め支払は'+esc(salonLabel(pureRow))+'と同サイクル（2026-07-23 実請求書で確定・モデニカ率は 2026-09-28 神澤さん請求で確定）</span></div>' +
       Object.keys(per).sort().reverse().map(k=>{ const g=per[k]; const tl=brokerLinesOf(g.lines); const fee=brokerFeeOfLines(tl), tax=Math.round(fee*0.1);
+        const fullFee = brokerFeeOfLines(brokerLinesOf((fullBySup[PAYIDS.pure]||[]).concat((fullBySup[MIRA_NAP.sid]||[]).filter(l=>l.miraNap))
+          .filter(l=>payPeriod(l.date, String(pureRow['締め日']||''), String(pureRow['支払日']||'')).key===k)));
         const base = tl.reduce((a,l)=>a+num(l.listAmt),0);   // 対象定価（ポンプ除外）
         const open = (viewState.aggOpen||{})['pay_broker_'+k];
         const bySalon = {}; tl.forEach(l=>{ const b=bySalon[l.salon]=bySalon[l.salon]||{qty:0, list:0, feeRaw:0, kids:new Set()}; b.qty+=l.qty; b.list+=num(l.listAmt); b.feeRaw+=num(l.listAmt)*brokerRateOf(l.brand); b.kids.add(l.kid); });
         return '<div style="margin-top:6px;border-top:1px solid var(--axis);padding-top:6px">' +
           '<div class="row small" style="cursor:pointer" data-k="'+esc('pay_broker_'+k)+'" onclick="aggToggle(this.dataset.k)">'+(open?'▾':'▸')+' <b>'+esc(g.pr.label)+'</b><span>支払予定: <b>'+esc(g.pr.payLabel)+'</b></span>' +
           '<span class="right"><b>'+yen(fee+tax)+'</b> <span class="muted">税込（税抜 '+yen(fee)+'＝対象定価 '+yen(base)+'×'+BROKER_RATE_LABEL+'・ポンプ除外）</span></span></div>' +
+          payCtl('broker|'+(PAYIDS.broker||'-')+'|'+k, (salonLabel(brokerRow)||'仲介')+' 仲介手数料', g.pr.label, g.pr.payLabel, fullFee+Math.round(fullFee*0.1)) +
           (open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>サロン</th><th>回収ID</th><th class="num">個数</th><th class="num">対象定価</th><th class="num">手数料</th></tr>' +
             // サロン別は個別に丸めると期間合計（全明細合算→1回丸め）と1円ズレうるので、丸め差は最後のサロンに寄せて合計を一致させる（Codexレビュー 2026-09-28）
             (()=>{ const snames=Object.keys(bySalon).sort(); const feeBy={}; let left=fee;
@@ -1189,7 +1243,12 @@ function vPayments(){
       const list = byRef[rid]; const total = list.reduce((a,x)=>a+x.fee,0);
       const refTax = (()=>{ const per={}; list.forEach(x=>{ const k=x.pd?payFmt(x.pd):'-'; per[k]=(per[k]||0)+x.fee; }); return Object.values(per).reduce((a,v)=>a+Math.round(v*0.1),0); })();
       const open = (viewState.aggOpen||{})['pay_ref_'+rid];
+      const byDue = {}; list.forEach(x=>{ const k=x.pd?payFmt(x.pd):'-'; (byDue[k]=byDue[k]||{fee:0, n:0}).fee+=x.fee; byDue[k].n++; });
       html += '<div class="card"><div class="row" style="cursor:pointer" data-k="'+esc('pay_ref_'+rid)+'" onclick="aggToggle(this.dataset.k)">'+(open?'▾':'▸')+' <b>🤝 '+esc(salonLabel(sal[rid]||{})||rid)+'（紹介報酬）</b><span class="small muted">紹介卸先の発注済み案件 × 報酬率 ／ <b>発注日</b>1〜15日→当月末・16日〜→翌月10日（発注ベース・入金は待たない）</span><span class="right"><b>'+yen(total+refTax)+'</b> <span class="muted small">税込（税抜 '+yen(total)+'）</span></span></div>' +
+        Object.keys(byDue).sort().reverse().map(k=>{ const d=byDue[k], t=Math.round(d.fee*0.1);
+          return '<div style="margin-top:6px;border-top:1px solid var(--axis);padding-top:6px"><div class="row small"><b>支払予定: '+esc(k==='-'?'（発注日なし）':k)+'</b><span class="muted">'+d.n+'件</span>' +
+            '<span class="right"><b>'+yen(d.fee+t)+'</b> <span class="muted">税込（税抜 '+yen(d.fee)+'）</span></span></div>' +
+            payCtl('ref|'+rid+'|'+k, (salonLabel(sal[rid]||{})||rid)+' 紹介報酬', k+' 支払分', k, d.fee+t) + '</div>'; }).join('') +
         (open ? '<div class="tblwrap" style="margin-top:6px"><table><tr><th>卸先</th><th>受注</th><th>ブランド</th><th class="num">売上</th><th class="num">'+esc(NM.co)+'仕入</th><th>基準</th><th class="num">対象額</th><th class="num">率</th><th class="num">報酬</th><th>発注日</th><th>支払予定</th></tr>' +
           list.map(x=>'<tr><td class="small">'+esc(x.wname)+'</td><td class="mono small">'+esc(x.oid)+'</td><td class="small">'+esc(x.brand||'')+'</td>' +
             '<td class="num">'+yen(x.sales)+'</td><td class="num">'+yen(x.cost)+'</td>' +
@@ -1245,7 +1304,8 @@ function vPayments(){
           '<div class="row" style="margin-top:4px"><span>MTG前払い（発注のたび都度・サロン仕入価格×個数）</span><span class="right">' +
             (mtgIds.length ? '<b>'+yen(mtgTotal)+'</b> <span class="muted">（'+mtgIds.map(s=>esc(g.mtg[s].salon)+' '+yen(g.mtg[s].amt)).join(' ／ ')+'）</span>'
                            : '<b>今回なし</b> <span class="muted">（MTG商品の振り分けが無いため）</span>')+'</span></div>' +
-          '<div class="row" style="margin-top:4px"><span>振込手数料（翌月末払い・'+TRANSFER_FEE_YEN.toLocaleString()+'円×振込サロン数）</span><span class="right"><b>'+yen(g.feeSalons.size*TRANSFER_FEE_YEN)+'</b> <span class="muted">目安（最大 '+g.feeSalons.size+'軒。実際に振込したサロン数で確定）</span></span></div></div>'; }).join('') + '</div>';
+          '<div class="row" style="margin-top:4px"><span>振込手数料（翌月末払い・'+TRANSFER_FEE_YEN.toLocaleString()+'円×振込サロン数）</span><span class="right"><b>'+yen(g.feeSalons.size*TRANSFER_FEE_YEN)+'</b> <span class="muted">目安（最大 '+g.feeSalons.size+'軒。実際に振込したサロン数で確定）</span></span></div>' +
+          payCtl('spay|all|'+m, NM.spay+' 前払い・振込手数料', m.replace('/','年')+'月分', '', mtgTotal+g.feeSalons.size*TRANSFER_FEE_YEN) + '</div>'; }).join('') + '</div>';
   })();
 
   return html;
