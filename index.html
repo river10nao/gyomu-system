@@ -1098,8 +1098,7 @@ function payCtl(key, payee, period, due, amount, shown){
   const changed = ok && Math.round(num(c['確認時の金額']))!==PAYCTL[key].amount;
   const memo = String(c['メモ']||'');
   const st = ok && !changed
-    ? '<span class="pill" style="background:color-mix(in srgb,var(--good) 15%, transparent);color:var(--good)">✔ 確認済み</span>' +
-      '<span class="muted">'+esc(String(c['確認者']||''))+' '+esc(String(c['確認日時']||''))+'</span>' +
+    ? '<span class="pill" style="background:color-mix(in srgb,var(--good) 15%, transparent);color:var(--good)">✔ 確認済み</span>' +   // 誰が・いつは表示しない（シートには残る。2026-11-03 なおさん）
       '<button class="btn sm" data-k="'+esc(key)+'" onclick="payConfirmUI(this.dataset.k,true)">↩ 取消</button>'
     : (changed ? '<b style="color:var(--warn)">⚠ 確認後に金額が変わりました（確認時 '+yen(num(c['確認時の金額']))+'）</b>' : '<span class="muted">未確認</span>') +
       '<button class="btn sm" style="font-weight:700" data-k="'+esc(key)+'" onclick="payConfirmUI(this.dataset.k)">✅ 確認OK</button>';
