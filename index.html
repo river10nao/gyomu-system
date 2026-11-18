@@ -984,6 +984,10 @@ const BROKER_RATE = 0.02;
 const BROKER_RATE_BY_BRAND = { 'モデニカ': 0.025 };
 function brokerRateOf(brand){ const r = BROKER_RATE_BY_BRAND[String(brand||'').trim()]; return r!=null ? r : BROKER_RATE; }
 const isBrokerExcluded = l=>{ const p = l && l.pid ? product(l.pid) : null; return /ポンプ/.test(String((p && p['商品名']) || (l&&l.name) || '')); };   // 商品マスタの現在名で判定（台帳の旧名称・空欄に左右されない）
+// 仲介手数料の基準単価: 通常は定価。商品マスタのメモに「業務用・定価なし」とある品（定価をサロン価÷0.65で仮に置いた品）は
+// 神澤さんの実請求どおりサロン価（サロン仕入価格）を基準にする（2026-11-18 なおさん指示・10月分ナプラ手数料請求で確認）
+function brokerUnitOf(pid){ const p=product(pid)||{}; const sc=num(p['サロン仕入価格（税抜）']);
+  return (/業務用・定価なし/.test(String(p['メモ']||'')) && sc>0) ? sc : num(p['定価（税抜）']); }
 const brokerLinesOf = lines=>(lines||[]).filter(l=>!isBrokerExcluded(l));
 function brokerFeeOfLines(lines){ return Math.round(brokerLinesOf(lines).reduce((a,l)=>a+num(l.listAmt)*brokerRateOf(l.brand),0)); }   // 明細の 定価×数量×率 を合計して円未満四捨五入
 const BROKER_RATE_LABEL = '2%（モデニカは2.5%）';
@@ -1060,7 +1064,7 @@ function collectSupplierLines(inMonthFn, allMonths){
     const unitNote = u.note || (u.src==='台帳' ? '台帳の実額' : '');
     const line = {date, prov:oids.length>0 && !od, kid:String(r['回収ID']||'').trim(), oids:oids.join(', '), pid,
       salon:String(r['サロン名']||''), brand, name:String(r['商品名']||''), size:String(r['容量']||''), qty, unit, unitNote,
-      amt:unit*qty, listAmt:list*qty, isOut:String(r['区分']||'').trim()==='外注'};
+      amt:unit*qty, listAmt:brokerUnitOf(pid)*qty, isOut:String(r['区分']||'').trim()==='外注'};
     if(u.miraNap || isMiraNap(r, supId, brand)){
       Object.assign(line, {miraNap:true, list, uPure:list*MIRA_NAP.pureRate, uBuy:list*MIRA_NAP.buyRate, unit:list*(MIRA_NAP.buyRate-MIRA_NAP.pureRate),
         amt:list*(MIRA_NAP.buyRate-MIRA_NAP.pureRate)*qty, unitNote:'差額 定価×'+miraPct.diff});
@@ -1083,7 +1087,7 @@ function collectSupplierLines(inMonthFn, allMonths){
     const u = buyUnitOf(pid, biller, sal[biller], brand, null);
     (bySup[biller]=bySup[biller]||[]).push({date, prov:false, kid:String(r['注文ID']||'').trim(), oids:'', pid,
       salon:String(r['サロン名']||''), brand, name:String(r['商品名']||''), size:String(r['容量']||''), qty, unit:u.unit, unitNote:'店販/EC（'+String(r['区分']||'店販')+'）',
-      amt:u.unit*qty, listAmt:list*qty, isOut:false, hanbai:true});
+      amt:u.unit*qty, listAmt:brokerUnitOf(pid)*qty, isOut:false, hanbai:true});
   });
   return {bySup, sal};
 }
@@ -1213,7 +1217,7 @@ function vPayments(){
   if(pureLines.length){
     const per = {};
     pureLines.forEach(l=>{ const pr = payPeriod(l.date, String(pureRow['締め日']||''), String(pureRow['支払日']||'')); (per[pr.key]=per[pr.key]||{pr, sub:0, lines:[]}); per[pr.key].sub+=num(l.listAmt); per[pr.key].lines.push(l); });
-    html += '<div class="card"><div class="row"><b>🤝 '+esc(salonLabel(brokerRow)||'仲介')+'（仲介手数料 '+BROKER_RATE_LABEL+'）</b><span class="small muted">発注商品の<b>定価</b>（税抜）×2%・モデニカは×2.5% ／ 締め支払は'+esc(salonLabel(pureRow))+'と同サイクル（2026-07-23 実請求書で確定・モデニカ率は 2026-09-28 神澤さん請求で確定）</span></div>' +
+    html += '<div class="card"><div class="row"><b>🤝 '+esc(salonLabel(brokerRow)||'仲介')+'（仲介手数料 '+BROKER_RATE_LABEL+'）</b><span class="small muted">発注商品の<b>定価</b>（税抜）×2%・モデニカは×2.5%・業務用で定価なしの品はサロン価×2%（2026-11-18 請求に合わせた） ／ 締め支払は'+esc(salonLabel(pureRow))+'と同サイクル（2026-07-23 実請求書で確定・モデニカ率は 2026-09-28 神澤さん請求で確定）</span></div>' +
       Object.keys(per).sort().reverse().map(k=>{ const g=per[k]; const tl=brokerLinesOf(g.lines); const fee=brokerFeeOfLines(tl), tax=Math.round(fee*0.1);
         const fullFee = brokerFeeOfLines(brokerLinesOf((fullBySup[PAYIDS.pure]||[]).concat((fullBySup[MIRA_NAP.sid]||[]).filter(l=>l.miraNap))
           .filter(l=>payPeriod(l.date, String(pureRow['締め日']||''), String(pureRow['支払日']||'')).key===k)));
@@ -1827,7 +1831,7 @@ function anbetsuSupply(){
     const e = g[supId] = g[supId] || {qty:0, amt:0, listAmt:0, sales:0, noRate:true, mix:{}, miraNap:!!u.miraNap};
     e.noRate = e.noRate && (rate==null);   // 全商品に率が無いときだけ「率なし」（先頭商品だけで決めない）
     e.qty += qty; e.amt += unit*qty; e.listAmt += list*qty; if(withSales!==false) e.sales += sellOf(oid,pid)*qty;
-    e.brokerList = (e.brokerList||0) + (isBrokerExcluded({pid}) ? 0 : list*qty);
+    e.brokerList = (e.brokerList||0) + (isBrokerExcluded({pid}) ? 0 : brokerUnitOf(pid)*qty);   // 業務用・定価なしの品はサロン価が基準（brokerUnitOf）
     // 単価がどう決まったかを分類して積む（メモ欄の説明に使う。2026-09-04 ユーザー要望）。
     // 率は1品ずつだと切り捨ての端数で割れるので、同じルールの分をまとめてから出す
     let why;
