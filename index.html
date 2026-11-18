@@ -1968,7 +1968,8 @@ function calcAnbetsu(month){
     const g = sup.got[key] || {};
     Object.keys(g).forEach(supId=>{
       const e = g[supId], s = salName[supId] || {};
-      l.sups.push({id:supId, name:(salonLabel(s)||supId||'（仕入先未記録）')+(e.miraNap?'（差額払い）':''), kind:e.miraNap ? '差額払い' : String(s['種別']||'').trim(),
+      l.sups.push({id:supId, name:e.miraNap ? ((salonLabel(salName[PAYIDS.pure]||{})||'口座請求元').trim()+'（MIRA仕入れ分）') : (salonLabel(s)||supId||'（仕入先未記録）'),   // 2026-11-18 なおさん: 表示は「ピュア商会（MIRA仕入れ分）」の方が分かりやすい
+ kind:e.miraNap ? '差額払い' : String(s['種別']||'').trim(),
         qty:e.qty, amt:e.amt, sales:e.sales||0, rate:e.listAmt>0?e.amt/e.listAmt:null, noRate:e.noRate,
         mix:Object.values(e.mix||{}).sort((a,b)=>b.qty-a.qty)});
       l.cost += e.amt;
@@ -1985,7 +1986,7 @@ function calcAnbetsu(month){
       l.prov += ownCost(pid)*q; l.provQty += q; l.provSales += sup.sellOf(l.oid, pid)*q;
     });
     l.cost += l.prov;
-    const segs = [[PAYIDS.pure, 'ピュア経由'], [MIRA_NAP.sid, 'MIRA差額払い分']]
+    const segs = [[PAYIDS.pure, 'ピュア経由'], [MIRA_NAP.sid, 'MIRA仕入れ分']]
       .map(([sid0, lab])=>({sid0, lab, seg:g[sid0]})).filter(x=>x.seg && num(x.seg.brokerList)>0 && (x.sid0!==MIRA_NAP.sid || x.seg.miraNap));
     const bRate = brokerRateOf(l.brand);
     const brokerTotal = Math.round(segs.reduce((a,x)=>a+num(x.seg.brokerList),0)*bRate);   // 基準はポンプ除外の定価
