@@ -985,7 +985,7 @@ const BROKER_RATE_BY_BRAND = { 'モデニカ': 0.025 };
 function brokerRateOf(brand){ const r = BROKER_RATE_BY_BRAND[String(brand||'').trim()]; return r!=null ? r : BROKER_RATE; }
 const isBrokerExcluded = l=>{ const p = l && l.pid ? product(l.pid) : null; return /ポンプ/.test(String((p && p['商品名']) || (l&&l.name) || '')); };   // 商品マスタの現在名で判定（台帳の旧名称・空欄に左右されない）
 // 仲介手数料の基準単価: 通常は定価。商品マスタのメモに「業務用・定価なし」とある品（定価をサロン価÷0.65で仮に置いた品）は
-// 神澤さんの実請求どおりサロン価（サロン仕入価格）を基準にする（2026-11-18 なおさん指示・10月分ナプラ手数料請求で確認）
+// 神澤さんの実請求どおりサロン価（サロン仕入価格）を基準にする（2026-11-18 なおさん指示・10月分の仲介手数料請求で確認）
 function brokerUnitOf(pid){ const p=product(pid)||{}; const sc=num(p['サロン仕入価格（税抜）']);
   return (/業務用・定価なし/.test(String(p['メモ']||'')) && sc>0) ? sc : num(p['定価（税抜）']); }
 const brokerLinesOf = lines=>(lines||[]).filter(l=>!isBrokerExcluded(l));
